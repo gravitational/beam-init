@@ -8,7 +8,7 @@ mod signal_stream;
 mod system;
 
 fn main() {
-    println!("Starting dumb-init");
+    println!("Starting beam-init");
 
     let mut signals = unsafe { signal_stream::init(&[SIGCHLD]) }.unwrap();
 

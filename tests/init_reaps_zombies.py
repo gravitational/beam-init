@@ -19,7 +19,7 @@ import psutil
 pid_count = 0
 for proc in psutil.process_iter(['pid', 'name', 'status']):
     info = proc.info
-    print(f"{info["pid"]:<2} {info["name"]:<10} {info["status"]}")
+    print(f"{info['pid']:<2} {info['name']:<10} {info['status']}")
     pid_count += 1
 # We expect two processes. Init and ourself.
-assert pid_count == 2, "Zombie not reaped"
+assert pid_count == 2, 'Zombie not reaped'
