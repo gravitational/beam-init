@@ -8,7 +8,7 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2.185"
-tokio = { version = "1.52.1", features = ["macros", "net", "rt"] }
+tokio = { version = "1.52.1", features = ["macros", "net", "rt", "sync"] }
 
 [dev-dependencies]
 docker_harness = { path = "crates/docker_harness" }

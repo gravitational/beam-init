@@ -1,36 +1,65 @@
 use std::process::{self, Command};
 
-use libc::{SIGCHLD, WEXITSTATUS, WNOHANG, pid_t, waitpid};
+use libc::{SIGCHLD, WEXITSTATUS, WNOHANG, pid_t, signalfd_siginfo, waitpid};
 
 use crate::system::cerr;
 
+mod api;
 mod signal_stream;
 mod system;
+
+enum Event {
+    Command(api::Command),
+    Signal(signalfd_siginfo),
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     println!("Starting beam-init");
 
-    let mut signals = unsafe { signal_stream::init(&[SIGCHLD]) }.unwrap();
+    // FIXME what is a reasonable channel capacity?
+    let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
 
+    // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
-    let mut cmd = Command::new(args.next().unwrap());
-    cmd.args(args);
-    signals.with_restored_sigmask(&mut cmd);
-    let child = cmd.spawn().unwrap();
-    let pid = child.id();
+    let init_cmd = api::Command::StartService {
+        cmd: args.next().unwrap(),
+        args: args.collect(),
+    };
+    // The channel is empty, so sending always succeeds.
+    tx_event.try_send(Event::Command(init_cmd)).unwrap();
 
+    // Listen for SIGCHLD signals
+    let old_sigmask = unsafe { signal_stream::init(&[SIGCHLD], tx_event.clone()) }.unwrap();
+
+    drop(tx_event);
+    let mut init_pid = None;
     loop {
-        let info = signals.recv().await.unwrap();
-        if info.ssi_signo == SIGCHLD as _ {
-            let mut status = 0;
-            if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) }).unwrap() == 0 {
-                continue;
-            }
+        match rx_event.recv().await.unwrap() {
+            Event::Signal(info) => {
+                if info.ssi_signo == SIGCHLD as _ {
+                    let mut status = 0;
+                    if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) })
+                        .unwrap()
+                        == 0
+                    {
+                        continue;
+                    }
 
-            if info.ssi_pid == pid {
-                process::exit(WEXITSTATUS(status));
+                    if info.ssi_pid == init_pid.unwrap() {
+                        process::exit(WEXITSTATUS(status));
+                    }
+                }
             }
+            Event::Command(cmd) => match cmd {
+                api::Command::StartService { cmd, args } => {
+                    let mut cmd = Command::new(cmd);
+                    cmd.args(args);
+                    old_sigmask.with_restored_sigmask(&mut cmd);
+                    let child = cmd.spawn().unwrap();
+                    init_pid.get_or_insert(child.id());
+                }
+            },
         }
     }
 }
