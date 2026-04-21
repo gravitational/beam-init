@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  - push
+  - pull_request
+
+permissions:
+  contents: read # can be removed once the repo is public
+
+env:
+  # Incremental compilation makes the initial build slower and generally saves
+  # less time than it costs to restore a cache when caching the target dir.
+  CARGO_BUILD_INCREMENTAL: false
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Rustfmt
+        run: cargo fmt --check
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check
+        run: cargo check
+
+      - name: Test
+        run: cargo test
