@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "beam-init"
 version = "0.1.0"
+dependencies = [
+ "docker_harness",
+]
+
+[[package]]
+name = "docker_harness"
+version = "0.1.0"

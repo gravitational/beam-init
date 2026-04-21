@@ -1,6 +1,12 @@
+[workspace]
+members = ["crates/docker_harness"]
+
 [package]
 name = "beam-init"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[dev-dependencies]
+docker_harness = { path = "crates/docker_harness" }
