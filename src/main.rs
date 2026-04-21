@@ -32,6 +32,9 @@ async fn main() {
     // Listen for SIGCHLD signals
     let old_sigmask = unsafe { signal_stream::init(&[SIGCHLD], tx_event.clone()) }.unwrap();
 
+    // Listen for API commands
+    api::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
+
     drop(tx_event);
     let mut init_pid = None;
     loop {
