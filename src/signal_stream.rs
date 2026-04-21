@@ -10,9 +10,11 @@ use std::process::Command;
 use std::{mem, ptr};
 
 use libc::{
-    SFD_CLOEXEC, SIG_BLOCK, SIG_SETMASK, sigaddset, sigemptyset, signalfd, signalfd_siginfo,
-    sigprocmask, sigset_t,
+    SFD_CLOEXEC, SFD_NONBLOCK, SIG_BLOCK, SIG_SETMASK, sigaddset, sigemptyset, signalfd,
+    signalfd_siginfo, sigprocmask, sigset_t,
 };
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 
 use crate::system::cerr;
 
@@ -24,7 +26,11 @@ pub unsafe fn init(signals: &[c_int]) -> io::Result<SignalStream> {
             cerr(sigaddset(signal_set.as_mut_ptr(), signum))?;
         }
 
-        let rx = OwnedFd::from_raw_fd(cerr(signalfd(-1, signal_set.as_ptr(), SFD_CLOEXEC))?);
+        let rx = OwnedFd::from_raw_fd(cerr(signalfd(
+            -1,
+            signal_set.as_ptr(),
+            SFD_CLOEXEC | SFD_NONBLOCK,
+        ))?);
         let mut old_sigmask: MaybeUninit<sigset_t> = MaybeUninit::uninit();
         cerr(sigprocmask(
             SIG_BLOCK,
@@ -33,21 +39,24 @@ pub unsafe fn init(signals: &[c_int]) -> io::Result<SignalStream> {
         ))?;
 
         Ok(SignalStream {
-            rx: File::from(rx),
+            rx: AsyncFd::new(File::from(rx))?,
             old_sigmask: old_sigmask.assume_init(),
         })
     }
 }
 
 pub struct SignalStream {
-    rx: File,
+    rx: AsyncFd<File>,
     old_sigmask: sigset_t,
 }
 
 impl SignalStream {
-    pub fn recv(&mut self) -> io::Result<signalfd_siginfo> {
+    // Restarting this function after a cancel is idempotent.
+    pub async fn recv(&mut self) -> io::Result<signalfd_siginfo> {
         let mut siginfo = [0; size_of::<signalfd_siginfo>()];
-        self.rx.read_exact(&mut siginfo)?;
+        self.rx
+            .async_io_mut(Interest::READABLE, |inner| inner.read_exact(&mut siginfo))
+            .await?;
         Ok(unsafe { mem::transmute::<[u8; _], signalfd_siginfo>(siginfo) })
     }
 

@@ -7,7 +7,8 @@ use crate::system::cerr;
 mod signal_stream;
 mod system;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     println!("Starting beam-init");
 
     let mut signals = unsafe { signal_stream::init(&[SIGCHLD]) }.unwrap();
@@ -20,7 +21,7 @@ fn main() {
     let pid = child.id();
 
     loop {
-        let info = signals.recv().unwrap();
+        let info = signals.recv().await.unwrap();
         if info.ssi_signo == SIGCHLD as _ {
             let mut status = 0;
             if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) }).unwrap() == 0 {
