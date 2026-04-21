@@ -1,0 +1,21 @@
+Demo
+----
+
+In one terminal:
+
+    docker build -f raw.Dockerfile -t no-init .
+    docker run --rm --name example no-init
+
+And in another terminal, to observe what happens:
+
+    docker exec -it example top -d 0.2
+
+And then, in a third terminal, as ofter as you like:
+
+    docker exec -it example python3 zombie.py
+
+Observe how this behaviour changes if either:
+* `init.Dockerfile` is used instead of `raw.Dockerfile`, or
+* `--init` is also passed to `docker run
+
+Also notice that with dumb-init / tini it responds well to ^C.
