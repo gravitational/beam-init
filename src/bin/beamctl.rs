@@ -1,6 +1,18 @@
-use std::env;
-
+use clap::Parser;
 use serde::{Deserialize, Serialize};
+
+#[derive(clap::Parser)]
+enum Cli {
+    Start(StartArgs),
+}
+
+#[derive(clap::Args)]
+struct StartArgs {
+    #[arg(index = 1)]
+    service: String,
+    #[arg(trailing_var_arg = true, index = 2, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+    command: Vec<String>,
+}
 
 // FIXME dedup
 #[derive(Serialize, Deserialize)]
@@ -10,25 +22,24 @@ pub struct CreateService {
 }
 
 fn main() {
+    let args = Cli::parse();
+
     let client = reqwest::blocking::ClientBuilder::new()
         .unix_socket("/run/beam-init")
         .build()
         .unwrap();
 
-    let mut args = env::args();
-    args.next();
-    assert_eq!(args.next().unwrap(), "start");
-    let service = args.next().unwrap();
-    args.next().unwrap(); // skip --
-    let cmd = args.next().unwrap();
-
-    let resp = client
-        .post(format!("http://beam-init/service/{service}"))
-        .json(&CreateService {
-            cmd,
-            args: args.collect(),
-        })
-        .send()
-        .unwrap();
-    assert!(resp.status().is_success(), "{resp:?}");
+    match args {
+        Cli::Start(start) => {
+            let resp = client
+                .post(format!("http://beam-init/service/{}", start.service))
+                .json(&CreateService {
+                    cmd: start.command[0].clone(),
+                    args: start.command[1..].to_owned(),
+                })
+                .send()
+                .unwrap();
+            assert!(resp.status().is_success(), "{resp:?}");
+        }
+    }
 }
