@@ -33,6 +33,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Register rust problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
       - name: Clippy
         run: cargo clippy --workspace
 
