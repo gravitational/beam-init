@@ -22,10 +22,13 @@ async fn main() {
 
     // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
-    let init_cmd = api::Command::StartService {
-        cmd: args.next().unwrap(),
-        args: args.collect(),
-    };
+    let init_cmd = api::Command::CreateService(
+        "bootstrap".to_owned(),
+        api::CreateService {
+            cmd: args.next().unwrap(),
+            args: args.collect(),
+        },
+    );
     // The channel is empty, so sending always succeeds.
     tx_event.try_send(Event::Command(init_cmd)).unwrap();
 
@@ -40,7 +43,7 @@ async fn main() {
     loop {
         match rx_event.recv().await.unwrap() {
             Event::Signal(info) => {
-                if info.ssi_signo == SIGCHLD as _ {
+                if info.ssi_signo == SIGCHLD as u32 {
                     let mut status = 0;
                     if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) })
                         .unwrap()
@@ -55,7 +58,8 @@ async fn main() {
                 }
             }
             Event::Command(cmd) => match cmd {
-                api::Command::StartService { cmd, args } => {
+                api::Command::CreateService(name, api::CreateService { cmd, args }) => {
+                    println!("Starting service {name}");
                     let mut cmd = Command::new(cmd);
                     cmd.args(args);
                     old_sigmask.with_restored_sigmask(&mut cmd);

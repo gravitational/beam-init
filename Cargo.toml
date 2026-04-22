@@ -7,7 +7,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
 libc = "0.2.185"
+serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
 
 [dev-dependencies]

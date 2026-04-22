@@ -1,12 +1,13 @@
+import httpx
 import os
 import psutil
-import socket
 import time
 
-api = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-api.connect("/run/beam-init")
+transport = httpx.HTTPTransport(uds = "/run/beam-init")
+client = httpx.Client(transport = transport)
 
-api.send(b"sleep 10\n")
+resp = client.post("http://beam-init/service/sleep", json = { "cmd":"sleep", "args":["10"] })
+assert resp.status_code == 200, "%s %s\n%s" %(resp.status_code, resp.headers, resp.text)
 
 # Wait a bit to ensure the service has started
 time.sleep(.1)

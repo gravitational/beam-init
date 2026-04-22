@@ -1,43 +1,49 @@
 use std::io;
-use std::path::Path;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use axum::extract::{Path, State};
+use axum::routing::post;
+use axum::{Json, Router};
+use serde::Deserialize;
+use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::Event;
 
 pub enum Command {
-    StartService { cmd: String, args: Vec<String> },
+    CreateService(String, CreateService),
 }
 
-pub fn bind_api_socket(path: impl AsRef<Path>, tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+#[derive(Deserialize)]
+pub struct CreateService {
+    pub cmd: String,
+    pub args: Vec<String>,
+}
+
+pub fn bind_api_socket(
+    path: impl AsRef<std::path::Path>,
+    tx_event: mpsc::Sender<Event>,
+) -> io::Result<()> {
     let socket = UnixListener::bind(path)?;
 
+    let router = Router::new()
+        .route("/service/{name}", post(create_service))
+        .with_state(tx_event);
+
     tokio::spawn(async move {
-        loop {
-            let stream = socket.accept().await.unwrap().0;
-            tokio::spawn(accept(stream, tx_event.clone()));
-        }
+        axum::serve(socket, router).await.unwrap();
     });
 
     Ok(())
 }
 
-async fn accept(stream: UnixStream, tx_event: mpsc::Sender<Event>) {
-    let mut lines = BufReader::new(stream).lines();
-
-    while let Some(line) = lines.next_line().await.unwrap() {
-        let mut args = line.split(" ").map(|arg| arg.to_owned());
-        if tx_event
-            .send(Event::Command(Command::StartService {
-                cmd: args.next().unwrap(),
-                args: args.collect(),
-            }))
-            .await
-            .is_err()
-        {
-            return; // Main event loop has finished
-        }
-    }
+async fn create_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    Json(service): Json<CreateService>,
+) -> Json<()> {
+    tx_events
+        .send(Event::Command(Command::CreateService(name, service)))
+        .await
+        .unwrap();
+    Json(())
 }
