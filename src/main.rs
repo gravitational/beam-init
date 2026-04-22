@@ -59,7 +59,11 @@ async fn main() {
                     let mut cmd = Command::new(cmd);
                     cmd.args(args);
                     old_sigmask.with_restored_sigmask(&mut cmd);
+
+                    // We respond to SIGCHLD to reap zombie processes
+                    #[expect(clippy::zombie_processes)]
                     let child = cmd.spawn().unwrap();
+
                     init_pid.get_or_insert(child.id());
                 }
             },
