@@ -51,13 +51,8 @@ pub unsafe fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Resu
             rx.async_io_mut(Interest::READABLE, |inner| inner.read_exact(&mut siginfo))
                 .await
                 .unwrap();
-            if tx_event
-                .send(Event::Signal(unsafe {
-                    mem::transmute::<[u8; _], signalfd_siginfo>(siginfo)
-                }))
-                .await
-                .is_err()
-            {
+            let siginfo = unsafe { mem::transmute::<[u8; _], signalfd_siginfo>(siginfo) };
+            if tx_event.send(Event::Signal(siginfo)).await.is_err() {
                 return; // Main event loop has finished
             }
         }
