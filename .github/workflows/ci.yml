@@ -11,6 +11,7 @@ env:
   # Incremental compilation makes the initial build slower and generally saves
   # less time than it costs to restore a cache when caching the target dir.
   CARGO_BUILD_INCREMENTAL: false
+  RUSTFLAGS: -Dwarnings
 
 jobs:
   rustfmt:
@@ -32,8 +33,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check
-        run: cargo check
+      - name: Register rust problem matcher
+        run: echo "::add-matcher::.github/problem-matchers/rust.json"
+
+      - name: Clippy
+        run: cargo clippy --workspace
 
       - name: Test
         run: cargo test
