@@ -18,3 +18,10 @@ fn init_reaps_zombies() {
         .run("./tests/init_reaps_zombies.py")
         .wait();
 }
+
+#[test]
+fn api_start_service() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_start_service.py")
+        .wait();
+}
