@@ -2,10 +2,10 @@ use std::process::{self, Command};
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use libc::{SIGCHLD, WEXITSTATUS, WNOHANG, pid_t, signalfd_siginfo, waitpid};
+use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
 use tokio::sync::oneshot;
 
-use crate::system::cerr;
+use crate::system::waitpid;
 
 mod api;
 mod signal_stream;
@@ -38,7 +38,7 @@ async fn main() {
         .unwrap();
 
     // Listen for SIGCHLD signals
-    let old_sigmask = unsafe { signal_stream::init(&[SIGCHLD], tx_event.clone()) }.unwrap();
+    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone()).unwrap();
 
     // Listen for API commands
     api::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
@@ -49,16 +49,14 @@ async fn main() {
         match rx_event.recv().await.unwrap() {
             Event::Signal(info) => {
                 if info.ssi_signo == SIGCHLD as u32 {
-                    let mut status = 0;
-                    if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) })
-                        .unwrap()
-                        == 0
-                    {
+                    let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).unwrap();
+                    if pid == 0 {
                         continue;
                     }
 
                     if info.ssi_pid == init_pid.unwrap() {
-                        process::exit(WEXITSTATUS(status));
+                        // FIXME exit with signal if child exited with signal
+                        process::exit(status.code().unwrap());
                     }
                 }
             }
