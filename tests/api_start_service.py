@@ -1,12 +1,9 @@
 import os
 import psutil
-import socket
+import subprocess
 import time
 
-api = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-api.connect("/run/beam-init")
-
-api.send(b"sleep 10\n")
+subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
 
 # Wait a bit to ensure the service has started
 time.sleep(.1)

@@ -1,6 +1,9 @@
 use std::process::{self, Command};
 
+use axum::Json;
+use axum::response::{IntoResponse, Response};
 use libc::{SIGCHLD, WEXITSTATUS, WNOHANG, pid_t, signalfd_siginfo, waitpid};
+use tokio::sync::oneshot;
 
 use crate::system::cerr;
 
@@ -9,7 +12,7 @@ mod signal_stream;
 mod system;
 
 enum Event {
-    Command(api::Command),
+    Command(api::Command, oneshot::Sender<Response>),
     Signal(signalfd_siginfo),
 }
 
@@ -22,12 +25,17 @@ async fn main() {
 
     // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
-    let init_cmd = api::Command::StartService {
-        cmd: args.next().unwrap(),
-        args: args.collect(),
+    let init_cmd = api::Command::CreateService {
+        name: "bootstrap".to_owned(),
+        service: api::CreateService {
+            cmd: args.next().unwrap(),
+            args: args.collect(),
+        },
     };
     // The channel is empty, so sending always succeeds.
-    tx_event.try_send(Event::Command(init_cmd)).unwrap();
+    tx_event
+        .try_send(Event::Command(init_cmd, oneshot::channel().0))
+        .unwrap();
 
     // Listen for SIGCHLD signals
     let old_sigmask = unsafe { signal_stream::init(&[SIGCHLD], tx_event.clone()) }.unwrap();
@@ -40,7 +48,7 @@ async fn main() {
     loop {
         match rx_event.recv().await.unwrap() {
             Event::Signal(info) => {
-                if info.ssi_signo == SIGCHLD as _ {
+                if info.ssi_signo == SIGCHLD as u32 {
                     let mut status = 0;
                     if cerr(unsafe { waitpid(info.ssi_pid as pid_t, &mut status, WNOHANG) })
                         .unwrap()
@@ -54,10 +62,11 @@ async fn main() {
                     }
                 }
             }
-            Event::Command(cmd) => match cmd {
-                api::Command::StartService { cmd, args } => {
-                    let mut cmd = Command::new(cmd);
-                    cmd.args(args);
+            Event::Command(cmd, tx) => match cmd {
+                api::Command::CreateService { name, service } => {
+                    println!("Starting service {name}");
+                    let mut cmd = Command::new(&service.cmd);
+                    cmd.args(&service.args);
                     old_sigmask.with_restored_sigmask(&mut cmd);
 
                     // We respond to SIGCHLD to reap zombie processes
@@ -65,6 +74,7 @@ async fn main() {
                     let child = cmd.spawn().unwrap();
 
                     init_pid.get_or_insert(child.id());
+                    let _ = tx.send(Json(service).into_response());
                 }
             },
         }
