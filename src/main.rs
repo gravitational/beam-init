@@ -38,7 +38,7 @@ async fn main() {
         .unwrap();
 
     // Listen for SIGCHLD signals
-    let old_sigmask = unsafe { signal_stream::init(&[SIGCHLD], tx_event.clone()) }.unwrap();
+    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone()).unwrap();
 
     // Listen for API commands
     api::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
