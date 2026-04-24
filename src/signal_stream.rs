@@ -29,7 +29,8 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
         signal_set.assume_init()
     };
 
-    // SAFETY: `signalfd`` is passed a valid signal set pointer and returns an owned fd.
+    // -1 indicates creating a new signalfd receiving the given signals.
+    // SAFETY: `signalfd` is passed a valid signal set pointer and returns an owned fd.\
     let rx = unsafe {
         OwnedFd::from_raw_fd(cerr(signalfd(-1, &signal_set, SFD_CLOEXEC | SFD_NONBLOCK))?)
     };
@@ -39,6 +40,7 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
     // a mutable pointer to an uninitialized signal set it will initialize.
     let old_sigmask = unsafe {
         let mut old_sigmask: MaybeUninit<sigset_t> = MaybeUninit::uninit();
+        // Block the given signals and get the old signals to restore for children.
         cerr(pthread_sigmask(
             SIG_BLOCK,
             &signal_set,
