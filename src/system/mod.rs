@@ -5,6 +5,8 @@ use std::process::ExitStatus;
 
 use libc::pid_t;
 
+pub mod signal_set;
+
 pub fn cerr(retval: c_int) -> io::Result<c_int> {
     if retval == -1 {
         return Err(io::Error::last_os_error());
