@@ -11,7 +11,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::Event;
 
 pub enum Command {
-    CreateService(String, CreateService),
+    CreateService {
+        name: String,
+        service: CreateService,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,7 +47,7 @@ async fn create_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::CreateService(name, service), tx))
+        .send(Event::Command(Command::CreateService { name, service }, tx))
         .await
         .unwrap();
     rx.await.unwrap()

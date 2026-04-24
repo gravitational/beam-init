@@ -25,13 +25,13 @@ async fn main() {
 
     // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
-    let init_cmd = api::Command::CreateService(
-        "bootstrap".to_owned(),
-        api::CreateService {
+    let init_cmd = api::Command::CreateService {
+        name: "bootstrap".to_owned(),
+        service: api::CreateService {
             cmd: args.next().unwrap(),
             args: args.collect(),
         },
-    );
+    };
     // The channel is empty, so sending always succeeds.
     tx_event
         .try_send(Event::Command(init_cmd, oneshot::channel().0))
@@ -63,10 +63,10 @@ async fn main() {
                 }
             }
             Event::Command(cmd, tx) => match cmd {
-                api::Command::CreateService(name, create_service) => {
+                api::Command::CreateService { name, service } => {
                     println!("Starting service {name}");
-                    let mut cmd = Command::new(&create_service.cmd);
-                    cmd.args(&create_service.args);
+                    let mut cmd = Command::new(&service.cmd);
+                    cmd.args(&service.args);
                     old_sigmask.with_restored_sigmask(&mut cmd);
 
                     // We respond to SIGCHLD to reap zombie processes
@@ -74,7 +74,7 @@ async fn main() {
                     let child = cmd.spawn().unwrap();
 
                     init_pid.get_or_insert(child.id());
-                    let _ = tx.send(Json(create_service).into_response());
+                    let _ = tx.send(Json(service).into_response());
                 }
             },
         }
