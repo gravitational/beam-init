@@ -32,8 +32,6 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
     };
     let mut rx = AsyncFd::new(File::from(rx))?;
 
-    // SAFETY: `pthread_sigmask` is passed a valid pointer to a signal set and
-    // a mutable pointer to an uninitialized signal set it will initialize.
     let old_sigmask = signal_set.block()?;
 
     tokio::spawn(async move {

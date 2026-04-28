@@ -22,7 +22,7 @@ impl SignalSet {
     pub(crate) fn empty() -> io::Result<Self> {
         let mut set = MaybeUninit::<Self>::zeroed();
 
-        // SAFETY: same as above
+        // SAFETY: we pass a valid mutable pointer to `sigemptyset`
         cerr(unsafe { libc::sigemptyset(set.as_mut_ptr().cast()) })?;
 
         // SAFETY: `sigemptyset` will have initialized `set`
@@ -45,7 +45,7 @@ impl SignalSet {
     fn sigprocmask(&self, how: c_int) -> io::Result<Self> {
         let mut original_set = MaybeUninit::<Self>::zeroed();
 
-        // SAFETY: same as above
+        // SAFETY: we pass a valid mutable pointer to `pthread_sigmask`
         cerr(unsafe { libc::pthread_sigmask(how, &self.raw, original_set.as_mut_ptr().cast()) })?;
 
         // SAFETY: `sigprocmask` will have initialized `set`
