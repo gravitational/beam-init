@@ -15,11 +15,14 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # rust-lang
+futures-core = "0.3.0"
 libc = "0.2.185"
 
 # tokio
-axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
+async-stream = "0.3.6"
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query"] }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
+tokio-stream = "0.1.18"
 
 [dev-dependencies]
 docker_harness = { path = "crates/docker_harness" }

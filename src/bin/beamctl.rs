@@ -67,6 +67,12 @@ enum Command {
         name: String,
     },
     List,
+    Logs {
+        #[arg(index = 1)]
+        name: String,
+        #[arg(long)]
+        follow: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -98,6 +104,18 @@ fn main() {
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
                 .unwrap();
+        }
+        Command::Logs { name, follow } => {
+            let mut resp = client
+                .client
+                .get(format!(
+                    "http://beam-init/service/{name}/logs?follow={follow}"
+                ))
+                .json(&name)
+                .send()
+                .unwrap();
+            resp.error_for_status_ref().unwrap();
+            std::io::copy(&mut resp, &mut std::io::stdout()).unwrap();
         }
         Command::Show { name } => {
             let service: beam_init::api::Service = client

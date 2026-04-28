@@ -46,3 +46,10 @@ fn api_list_services() {
         .run("./tests/api_list_services.py")
         .wait();
 }
+
+#[test]
+fn api_service_logs() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_service_logs.py")
+        .wait();
+}
