@@ -34,6 +34,10 @@ impl Client {
 #[derive(clap::Parser)]
 enum Cli {
     Start(StartArgs),
+    Stop {
+        #[arg(index = 1)]
+        name: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -66,6 +70,11 @@ fn main() {
                         args: start.command[1..].to_owned(),
                     },
                 )
+                .unwrap();
+        }
+        Cli::Stop { name } => {
+            let _resp: () = client
+                .post(&format!("/service/{}/stop", name), name)
                 .unwrap();
         }
     }

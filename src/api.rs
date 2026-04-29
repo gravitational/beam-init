@@ -15,6 +15,9 @@ pub enum Command {
         name: String,
         service: CreateService,
     },
+    StopService {
+        name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,6 +34,8 @@ pub fn bind_api_socket(
 
     let router = Router::new()
         .route("/service/{name}", post(create_service))
+        .route("/service/{name}/stop", post(stop_service))
+        // .route("/service/{name}/start", post(start_service))
         .with_state(tx_event);
 
     tokio::spawn(async move {
@@ -48,6 +53,18 @@ async fn create_service(
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command(Command::CreateService { name, service }, tx))
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+async fn stop_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(Command::StopService { name }, tx))
         .await
         .unwrap();
     rx.await.unwrap()

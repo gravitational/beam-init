@@ -1,4 +1,5 @@
 use std::process;
+use std::time::Duration;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
@@ -60,6 +61,17 @@ async fn main() {
                     );
                     service_manager.start_service(&name);
                     let _ = tx.send(Json(service).into_response());
+                }
+                api::Command::StopService { name } => {
+                    service_manager.terminate_service(&name);
+
+                    // FIXME: pick a more principled duration, and potentially perform the kill
+                    // below in an async way.
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+
+                    service_manager.kill_service(&name);
+
+                    let _ = tx.send(Json(()).into_response());
                 }
             },
         }

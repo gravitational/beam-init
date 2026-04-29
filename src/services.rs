@@ -5,7 +5,7 @@ use std::process::{Command, ExitStatus};
 use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
 
 use crate::signal_stream::OldSigmask;
-use crate::system::waitpid;
+use crate::system::{kill_process, terminate_process, waitpid};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -37,6 +37,9 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running { main_pid: u32 },
 
+    /// The service has been requested to terminate and is in the process of shutting down.
+    Stopping { main_pid: u32 },
+
     /// The service failed with the given exit status.
     Failed(ExitStatus),
 }
@@ -57,11 +60,16 @@ impl ServiceManager {
             }
 
             for service in self.services.values_mut() {
-                if let ServiceStatus::Running { main_pid } = service.state.status
-                    && main_pid == info.ssi_pid
-                {
-                    service.state.status = ServiceStatus::Failed(status);
-                    return;
+                match service.state.status {
+                    ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
+                        service.state.status = ServiceStatus::Failed(status);
+                        return;
+                    }
+                    ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
+                        service.state.status = ServiceStatus::Stopped;
+                        return;
+                    }
+                    _ => { /* ignore */ }
                 }
             }
         }
@@ -102,5 +110,49 @@ impl ServiceManager {
         service.state.status = ServiceStatus::Running {
             main_pid: child.id(),
         };
+    }
+
+    pub fn terminate_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
+                // all good
+            }
+            ServiceStatus::Running { main_pid } => {
+                service.state.status = ServiceStatus::Stopping { main_pid };
+                terminate_process(main_pid as pid_t).unwrap();
+            }
+            ServiceStatus::Failed(_) => {
+                // nothing to do
+            }
+        }
+    }
+
+    pub fn kill_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped => {
+                // all good
+            }
+            ServiceStatus::Running { .. } => {
+                panic!("service {name} was killed without being terminated")
+            }
+            ServiceStatus::Stopping { main_pid } => {
+                // `handle_signal` will update the status.
+                if let Err(e) = kill_process(main_pid as pid_t)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    // NotFound means that we tried to kill a process that already exited.
+                    todo!()
+                }
+            }
+            ServiceStatus::Failed(_) => {
+                // nothing to do
+            }
+        }
     }
 }
