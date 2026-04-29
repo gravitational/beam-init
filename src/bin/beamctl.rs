@@ -44,7 +44,7 @@ enum Cli {
 struct StartArgs {
     #[arg(index = 1)]
     service: String,
-    #[arg(trailing_var_arg = true, index = 2, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+    #[arg(trailing_var_arg = true, index = 2, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
     command: Vec<String>,
 }
 
