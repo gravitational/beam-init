@@ -20,3 +20,13 @@ pub fn waitpid(pid: pid_t, options: c_int) -> io::Result<(pid_t, ExitStatus)> {
     let pid = cerr(unsafe { libc::waitpid(pid, &mut status, options) })?;
     Ok((pid, ExitStatus::from_raw(status)))
 }
+
+pub fn terminate_process(pid: pid_t) -> io::Result<i32> {
+    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+    cerr(unsafe { libc::kill(pid, libc::SIGTERM) })
+}
+
+pub fn kill_process(pid: pid_t) -> io::Result<i32> {
+    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+    cerr(unsafe { libc::kill(pid, libc::SIGKILL) })
+}

@@ -25,3 +25,10 @@ fn api_start_service() {
         .run("./tests/api_start_service.py")
         .wait();
 }
+
+#[test]
+fn api_stop_service() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_stop_service.py")
+        .wait();
+}
