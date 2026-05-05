@@ -1,3 +1,4 @@
+use std::os::unix::process::ExitStatusExt;
 use std::process;
 use std::time::Duration;
 
@@ -79,8 +80,19 @@ async fn main() {
         if let Some(service) = service_manager.get_service("bootstrap")
             && let ServiceStatus::Failed(status) = service.state.status
         {
-            // FIXME exit with signal if child exited with signal
-            process::exit(status.code().unwrap());
+            if let Some(code) = status.code() {
+                process::exit(code);
+            } else if let Some(signal) = status.signal() {
+                // SAFETY: This is always safe
+                unsafe { libc::raise(signal) };
+            } else {
+                process::exit(1);
+            }
+        }
+        if let Some(service) = service_manager.get_service("bootstrap")
+            && let ServiceStatus::Stopped = service.state.status
+        {
+            process::exit(0);
         }
     }
 }

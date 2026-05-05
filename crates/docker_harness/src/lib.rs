@@ -69,9 +69,16 @@ impl Container {
                 "program failed with {}\nstdout:\n{}\n\nstderr:\n{}",
                 output.status,
                 String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&output.stderr),
             );
         }
+
+        println!(
+            "stdout:\n{}\n\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
         output
     }
 
@@ -82,7 +89,7 @@ impl Container {
                 "program exited with {}, expected exit code {exit_code}\nstdout:\n{}\n\nstderr:\n{}",
                 output.status,
                 String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&output.stderr),
             );
         }
         output
