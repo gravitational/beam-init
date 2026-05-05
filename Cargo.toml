@@ -8,15 +8,21 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
+http-body-util = { version = "0.1.3" }
+# reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149" }
 
 # rust-lang
 libc = "0.2.185"
 
 # tokio
-axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
-tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
+axum = { version = "0.8.9", default-features = false, features = ["tokio","http1","json"] }
+tokio = { version = "1.52.1", features = [  "io-util", "macros", "net", "rt", "sync"] }
+
+# Hyper
+hyper = { version = "1.9.0", default-features = false, features = ["client","http1"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 docker_harness = { path = "crates/docker_harness" }

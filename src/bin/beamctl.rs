@@ -1,36 +1,43 @@
 use clap::Parser;
+use http_body_util::BodyExt;
+use hyper::Request;
+use hyper::client::conn::http1;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use beam_init::api;
+use tokio::net::UnixStream;
 
-struct Client {
-    client: reqwest::blocking::Client,
-}
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Result<T> = std::result::Result<T, Error>;
 
-impl Client {
-    fn new_local() -> reqwest::Result<Self> {
-        let client = reqwest::blocking::ClientBuilder::new()
-            .unix_socket("/run/beam-init")
-            .build()?;
+async fn post<T: Serialize, U: DeserializeOwned>(path: &str, body: T) -> Result<U> {
+    debug_assert!(path.starts_with('/'));
+    let stream = UnixStream::connect("/run/beam-init").await?;
+    let io = hyper_util::rt::TokioIo::new(stream);
+    let (mut sender, conn) = http1::handshake(io).await?;
+    tokio::spawn(conn);
 
-        Ok(Client { client })
+    let body = serde_json::to_vec(&body)?;
+    let req = Request::builder()
+        .method(hyper::Method::POST)
+        .uri(path)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(http_body_util::Full::new(hyper::body::Bytes::from(body)))?;
+
+    let resp = sender.send_request(req).await?;
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await?.to_bytes();
+
+    if !status.is_success() {
+        return Err(std::io::Error::other(format!(
+            "POST {path} failed with {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))
+        .into());
     }
 
-    fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> reqwest::Result<U> {
-        debug_assert!(path.starts_with('/'));
-
-        let resp = self
-            .client
-            .post(format!("http://beam-init{path}"))
-            .json(&body)
-            .send()?;
-
-        // FIXME add response body to error
-        resp.error_for_status_ref()?;
-
-        resp.json()
-    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 #[derive(clap::Parser)]
@@ -50,26 +57,25 @@ struct StartArgs {
     command: Vec<String>,
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let args = Cli::parse();
-
-    let client = Client::new_local().unwrap();
 
     match args {
         Cli::Start(start) => {
-            let _resp: api::CreateService = client
-                .post(
-                    &format!("/service/{}", start.service),
-                    api::CreateService {
-                        cmd: start.command[0].clone(),
-                        args: start.command[1..].to_owned(),
-                    },
-                )
-                .unwrap();
+            let _resp: api::CreateService = post(
+                &format!("/service/{}", start.service),
+                api::CreateService {
+                    cmd: start.command[0].clone(),
+                    args: start.command[1..].to_owned(),
+                },
+            )
+            .await
+            .unwrap();
         }
         Cli::Stop { name } => {
-            let _resp: () = client
-                .post(&format!("/service/{}/stop", name), name)
+            let _resp: () = post(&format!("/service/{}/stop", name), name)
+                .await
                 .unwrap();
         }
     }
