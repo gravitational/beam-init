@@ -111,7 +111,6 @@ fn main() {
                 .get(format!(
                     "http://beam-init/service/{name}/logs?follow={follow}"
                 ))
-                .json(&name)
                 .send()
                 .unwrap();
             resp.error_for_status_ref().unwrap();
