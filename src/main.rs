@@ -8,13 +8,13 @@ use tokio::sync::oneshot;
 
 use crate::services::{ServiceManager, ServiceStatus};
 
-mod api;
+mod api_impl;
 mod services;
 mod signal_stream;
 mod system;
 
 enum Event {
-    Command(api::Command, oneshot::Sender<Response>),
+    Command(api_impl::Command, oneshot::Sender<Response>),
     Signal(signalfd_siginfo),
 }
 
@@ -27,9 +27,9 @@ async fn main() {
 
     // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
-    let init_cmd = api::Command::CreateService {
+    let init_cmd = api_impl::Command::CreateService {
         name: "bootstrap".to_owned(),
-        service: api::CreateService {
+        service: api_impl::CreateService {
             cmd: args.next().unwrap(),
             args: args.collect(),
         },
@@ -43,7 +43,7 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone()).unwrap();
 
     // Listen for API commands
-    api::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
+    api_impl::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
 
     drop(tx_event);
     let mut service_manager = ServiceManager::new(old_sigmask);
@@ -51,7 +51,7 @@ async fn main() {
         match rx_event.recv().await.unwrap() {
             Event::Signal(info) => service_manager.handle_signal(info),
             Event::Command(cmd, tx) => match cmd {
-                api::Command::CreateService { name, service } => {
+                api_impl::Command::CreateService { name, service } => {
                     service_manager.create_service(
                         name.clone(),
                         services::ServiceConfig {
@@ -62,7 +62,7 @@ async fn main() {
                     service_manager.start_service(&name);
                     let _ = tx.send(Json(service).into_response());
                 }
-                api::Command::StopService { name } => {
+                api_impl::Command::StopService { name } => {
                     service_manager.terminate_service(&name);
 
                     // FIXME: pick a more principled duration, and potentially perform the kill
