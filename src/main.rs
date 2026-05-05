@@ -75,6 +75,13 @@ async fn main() {
 
                     let _ = tx.send(Json(()).into_response());
                 }
+                api_impl::Command::ShowService { name } => {
+                    // FIXME: error handling
+                    let service = service_manager.get_service(&name).unwrap();
+
+                    let api_service = crate::api::Service::from(service);
+                    let _ = tx.send(Json(api_service).into_response());
+                }
             },
         }
 

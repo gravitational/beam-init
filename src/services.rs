@@ -30,6 +30,7 @@ pub struct ServiceState {
     pub status: ServiceStatus,
 }
 
+#[derive(Clone)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
