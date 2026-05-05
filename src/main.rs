@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::os::unix::process::ExitStatusExt;
 use std::process;
 use std::time::Duration;
@@ -81,6 +82,14 @@ async fn main() {
 
                     let api_service = crate::api::Service::from(service);
                     let _ = tx.send(Json(api_service).into_response());
+                }
+                api_impl::Command::ListServices => {
+                    let services: BTreeMap<String, crate::api::ServiceStatus> = service_manager
+                        .list_services()
+                        .map(|(name, status)| (name.to_string(), status.into()))
+                        .collect();
+
+                    let _ = tx.send(Json(services).into_response());
                 }
             },
         }

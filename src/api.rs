@@ -36,6 +36,27 @@ pub enum ServiceStatus {
     ),
 }
 
+impl std::fmt::Display for ServiceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServiceStatus::Stopped => f.write_str("stopped"),
+            ServiceStatus::Running { main_pid } => {
+                write!(f, "running PID={main_pid}")
+            }
+            ServiceStatus::Stopping { main_pid } => {
+                write!(f, "stopping PID={main_pid}")
+            }
+            ServiceStatus::Failed(exit_status) => {
+                if exit_status.success() {
+                    write!(f, "exited normally")
+                } else {
+                    write!(f, "failed with {exit_status}")
+                }
+            }
+        }
+    }
+}
+
 /// Functions to serialize and deserialize ExitStatus
 mod exit_status_serde {
     use serde::{Deserialize, Deserializer, Serializer};

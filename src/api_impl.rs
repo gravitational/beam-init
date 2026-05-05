@@ -2,7 +2,7 @@ use std::io;
 
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +22,7 @@ pub enum Command {
     ShowService {
         name: String,
     },
+    ListServices,
 }
 
 pub fn bind_api_socket(
@@ -35,6 +36,7 @@ pub fn bind_api_socket(
         .route("/service/{name}/stop", post(stop_service))
         // .route("/service/{name}/start", post(start_service))
         .route("/service/{name}/show", post(show_service))
+        .route("/services", get(list_services))
         .with_state(tx_event);
 
     tokio::spawn(async move {
@@ -81,8 +83,17 @@ async fn show_service(
     rx.await.unwrap()
 }
 
-impl From<crate::services::Service> for crate::api::Service {
-    fn from(value: crate::services::Service) -> Self {
+async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(Command::ListServices, tx))
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+impl From<&crate::services::Service> for crate::api::Service {
+    fn from(value: &crate::services::Service) -> Self {
         Self {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),

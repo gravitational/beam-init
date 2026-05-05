@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use clap::Parser;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -15,6 +17,17 @@ impl Client {
             .build()?;
 
         Ok(Client { client })
+    }
+
+    fn get<U: DeserializeOwned>(&self, path: &str) -> reqwest::Result<U> {
+        debug_assert!(path.starts_with('/'));
+
+        let resp = self.client.get(format!("http://beam-init{path}")).send()?;
+
+        // FIXME add response body to error
+        resp.error_for_status_ref()?;
+
+        resp.json()
     }
 
     fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> reqwest::Result<U> {
@@ -44,6 +57,7 @@ enum Cli {
         #[arg(index = 1)]
         name: String,
     },
+    List,
 }
 
 #[derive(clap::Args)]
@@ -81,24 +95,19 @@ fn main() {
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap();
 
-            let status = match service.status {
-                beam_init::api::ServiceStatus::Stopped => "stopped".to_string(),
-                beam_init::api::ServiceStatus::Running { main_pid } => {
-                    format!("running PID={main_pid}")
-                }
-                beam_init::api::ServiceStatus::Stopping { main_pid } => {
-                    format!("stopping PID={main_pid}")
-                }
-                beam_init::api::ServiceStatus::Failed(exit_status) => {
-                    format!("failed with {exit_status}")
-                }
-            };
-
             // Handle formatting if there are no arguments.
             let mut args = service.args;
             args.insert(0, service.cmd);
 
-            println!("{name} ({status}): {}", args.join(" "));
+            println!("{name} ({}): {}", service.status, args.join(" "));
+        }
+        Cli::List => {
+            let services: BTreeMap<String, beam_init::api::ServiceStatus> =
+                client.get("/services").unwrap();
+
+            for (name, status) in services {
+                println!("{name} ({status})")
+            }
         }
     }
 }

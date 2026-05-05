@@ -2,11 +2,12 @@ import os
 import psutil
 import subprocess
 import time
+import re
 
 subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
 time.sleep(.1) # Wait a bit to ensure the service has started
 output = subprocess.check_output(["beamctl", "show", "sleep"])
-assert output == b"sleep (running PID=10): sleep 10\n", output
+assert re.fullmatch(rb"sleep \(running PID=\d+\): sleep 10\n", output), output
 
 subprocess.check_call(["beamctl", "stop", "sleep"])
 output = subprocess.check_output(["beamctl", "show", "sleep"])
