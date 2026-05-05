@@ -8,7 +8,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Event;
-use beam_init::api::CreateService;
+use beam_init::api::{CreateService, ServiceStatus};
 
 pub enum Command {
     CreateService {
