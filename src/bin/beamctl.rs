@@ -1,6 +1,8 @@
 use clap::Parser;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+
+use beam_init::api;
 
 struct Client {
     client: reqwest::blocking::Client,
@@ -48,13 +50,6 @@ struct StartArgs {
     command: Vec<String>,
 }
 
-// FIXME dedup
-#[derive(Serialize, Deserialize)]
-pub struct CreateService {
-    pub cmd: String,
-    pub args: Vec<String>,
-}
-
 fn main() {
     let args = Cli::parse();
 
@@ -62,10 +57,10 @@ fn main() {
 
     match args {
         Cli::Start(start) => {
-            let _resp: CreateService = client
+            let _resp: api::CreateService = client
                 .post(
                     &format!("/service/{}", start.service),
-                    CreateService {
+                    api::CreateService {
                         cmd: start.command[0].clone(),
                         args: start.command[1..].to_owned(),
                     },

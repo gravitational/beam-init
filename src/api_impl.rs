@@ -4,11 +4,11 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::post;
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Event;
+use beam_init::api::CreateService;
 
 pub enum Command {
     CreateService {
@@ -18,12 +18,6 @@ pub enum Command {
     StopService {
         name: String,
     },
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CreateService {
-    pub cmd: String,
-    pub args: Vec<String>,
 }
 
 pub fn bind_api_socket(

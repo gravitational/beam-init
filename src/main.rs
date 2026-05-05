@@ -7,6 +7,7 @@ use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
 use crate::services::{ServiceManager, ServiceStatus};
+use beam_init::api;
 
 mod api_impl;
 mod services;
@@ -29,7 +30,7 @@ async fn main() {
     let mut args = std::env::args().skip(1);
     let init_cmd = api_impl::Command::CreateService {
         name: "bootstrap".to_owned(),
-        service: api_impl::CreateService {
+        service: api::CreateService {
             cmd: args.next().unwrap(),
             args: args.collect(),
         },
