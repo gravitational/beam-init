@@ -11,6 +11,7 @@ use tokio::task::AbortHandle;
 
 const LOG_COUNT: usize = 100;
 
+/// A log store with support for multiple async readers and a single pipe writer.
 #[derive(Debug)]
 pub struct Logs {
     entries: Arc<Mutex<RingBuffer>>,
@@ -92,6 +93,19 @@ impl Drop for Logs {
     }
 }
 
+/// A sync ring buffer for log entries.
+///
+/// This ring buffer emulates a list with the first `next_idx - entries.len()`
+/// entries being evicted from memory. This way readers can refer to entries
+/// using a stable index.
+///
+/// ```plain
+/// xxxx <---->
+/// ^^^^ ^^^^^^ ^
+/// |    |      next_idx
+/// |    entries in the VecDeque
+/// first `next_idx - entries.len()` entries are gone
+/// ```
 #[derive(Debug, Default)]
 struct RingBuffer {
     entries: VecDeque<String>,
@@ -112,12 +126,24 @@ impl RingBuffer {
 
         // FIXME handle wrap
         if reader.0 >= self.next_idx {
+            // xxxx <---->
+            //             ^
+            //             next_idx
+            //             reader
             debug_assert_eq!(reader.0, self.next_idx);
             RingBufferEntry::Empty
         } else if reader.0 < first_idx {
+            // xxxx <---->
+            //   ^         ^
+            //   |         next_idx
+            //   reader
             reader.0 = first_idx;
             RingBufferEntry::Lost
         } else {
+            // xxxx <---->
+            //         ^   ^
+            //         |   next_idx
+            //         reader
             let line = self.entries[usize::try_from(reader.0 - first_idx).unwrap()].clone();
             reader.0 += 1;
             RingBufferEntry::Line(line)
