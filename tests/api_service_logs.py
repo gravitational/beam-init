@@ -3,8 +3,13 @@ import psutil
 import subprocess
 import time
 
-subprocess.check_call(["beamctl", "start", "foo", "--", "echo", "bar"])
-output = subprocess.check_output(["beamctl", "logs", "foo"])
+subprocess.check_call(["beamctl", "start", "captures_stdout", "--", "echo", "bar"])
+output = subprocess.check_output(["beamctl", "logs", "captures_stdout"])
+print(output)
+assert output == b"bar\n[log stream closed]\n"
+
+subprocess.check_call(["beamctl", "start", "captures_stderr", "--", "sh", "-c", "echo bar >&2"])
+output = subprocess.check_output(["beamctl", "logs", "captures_stderr"])
 print(output)
 assert output == b"bar\n[log stream closed]\n"
 
