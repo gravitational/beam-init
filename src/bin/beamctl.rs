@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use clap::Parser;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -15,6 +17,17 @@ impl Client {
             .build()?;
 
         Ok(Client { client })
+    }
+
+    fn get<U: DeserializeOwned>(&self, path: &str) -> reqwest::Result<U> {
+        debug_assert!(path.starts_with('/'));
+
+        let resp = self.client.get(format!("http://beam-init{path}")).send()?;
+
+        // FIXME add response body to error
+        resp.error_for_status_ref()?;
+
+        resp.json()
     }
 
     fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> reqwest::Result<U> {
@@ -40,6 +53,11 @@ enum Cli {
         #[arg(index = 1)]
         name: String,
     },
+    Show {
+        #[arg(index = 1)]
+        name: String,
+    },
+    List,
 }
 
 #[derive(clap::Args)]
@@ -71,6 +89,25 @@ fn main() {
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
                 .unwrap();
+        }
+        Cli::Show { name } => {
+            let service: beam_init::api::Service = client
+                .post(&format!("/service/{}/show", name), &name)
+                .unwrap();
+
+            // Handle formatting if there are no arguments.
+            let mut args = service.args;
+            args.insert(0, service.cmd);
+
+            println!("{name} ({}): {}", service.status, args.join(" "));
+        }
+        Cli::List => {
+            let services: BTreeMap<String, beam_init::api::ServiceStatus> =
+                client.get("/services").unwrap();
+
+            for (name, status) in services {
+                println!("{name} ({status})")
+            }
         }
     }
 }

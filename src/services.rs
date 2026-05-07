@@ -30,6 +30,7 @@ pub struct ServiceState {
     pub status: ServiceStatus,
 }
 
+#[derive(Clone, Copy)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
@@ -154,5 +155,11 @@ impl ServiceManager {
                 // nothing to do
             }
         }
+    }
+
+    pub fn list_services(&self) -> impl Iterator<Item = (&String, ServiceStatus)> {
+        self.services
+            .iter()
+            .map(|(name, service)| (name, service.state.status))
     }
 }
