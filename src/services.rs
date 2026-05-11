@@ -9,7 +9,9 @@ use tokio_stream::StreamExt;
 
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
-use crate::system::{kill_process, terminate_process, waitpid};
+use crate::system::{
+    continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
+};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -42,6 +44,9 @@ pub enum ServiceStatus {
 
     /// The service is currently running.
     Running { main_pid: u32 },
+
+    /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
+    Frozen { main_pid: u32 },
 
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
@@ -148,6 +153,48 @@ impl ServiceManager {
         };
     }
 
+    pub fn freeze_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
+                // ??
+            }
+            ServiceStatus::Frozen { .. } => {
+                // already frozen
+            }
+            ServiceStatus::Running { main_pid } => {
+                stop_process_group(main_pid as pid_t).unwrap();
+                service.state.status = ServiceStatus::Frozen { main_pid };
+            }
+            ServiceStatus::Failed(_) => {
+                // ??
+            }
+        }
+    }
+
+    pub fn thaw_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
+                // ??
+            }
+            ServiceStatus::Running { .. } => {
+                // already running
+            }
+            ServiceStatus::Frozen { main_pid } => {
+                continue_process_group(main_pid as pid_t).unwrap();
+                service.state.status = ServiceStatus::Running { main_pid };
+            }
+            ServiceStatus::Failed(_) => {
+                // ??
+            }
+        }
+    }
+
     pub fn terminate_service(&mut self, name: &str) {
         // FIXME error handling
         let service = self.services.get_mut(name).unwrap();
@@ -156,7 +203,7 @@ impl ServiceManager {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } => {
+            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 terminate_process(main_pid as pid_t).unwrap();
             }
@@ -174,7 +221,7 @@ impl ServiceManager {
             ServiceStatus::Stopped => {
                 // all good
             }
-            ServiceStatus::Running { .. } => {
+            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {

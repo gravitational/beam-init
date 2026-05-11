@@ -30,3 +30,17 @@ pub fn kill_process(pid: pid_t) -> io::Result<i32> {
     // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
     cerr(unsafe { libc::kill(pid, libc::SIGKILL) })
 }
+
+pub fn stop_process_group(pid: pid_t) -> io::Result<i32> {
+    debug_assert_eq!(pid, cerr(unsafe { libc::getpgid(pid) }).unwrap());
+    // `-pid` targets the whole process group.
+    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+    cerr(unsafe { libc::kill(-pid, libc::SIGSTOP) })
+}
+
+pub fn continue_process_group(pid: pid_t) -> io::Result<i32> {
+    debug_assert_eq!(pid, cerr(unsafe { libc::getpgid(pid) }).unwrap());
+    // `-pid` targets the whole process group.
+    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+    cerr(unsafe { libc::kill(-pid, libc::SIGCONT) })
+}

@@ -20,6 +20,12 @@ pub enum Command {
     StopService {
         name: String,
     },
+    FreezeService {
+        name: String,
+    },
+    ThawService {
+        name: String,
+    },
     ShowService {
         name: String,
     },
@@ -40,6 +46,8 @@ pub fn bind_api_socket(
         .route("/services", get(list_services))
         .route("/service/{name}", post(create_service))
         .route("/service/{name}/stop", post(stop_service))
+        .route("/service/{name}/freeze", post(freeze_service))
+        .route("/service/{name}/thaw", post(thaw_service))
         // .route("/service/{name}/start", post(start_service))
         .route("/service/{name}/show", post(show_service))
         .route("/service/{name}/logs", get(service_logs))
@@ -72,6 +80,30 @@ async fn stop_service(
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command(Command::StopService { name }, tx))
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+async fn freeze_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(Command::FreezeService { name }, tx))
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+async fn thaw_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(Command::ThawService { name }, tx))
         .await
         .unwrap();
     rx.await.unwrap()
@@ -139,6 +171,9 @@ impl From<crate::services::ServiceStatus> for crate::api::ServiceStatus {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
             crate::services::ServiceStatus::Running { main_pid } => {
                 ServiceStatus::Running { main_pid }
+            }
+            crate::services::ServiceStatus::Frozen { main_pid } => {
+                ServiceStatus::Frozen { main_pid }
             }
             crate::services::ServiceStatus::Stopping { main_pid } => {
                 ServiceStatus::Stopping { main_pid }

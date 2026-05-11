@@ -79,6 +79,16 @@ async fn main() {
 
                     let _ = tx.send(Json(()).into_response());
                 }
+                api_impl::Command::FreezeService { name } => {
+                    service_manager.freeze_service(&name);
+
+                    let _ = tx.send(Json(()).into_response());
+                }
+                api_impl::Command::ThawService { name } => {
+                    service_manager.thaw_service(&name);
+
+                    let _ = tx.send(Json(()).into_response());
+                }
                 api_impl::Command::ShowService { name } => {
                     // FIXME: error handling
                     let service = service_manager.get_service(&name).unwrap();

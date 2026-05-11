@@ -62,6 +62,14 @@ enum Command {
         #[arg(index = 1)]
         name: String,
     },
+    Freeze {
+        #[arg(index = 1)]
+        name: String,
+    },
+    Thaw {
+        #[arg(index = 1)]
+        name: String,
+    },
     Show {
         #[arg(index = 1)]
         name: String,
@@ -103,6 +111,16 @@ fn main() {
         Command::Stop { name } => {
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
+                .unwrap();
+        }
+        Command::Freeze { name } => {
+            let _resp: () = client
+                .post(&format!("/service/{}/freeze", name), name)
+                .unwrap();
+        }
+        Command::Thaw { name } => {
+            let _resp: () = client
+                .post(&format!("/service/{}/thaw", name), name)
                 .unwrap();
         }
         Command::Logs { name, follow } => {
