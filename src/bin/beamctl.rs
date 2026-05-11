@@ -47,7 +47,16 @@ impl Client {
 }
 
 #[derive(clap::Parser)]
-enum Cli {
+struct Cli {
+    #[arg(long, global = true)]
+    json: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
     Start(StartArgs),
     Stop {
         #[arg(index = 1)]
@@ -73,8 +82,8 @@ fn main() {
 
     let client = Client::new_local().unwrap();
 
-    match args {
-        Cli::Start(start) => {
+    match args.command {
+        Command::Start(start) => {
             let _resp: api::CreateService = client
                 .post(
                     &format!("/service/{}", start.service),
@@ -85,28 +94,38 @@ fn main() {
                 )
                 .unwrap();
         }
-        Cli::Stop { name } => {
+        Command::Stop { name } => {
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
                 .unwrap();
         }
-        Cli::Show { name } => {
+        Command::Show { name } => {
             let service: beam_init::api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap();
 
-            // Handle formatting if there are no arguments.
-            let mut args = service.args;
-            args.insert(0, service.cmd);
+            if args.json {
+                serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
+                println!();
+            } else {
+                // Handle formatting if there are no arguments.
+                let mut args = service.args;
+                args.insert(0, service.cmd);
 
-            println!("{name} ({}): {}", service.status, args.join(" "));
+                println!("{name} ({}): {}", service.status, args.join(" "));
+            }
         }
-        Cli::List => {
+        Command::List => {
             let services: BTreeMap<String, beam_init::api::ServiceStatus> =
                 client.get("/services").unwrap();
 
-            for (name, status) in services {
-                println!("{name} ({status})")
+            if args.json {
+                serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
+                println!();
+            } else {
+                for (name, status) in services {
+                    println!("{name} ({status})")
+                }
             }
         }
     }
