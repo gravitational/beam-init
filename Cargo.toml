@@ -9,7 +9,10 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
+
+# serde
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 
 # rust-lang
 libc = "0.2.185"
