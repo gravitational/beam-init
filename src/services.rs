@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::os::unix::process::CommandExt;
 use std::pin::pin;
 use std::process::{Command, ExitStatus};
 
@@ -10,7 +11,7 @@ use tokio_stream::StreamExt;
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::{
-    continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
+    cerr, continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
 };
 
 pub struct ServiceManager {
@@ -143,6 +144,20 @@ impl ServiceManager {
         cmd.stdout(log_writer.try_clone().unwrap())
             .stderr(log_writer);
         self.old_sigmask.with_restored_sigmask(&mut cmd);
+
+        // SAFETY: the setpgid function is async-signal-safe, see
+        // https://www.man7.org/linux/man-pages/man7/signal-safety.7.html
+        unsafe {
+            cmd.pre_exec(move || {
+                // Create a new process group led by this process.
+                // Uses the current PID as the PGID of the new process group.
+                //
+                // SAFETY: setpgid is safe to call.
+                cerr(libc::setpgid(0, 0))?;
+
+                Ok(())
+            });
+        }
 
         // We respond to SIGCHLD to reap zombie processes
         #[expect(clippy::zombie_processes)]
