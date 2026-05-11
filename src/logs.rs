@@ -9,6 +9,7 @@ use tokio::net::unix::pipe;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::AbortHandle;
 
+/// The number of log entries kept in the log buffer.
 const LOG_COUNT: usize = 100;
 
 /// A log store with support for multiple async readers and a single pipe writer.
@@ -33,6 +34,10 @@ impl Logs {
         let entries = Arc::clone(&self.entries);
         let next_entry = Arc::clone(&self.next_entry);
 
+        // Ensure we only have a single writer. There should be a single log
+        // pipe per service. If a service passes the log pipe to another process
+        // before it is stopped we would otherwise get logs from an old instance
+        // of the service interleaved with a new instance if we start it again.
         if let Some(handle) = self.abort_handle.take() {
             handle.abort();
         }
