@@ -1,9 +1,13 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::pin::pin;
 use std::process::{Command, ExitStatus};
 
+use futures_core::Stream;
 use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
+use tokio_stream::StreamExt;
 
+use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::{kill_process, terminate_process, waitpid};
 
@@ -28,6 +32,7 @@ pub struct ServiceConfig {
 /// The runtime state of a service.
 pub struct ServiceState {
     pub status: ServiceStatus,
+    pub logs: Logs,
 }
 
 #[derive(Clone, Copy)]
@@ -76,13 +81,39 @@ impl ServiceManager {
         }
     }
 
+    pub async fn copy_logs(&self, name: &str) -> Vec<String> {
+        // FIXME error handling
+        let service = self.services.get(name).unwrap();
+
+        service.state.logs.copy_logs().await
+    }
+
+    pub fn log_reader(&self, name: &str) -> impl Stream<Item = String> + 'static {
+        // FIXME error handling
+        let service = self.services.get(name).unwrap();
+
+        service.state.logs.new_reader()
+    }
+
     pub fn create_service(&mut self, name: String, config: ServiceConfig) {
+        let logs = Logs::new();
+
+        let reader = logs.new_reader();
+        let name2 = name.clone();
+        tokio::spawn(async move {
+            let mut reader = pin!(reader);
+            while let Some(line) = reader.next().await {
+                println!("[{name2}] {line}");
+            }
+        });
+
         match self.services.entry(name) {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Service {
                     config,
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
+                        logs,
                     },
                 });
             }
@@ -100,8 +131,12 @@ impl ServiceManager {
         let service = self.services.get_mut(name).unwrap();
 
         println!("Starting service {name}");
+
+        let log_writer = service.state.logs.new_writer().unwrap();
         let mut cmd = Command::new(&service.config.cmd);
         cmd.args(&service.config.args);
+        cmd.stdout(log_writer.try_clone().unwrap())
+            .stderr(log_writer);
         self.old_sigmask.with_restored_sigmask(&mut cmd);
 
         // We respond to SIGCHLD to reap zombie processes

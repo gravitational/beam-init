@@ -1,9 +1,10 @@
 use std::io;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 
@@ -23,6 +24,10 @@ pub enum Command {
         name: String,
     },
     ListServices,
+    ServiceLogs {
+        name: String,
+        follow: bool,
+    },
 }
 
 pub fn bind_api_socket(
@@ -32,11 +37,12 @@ pub fn bind_api_socket(
     let socket = UnixListener::bind(path)?;
 
     let router = Router::new()
+        .route("/services", get(list_services))
         .route("/service/{name}", post(create_service))
         .route("/service/{name}/stop", post(stop_service))
         // .route("/service/{name}/start", post(start_service))
         .route("/service/{name}/show", post(show_service))
-        .route("/services", get(list_services))
+        .route("/service/{name}/logs", get(service_logs))
         .with_state(tx_event);
 
     tokio::spawn(async move {
@@ -87,6 +93,31 @@ async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command(Command::ListServices, tx))
+        .await
+        .unwrap();
+    rx.await.unwrap()
+}
+
+#[derive(Deserialize)]
+struct ServiceLogsQuery {
+    #[serde(default)]
+    follow: bool,
+}
+
+async fn service_logs(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    query: Query<ServiceLogsQuery>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(
+            Command::ServiceLogs {
+                name,
+                follow: query.follow,
+            },
+            tx,
+        ))
         .await
         .unwrap();
     rx.await.unwrap()

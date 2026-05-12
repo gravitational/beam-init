@@ -4,14 +4,17 @@ use std::process;
 use std::time::Duration;
 
 use axum::Json;
+use axum::body::{Body, Bytes};
 use axum::response::{IntoResponse, Response};
 use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
+use tokio_stream::StreamExt;
 
 use crate::services::{ServiceManager, ServiceStatus};
 use beam_init::api;
 
 mod api_impl;
+mod logs;
 mod services;
 mod signal_stream;
 mod system;
@@ -90,6 +93,31 @@ async fn main() {
                         .collect();
 
                     let _ = tx.send(Json(services).into_response());
+                }
+                api_impl::Command::ServiceLogs { name, follow } => {
+                    if follow {
+                        let stream = service_manager.log_reader(&name);
+                        let _ = tx.send(
+                            Response::builder()
+                                .header(axum::http::header::CONTENT_TYPE, "text/plain")
+                                .body(Body::from_stream(stream.map(|mut line| {
+                                    line.push('\n');
+                                    Ok::<_, String>(Bytes::copy_from_slice(line.as_bytes()))
+                                })))
+                                .unwrap(),
+                        );
+                    } else {
+                        let logs = service_manager.copy_logs(&name).await;
+                        let _ = tx.send(
+                            logs.into_iter()
+                                .map(|mut line| {
+                                    line.push('\n');
+                                    line
+                                })
+                                .collect::<String>()
+                                .into_response(),
+                        );
+                    }
                 }
             },
         }
