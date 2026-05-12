@@ -33,28 +33,37 @@ async fn main() {
 
     // Queue a fake API command to start the first service
     let mut args = std::env::args().skip(1);
+    let cmd = args.next().unwrap_or_else(|| {
+        eprintln!("Usage: beam-init <COMMAND>...");
+        process::exit(2);
+    });
     let init_cmd = api_impl::Command::CreateService {
         name: "bootstrap".to_owned(),
         service: api::CreateService {
-            cmd: args.next().unwrap(),
+            cmd,
             args: args.collect(),
         },
     };
     // The channel is empty, so sending always succeeds.
     tx_event
         .try_send(Event::Command(init_cmd, oneshot::channel().0))
-        .unwrap();
+        .expect("channel should be empty");
 
     // Listen for SIGCHLD signals
-    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone()).unwrap();
+    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
+        .expect("failed to initialize the signal stream");
 
     // Listen for API commands
-    api_impl::bind_api_socket("/run/beam-init", tx_event.clone()).unwrap();
+    api_impl::bind_api_socket("/run/beam-init", tx_event)
+        .expect("failed to bind /run/beam-init socket");
 
-    drop(tx_event);
     let mut service_manager = ServiceManager::new(old_sigmask);
     loop {
-        match rx_event.recv().await.unwrap() {
+        match rx_event
+            .recv()
+            .await
+            .expect("signal stream and api socket tasks failed")
+        {
             Event::Signal(info) => service_manager.handle_signal(info),
             Event::Command(cmd, tx) => match cmd {
                 api_impl::Command::CreateService { name, service } => {
@@ -114,7 +123,7 @@ async fn main() {
                                     line.push('\n');
                                     Ok::<_, String>(Bytes::copy_from_slice(line.as_bytes()))
                                 })))
-                                .unwrap(),
+                                .expect("valid headers should be set"),
                         );
                     } else {
                         let logs = service_manager.copy_logs(&name).await;

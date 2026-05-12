@@ -39,7 +39,7 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
             let mut siginfo = [0; size_of::<signalfd_siginfo>()];
             rx.async_io_mut(Interest::READABLE, |inner| inner.read_exact(&mut siginfo))
                 .await
-                .unwrap();
+                .expect("failed to read signal from signalfd");
             // SAFETY: `signalfd_siginfo` does not contain any padding or
             // pointers, nor does `[u8; _]`. And `signalfd_siginfo` doesn't
             // have any private fields with invariants.

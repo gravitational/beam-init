@@ -45,7 +45,11 @@ impl Logs {
         let handle = tokio::spawn(async move {
             let reader = BufReader::new(rx);
             let mut lines = reader.split(b'\n');
-            while let Some(line) = lines.next_segment().await.unwrap() {
+            while let Some(line) = lines
+                .next_segment()
+                .await
+                .expect("failed to read from pipe")
+            {
                 let line = String::from_utf8_lossy(&line).into_owned();
                 entries.lock().await.push(line);
                 next_entry.notify_waiters();
@@ -55,7 +59,9 @@ impl Logs {
         });
         self.abort_handle = Some(handle.abort_handle());
 
-        Ok(tx.into_blocking_fd().unwrap())
+        Ok(tx
+            .into_blocking_fd()
+            .expect("failed to convert pipe to blocking mode"))
     }
 
     pub fn new_reader(&self) -> impl Stream<Item = String> + 'static {
