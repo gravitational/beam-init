@@ -2,6 +2,8 @@ use std::process::ExitStatus;
 
 use serde::{Deserialize, Serialize};
 
+pub const SOCKET_PATH: &str = "/run/beam-init";
+
 #[derive(Serialize, Deserialize)]
 pub struct CreateService {
     pub cmd: String,

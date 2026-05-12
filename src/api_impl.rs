@@ -9,7 +9,7 @@ use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::Event;
-use beam_init::api::{CreateService, ServiceStatus};
+use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
 pub enum Command {
@@ -36,11 +36,8 @@ pub enum Command {
     },
 }
 
-pub fn bind_api_socket(
-    path: impl AsRef<std::path::Path>,
-    tx_event: mpsc::Sender<Event>,
-) -> io::Result<()> {
-    let socket = UnixListener::bind(path)?;
+pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+    let socket = UnixListener::bind(SOCKET_PATH)?;
 
     let router = Router::new()
         .route("/services", get(list_services))
