@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::os::unix::process::CommandExt;
 use std::pin::pin;
 use std::process::{Command, ExitStatus};
 
@@ -9,7 +10,9 @@ use tokio_stream::StreamExt;
 
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
-use crate::system::{kill_process, terminate_process, waitpid};
+use crate::system::{
+    cerr, continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
+};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -42,6 +45,9 @@ pub enum ServiceStatus {
 
     /// The service is currently running.
     Running { main_pid: u32 },
+
+    /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
+    Frozen { main_pid: u32 },
 
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
@@ -139,6 +145,20 @@ impl ServiceManager {
             .stderr(log_writer);
         self.old_sigmask.with_restored_sigmask(&mut cmd);
 
+        // SAFETY: the setpgid function is async-signal-safe, see
+        // https://www.man7.org/linux/man-pages/man7/signal-safety.7.html
+        unsafe {
+            cmd.pre_exec(move || {
+                // Create a new process group led by this process.
+                // Uses the current PID as the PGID of the new process group.
+                //
+                // SAFETY: setpgid is safe to call.
+                cerr(libc::setpgid(0, 0))?;
+
+                Ok(())
+            });
+        }
+
         // We respond to SIGCHLD to reap zombie processes
         #[expect(clippy::zombie_processes)]
         let child = cmd.spawn().unwrap();
@@ -146,6 +166,43 @@ impl ServiceManager {
         service.state.status = ServiceStatus::Running {
             main_pid: child.id(),
         };
+    }
+
+    pub fn freeze_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+                // No process to freeze.
+            }
+            ServiceStatus::Frozen { .. } => {
+                // This process is already frozen.
+            }
+            ServiceStatus::Running { main_pid } => {
+                // stop_process_group(main_pid as pid_t).unwrap();
+                stop_process_group(main_pid as pid_t).unwrap();
+                service.state.status = ServiceStatus::Frozen { main_pid };
+            }
+        }
+    }
+
+    pub fn thaw_service(&mut self, name: &str) {
+        // FIXME error handling
+        let service = self.services.get_mut(name).unwrap();
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+                // No process to thaw.
+            }
+            ServiceStatus::Running { .. } => {
+                // This process is already running.
+            }
+            ServiceStatus::Frozen { main_pid } => {
+                continue_process_group(main_pid as pid_t).unwrap();
+                service.state.status = ServiceStatus::Running { main_pid };
+            }
+        }
     }
 
     pub fn terminate_service(&mut self, name: &str) {
@@ -156,7 +213,7 @@ impl ServiceManager {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } => {
+            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 terminate_process(main_pid as pid_t).unwrap();
             }
@@ -174,7 +231,7 @@ impl ServiceManager {
             ServiceStatus::Stopped => {
                 // all good
             }
-            ServiceStatus::Running { .. } => {
+            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {

@@ -53,3 +53,17 @@ fn api_service_logs() {
         .run("./tests/api_service_logs.py")
         .wait();
 }
+
+#[test]
+fn api_freeze_thaw_service() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_freeze_thaw_service.py")
+        .wait();
+}
+
+#[test]
+fn freeze_thaw_parent_with_different_pgid() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_freeze_thaw_parent_with_different_pgid.py")
+        .wait();
+}

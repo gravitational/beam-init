@@ -23,6 +23,9 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running { main_pid: u32 },
 
+    /// The service is paused but can be continued.
+    Frozen { main_pid: u32 },
+
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
 
@@ -42,6 +45,9 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Stopped => f.write_str("stopped"),
             ServiceStatus::Running { main_pid } => {
                 write!(f, "running PID={main_pid}")
+            }
+            ServiceStatus::Frozen { main_pid } => {
+                write!(f, "frozen PID={main_pid}")
             }
             ServiceStatus::Stopping { main_pid } => {
                 write!(f, "stopping PID={main_pid}")

@@ -62,6 +62,7 @@ impl OldSigmask {
         unsafe {
             cmd.pre_exec(move || {
                 old_sigmask.set_mask()?;
+
                 Ok(())
             })
         }

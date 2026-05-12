@@ -5,4 +5,5 @@
 !Cargo.lock
 !Cargo.toml
 !src/**/*
+!tests/parent_with_child_pgid.py
 !crates/**/*
