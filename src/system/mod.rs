@@ -33,16 +33,30 @@ pub fn kill_process(pid: pid_t) -> io::Result<i32> {
 
 pub fn stop_process_group(pid: pid_t) -> io::Result<i32> {
     // SAFETY: getpgid is safe to call.
-    debug_assert_eq!(pid, cerr(unsafe { libc::getpgid(pid) }).unwrap());
-    // `-pid` targets the whole process group.
+    let pgid = cerr(unsafe { libc::getpgid(pid) })?;
+
     // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    cerr(unsafe { libc::kill(-pid, libc::SIGSTOP) })
+    match cerr(unsafe { libc::kill(-pgid, libc::SIGSTOP) }) {
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
+            // The process moved to another process group.
+            // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+            cerr(unsafe { libc::kill(pid, libc::SIGSTOP) })
+        }
+        other => other,
+    }
 }
 
 pub fn continue_process_group(pid: pid_t) -> io::Result<i32> {
     // SAFETY: getpgid is safe to call.
-    debug_assert_eq!(pid, cerr(unsafe { libc::getpgid(pid) }).unwrap());
-    // `-pid` targets the whole process group.
+    let pgid = cerr(unsafe { libc::getpgid(pid) })?;
+
     // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    cerr(unsafe { libc::kill(-pid, libc::SIGCONT) })
+    match cerr(unsafe { libc::kill(-pgid, libc::SIGCONT) }) {
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
+            // The process moved to another process group.
+            // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
+            cerr(unsafe { libc::kill(pid, libc::SIGCONT) })
+        }
+        other => other,
+    }
 }

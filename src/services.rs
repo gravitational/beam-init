@@ -173,18 +173,16 @@ impl ServiceManager {
         let service = self.services.get_mut(name).unwrap();
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
-                // ??
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+                // No process to freeze.
             }
             ServiceStatus::Frozen { .. } => {
-                // already frozen
+                // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
+                // stop_process_group(main_pid as pid_t).unwrap();
                 stop_process_group(main_pid as pid_t).unwrap();
                 service.state.status = ServiceStatus::Frozen { main_pid };
-            }
-            ServiceStatus::Failed(_) => {
-                // ??
             }
         }
     }
@@ -194,18 +192,15 @@ impl ServiceManager {
         let service = self.services.get_mut(name).unwrap();
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
-                // ??
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+                // No process to thaw.
             }
             ServiceStatus::Running { .. } => {
-                // already running
+                // This process is already running.
             }
             ServiceStatus::Frozen { main_pid } => {
                 continue_process_group(main_pid as pid_t).unwrap();
                 service.state.status = ServiceStatus::Running { main_pid };
-            }
-            ServiceStatus::Failed(_) => {
-                // ??
             }
         }
     }
