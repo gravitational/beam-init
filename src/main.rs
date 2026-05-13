@@ -54,8 +54,7 @@ async fn main() {
         .expect("failed to initialize the signal stream");
 
     // Listen for API commands
-    api_impl::bind_api_socket("/run/beam-init", tx_event)
-        .expect("failed to bind /run/beam-init socket");
+    api_impl::bind_api_socket(tx_event).expect("failed to bind api socket");
 
     let mut service_manager = ServiceManager::new(old_sigmask);
     loop {
