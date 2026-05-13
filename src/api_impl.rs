@@ -54,7 +54,9 @@ pub fn bind_api_socket(
         .with_state(tx_event);
 
     tokio::spawn(async move {
-        axum::serve(socket, router).await.unwrap();
+        axum::serve(socket, router)
+            .await
+            .expect("axum::serve is documented as never returning an error");
     });
 
     Ok(())
@@ -69,8 +71,8 @@ async fn create_service(
     tx_events
         .send(Event::Command(Command::CreateService { name, service }, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 async fn stop_service(
@@ -81,8 +83,8 @@ async fn stop_service(
     tx_events
         .send(Event::Command(Command::StopService { name }, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 async fn freeze_service(
@@ -93,8 +95,8 @@ async fn freeze_service(
     tx_events
         .send(Event::Command(Command::FreezeService { name }, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 async fn thaw_service(
@@ -105,8 +107,8 @@ async fn thaw_service(
     tx_events
         .send(Event::Command(Command::ThawService { name }, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 async fn show_service(
@@ -117,8 +119,8 @@ async fn show_service(
     tx_events
         .send(Event::Command(Command::ShowService { name }, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response {
@@ -126,8 +128,8 @@ async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response
     tx_events
         .send(Event::Command(Command::ListServices, tx))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 #[derive(Deserialize)]
@@ -151,8 +153,8 @@ async fn service_logs(
             tx,
         ))
         .await
-        .unwrap();
-    rx.await.unwrap()
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
 }
 
 impl From<&crate::services::Service> for crate::api::Service {
