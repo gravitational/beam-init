@@ -39,32 +39,67 @@ impl Client {
             .request(method, format!("http://beam-init{path}"))
     }
 
-    fn send(
-        req: reqwest::blocking::RequestBuilder,
-    ) -> reqwest::Result<reqwest::blocking::Response> {
-        let resp = req.send()?;
+    fn send(req: reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response, Error> {
+        let resp = req
+            .send()
+            .map_err(|error| Error::Internal { error, body: None })?;
 
-        // FIXME add response body to error
-        resp.error_for_status_ref()?;
+        if let Err(error) = resp.error_for_status_ref() {
+            let body = resp.text().unwrap_or_else(|err| err.to_string());
+
+            if let Some(status) = error.status()
+                && status.is_client_error()
+            {
+                return Err(Error::User(body));
+            }
+
+            return Err(Error::Internal {
+                error,
+                body: Some(body),
+            });
+        }
 
         Ok(resp)
     }
 
-    fn get_raw(&self, path: &str) -> reqwest::Result<reqwest::blocking::Response> {
+    fn get_raw(&self, path: &str) -> Result<reqwest::blocking::Response, Error> {
         Self::send(self.request(Method::GET, path))
     }
 
-    fn get<U: DeserializeOwned>(&self, path: &str) -> reqwest::Result<U> {
-        self.get_raw(path)?.json()
+    fn get<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
+        self.get_raw(path)?
+            .json()
+            .map_err(|error| Error::Internal { error, body: None })
     }
 
-    fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> reqwest::Result<U> {
-        Self::send(self.request(Method::POST, path).json(&body))?.json()
+    fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> Result<U, Error> {
+        Self::send(self.request(Method::POST, path).json(&body))?
+            .json()
+            .map_err(|error| Error::Internal { error, body: None })
     }
 }
 
-fn show_error_and_exit<T>(err: reqwest::Error) -> T {
-    eprintln!("{err}");
+enum Error {
+    User(String),
+    Internal {
+        error: reqwest::Error,
+        body: Option<String>,
+    },
+}
+
+fn show_error_and_exit<T>(err: Error) -> T {
+    match err {
+        Error::User(err) => eprintln!("{err}"),
+        Error::Internal { error, body } => {
+            let path = error.url().map_or_else(|| "", |url| url.path()).to_owned();
+            if let Some(body) = body {
+                eprintln!("{} for {path} with body:\n{body}", error.without_url())
+            } else {
+                eprintln!("{} for {path}", error.without_url())
+            }
+        }
+    }
+
     process::exit(1);
 }
 
