@@ -25,7 +25,7 @@ impl Image {
             dockerfile.file_stem().unwrap().display()
         );
 
-        Command::new("docker")
+        let output = Command::new("docker")
             .arg("build")
             .arg("-t")
             .arg(&tag)
@@ -36,6 +36,8 @@ impl Image {
             .stderr(Stdio::inherit())
             .output()
             .unwrap();
+
+        assert!(output.status.success());
 
         let image = Image { tag };
         image_map.insert(dockerfile.to_owned(), image.clone());
