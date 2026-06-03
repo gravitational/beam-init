@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 use crate::Event;
-use crate::services::{self, ServiceManager};
+use crate::services::{self, ServiceError, ServiceManager};
 use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
@@ -192,7 +192,7 @@ impl From<crate::services::ServiceStatus> for crate::api::ServiceStatus {
 pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
-) -> Response<Body> {
+) -> Result<Response<Body>, ServiceError> {
     match cmd {
         Command::CreateService { name, service } => {
             service_manager.create_service(
@@ -202,36 +202,35 @@ pub async fn handle_api_command(
                     args: service.args.clone(),
                 },
             );
-            service_manager.start_service(&name);
-            Json(service).into_response()
+            service_manager.start_service(&name)?;
+            Ok(Json(service).into_response())
         }
         Command::StopService { name } => {
-            service_manager.terminate_service(&name);
+            service_manager.terminate_service(&name)?;
 
             // FIXME: pick a more principled duration, and potentially perform the kill
             // below in an async way.
             tokio::time::sleep(Duration::from_millis(5)).await;
 
-            service_manager.kill_service(&name);
+            service_manager.kill_service(&name)?;
 
-            Json(()).into_response()
+            Ok(Json(()).into_response())
         }
         Command::FreezeService { name } => {
-            service_manager.freeze_service(&name);
+            service_manager.freeze_service(&name)?;
 
-            Json(()).into_response()
+            Ok(Json(()).into_response())
         }
         Command::ThawService { name } => {
-            service_manager.thaw_service(&name);
+            service_manager.thaw_service(&name)?;
 
-            Json(()).into_response()
+            Ok(Json(()).into_response())
         }
         Command::ShowService { name } => {
-            // FIXME: error handling
-            let service = service_manager.get_service(&name).unwrap();
+            let service = service_manager.get_service(&name)?;
 
             let api_service = crate::api::Service::from(service);
-            Json(api_service).into_response()
+            Ok(Json(api_service).into_response())
         }
         Command::ListServices => {
             let services: BTreeMap<String, crate::api::ServiceStatus> = service_manager
@@ -239,27 +238,28 @@ pub async fn handle_api_command(
                 .map(|(name, status)| (name.to_string(), status.into()))
                 .collect();
 
-            Json(services).into_response()
+            Ok(Json(services).into_response())
         }
         Command::ServiceLogs { name, follow } => {
             if follow {
-                let stream = service_manager.log_reader(&name);
-                Response::builder()
+                let stream = service_manager.log_reader(&name)?;
+                Ok(Response::builder()
                     .header(axum::http::header::CONTENT_TYPE, "text/plain")
                     .body(Body::from_stream(stream.map(|mut line| {
                         line.push('\n');
                         Ok::<_, String>(Bytes::copy_from_slice(line.as_bytes()))
                     })))
-                    .expect("valid headers should be set")
+                    .expect("valid headers should be set"))
             } else {
-                let logs = service_manager.copy_logs(&name).await;
-                logs.into_iter()
+                let logs = service_manager.copy_logs(&name).await?;
+                Ok(logs
+                    .into_iter()
                     .map(|mut line| {
                         line.push('\n');
                         line
                     })
                     .collect::<String>()
-                    .into_response()
+                    .into_response())
             }
         }
     }
