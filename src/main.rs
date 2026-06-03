@@ -1,5 +1,5 @@
 use std::os::unix::process::ExitStatusExt;
-use std::process;
+use std::{env, process};
 
 use axum::response::Response;
 use libc::{SIGCHLD, signalfd_siginfo};
@@ -48,8 +48,10 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    // Listen for API commands
-    api_impl::bind_api_socket(tx_event).expect("failed to bind api socket");
+    if env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1") {
+        // Listen for API commands
+        api_impl::bind_api_socket(tx_event).expect("failed to bind api socket");
+    }
 
     let mut service_manager = ServiceManager::new(old_sigmask);
     loop {
