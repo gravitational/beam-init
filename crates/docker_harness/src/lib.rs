@@ -45,12 +45,18 @@ impl Image {
     }
 
     pub fn run(&self, script_path: &str) -> Container {
+        self.run_with_init_args(script_path, &[])
+    }
+
+    pub fn run_with_init_args(&self, script_path: &str, init_args: &[&str]) -> Container {
         let mut cmd = Command::new("docker");
 
         cmd.arg("run").arg("-i").arg("--rm");
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
-        cmd.arg(&self.tag).arg("python3").arg("/mnt/script.py");
+        cmd.arg(&self.tag);
+        cmd.args(init_args);
+        cmd.arg("python3").arg("/mnt/script.py");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         Container {

@@ -20,6 +20,16 @@ fn init_reaps_zombies() {
 }
 
 #[test]
+fn init_script() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run_with_init_args(
+            "./tests/init_script.py",
+            &["--init-script", "/tests/init_script.sh"],
+        )
+        .wait();
+}
+
+#[test]
 fn api_start_service() {
     docker_harness::Image::build("test.Dockerfile")
         .run("./tests/api_start_service.py")
