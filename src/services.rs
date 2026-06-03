@@ -60,14 +60,14 @@ pub enum ServiceStatus {
 
 #[derive(Debug)]
 pub enum ServiceError {
-    NoService { name: String },
+    ServiceNotFound { name: String },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
 impl IntoResponse for ServiceError {
     fn into_response(self) -> Response {
         match self {
-            ServiceError::NoService { name } => (
+            ServiceError::ServiceNotFound { name } => (
                 StatusCode::NOT_FOUND,
                 format!("Service {name} was not found"),
             )
@@ -156,7 +156,7 @@ impl ServiceManager {
     pub fn get_service(&self, name: &str) -> Result<&Service, ServiceError> {
         self.services
             .get(name)
-            .ok_or_else(|| ServiceError::NoService {
+            .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
             })
     }
@@ -164,7 +164,7 @@ impl ServiceManager {
     fn get_service_mut(&mut self, name: &str) -> Result<&mut Service, ServiceError> {
         self.services
             .get_mut(name)
-            .ok_or_else(|| ServiceError::NoService {
+            .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
             })
     }
