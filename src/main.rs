@@ -1,7 +1,7 @@
 use std::os::unix::process::ExitStatusExt;
 use std::{env, process};
 
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
@@ -63,11 +63,11 @@ async fn main() {
             Event::Signal(info) => service_manager.handle_signal(info),
             Event::Command(cmd, tx) => {
                 let res = api_impl::handle_api_command(&mut service_manager, cmd).await;
-                let _ = tx.send(res);
+                let _ = tx.send(res.into_response());
             }
         }
 
-        if let Some(service) = service_manager.get_service("bootstrap")
+        if let Some(service) = service_manager.try_get_service("bootstrap")
             && let ServiceStatus::Failed(status) = service.state.status
         {
             if let Some(code) = status.code() {
@@ -79,7 +79,7 @@ async fn main() {
                 process::exit(1);
             }
         }
-        if let Some(service) = service_manager.get_service("bootstrap")
+        if let Some(service) = service_manager.try_get_service("bootstrap")
             && let ServiceStatus::Stopped = service.state.status
         {
             process::exit(0);

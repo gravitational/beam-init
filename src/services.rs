@@ -4,8 +4,10 @@ use std::os::unix::process::CommandExt;
 use std::pin::pin;
 use std::process::{Command, ExitStatus};
 
+use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
+use reqwest::StatusCode;
 use tokio_stream::StreamExt;
 
 use crate::logs::Logs;
@@ -56,6 +58,24 @@ pub enum ServiceStatus {
     Failed(ExitStatus),
 }
 
+#[derive(Debug)]
+pub enum ServiceError {
+    ServiceNotFound { name: String },
+}
+
+// FIXME serialize as json and deserialize and format error message inside the beamctl process?
+impl IntoResponse for ServiceError {
+    fn into_response(self) -> Response {
+        match self {
+            ServiceError::ServiceNotFound { name } => (
+                StatusCode::NOT_FOUND,
+                format!("Service {name} was not found"),
+            )
+                .into_response(),
+        }
+    }
+}
+
 impl ServiceManager {
     pub fn new(old_sigmask: OldSigmask) -> Self {
         ServiceManager {
@@ -87,18 +107,19 @@ impl ServiceManager {
         }
     }
 
-    pub async fn copy_logs(&self, name: &str) -> Vec<String> {
-        // FIXME error handling
-        let service = self.services.get(name).unwrap();
+    pub async fn copy_logs(&self, name: &str) -> Result<Vec<String>, ServiceError> {
+        let service = self.get_service(name)?;
 
-        service.state.logs.copy_logs().await
+        Ok(service.state.logs.copy_logs().await)
     }
 
-    pub fn log_reader(&self, name: &str) -> impl Stream<Item = String> + 'static {
-        // FIXME error handling
-        let service = self.services.get(name).unwrap();
+    pub fn log_reader(
+        &self,
+        name: &str,
+    ) -> Result<impl Stream<Item = String> + 'static, ServiceError> {
+        let service = self.get_service(name)?;
 
-        service.state.logs.new_reader()
+        Ok(service.state.logs.new_reader())
     }
 
     pub fn create_service(&mut self, name: String, config: ServiceConfig) {
@@ -128,13 +149,30 @@ impl ServiceManager {
         }
     }
 
-    pub fn get_service(&self, name: &str) -> Option<&Service> {
+    pub fn try_get_service(&self, name: &str) -> Option<&Service> {
         self.services.get(name)
     }
 
-    pub fn start_service(&mut self, name: &str) {
-        // FIXME error handling
-        let service = self.services.get_mut(name).unwrap();
+    pub fn get_service(&self, name: &str) -> Result<&Service, ServiceError> {
+        self.services
+            .get(name)
+            .ok_or_else(|| ServiceError::ServiceNotFound {
+                name: name.to_owned(),
+            })
+    }
+
+    fn get_service_mut(&mut self, name: &str) -> Result<&mut Service, ServiceError> {
+        self.services
+            .get_mut(name)
+            .ok_or_else(|| ServiceError::ServiceNotFound {
+                name: name.to_owned(),
+            })
+    }
+
+    pub fn start_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let old_sigmask = self.old_sigmask;
+
+        let service = self.get_service_mut(name)?;
 
         println!("Starting service {name}");
 
@@ -143,7 +181,7 @@ impl ServiceManager {
         cmd.args(&service.config.args);
         cmd.stdout(log_writer.try_clone().unwrap())
             .stderr(log_writer);
-        self.old_sigmask.with_restored_sigmask(&mut cmd);
+        old_sigmask.with_restored_sigmask(&mut cmd);
 
         // SAFETY: the setpgid function is async-signal-safe, see
         // https://www.man7.org/linux/man-pages/man7/signal-safety.7.html
@@ -166,11 +204,12 @@ impl ServiceManager {
         service.state.status = ServiceStatus::Running {
             main_pid: child.id(),
         };
+
+        Ok(())
     }
 
-    pub fn freeze_service(&mut self, name: &str) {
-        // FIXME error handling
-        let service = self.services.get_mut(name).unwrap();
+    pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
 
         match service.state.status {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
@@ -185,11 +224,12 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
         }
+
+        Ok(())
     }
 
-    pub fn thaw_service(&mut self, name: &str) {
-        // FIXME error handling
-        let service = self.services.get_mut(name).unwrap();
+    pub fn thaw_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
 
         match service.state.status {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
@@ -203,11 +243,12 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Running { main_pid };
             }
         }
+
+        Ok(())
     }
 
-    pub fn terminate_service(&mut self, name: &str) {
-        // FIXME error handling
-        let service = self.services.get_mut(name).unwrap();
+    pub fn terminate_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
 
         match service.state.status {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
@@ -221,11 +262,12 @@ impl ServiceManager {
                 // nothing to do
             }
         }
+
+        Ok(())
     }
 
-    pub fn kill_service(&mut self, name: &str) {
-        // FIXME error handling
-        let service = self.services.get_mut(name).unwrap();
+    pub fn kill_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
 
         match service.state.status {
             ServiceStatus::Stopped => {
@@ -247,6 +289,8 @@ impl ServiceManager {
                 // nothing to do
             }
         }
+
+        Ok(())
     }
 
     pub fn list_services(&self) -> impl Iterator<Item = (&String, ServiceStatus)> {

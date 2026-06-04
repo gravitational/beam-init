@@ -53,6 +53,7 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
     Ok(OldSigmask(old_sigmask))
 }
 
+#[derive(Copy, Clone)]
 pub struct OldSigmask(SignalSet);
 
 impl OldSigmask {
