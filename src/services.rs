@@ -183,15 +183,15 @@ impl ServiceManager {
             .stderr(log_writer);
         old_sigmask.with_restored_sigmask(&mut cmd);
 
-        // SAFETY: the setpgid function is async-signal-safe, see
+        // SAFETY: the setsid function is async-signal-safe, see
         // https://www.man7.org/linux/man-pages/man7/signal-safety.7.html
         unsafe {
             cmd.pre_exec(move || {
-                // Create a new process group led by this process.
+                // Create a new session and process group led by this process.
                 // Uses the current PID as the PGID of the new process group.
                 //
-                // SAFETY: setpgid is safe to call.
-                cerr(libc::setpgid(0, 0))?;
+                // SAFETY: setsid is safe to call.
+                cerr(libc::setsid())?;
 
                 Ok(())
             });

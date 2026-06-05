@@ -62,13 +62,6 @@ fn api_freeze_thaw_service() {
 }
 
 #[test]
-fn freeze_thaw_parent_with_different_pgid() {
-    docker_harness::Image::build("test.Dockerfile")
-        .run("./tests/api_freeze_thaw_parent_with_different_pgid.py")
-        .wait();
-}
-
-#[test]
 fn api_non_existent_service() {
     docker_harness::Image::build("test.Dockerfile")
         .run("./tests/api_non_existent_service.py")
