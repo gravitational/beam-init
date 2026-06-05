@@ -189,6 +189,8 @@ impl ServiceManager {
             cmd.pre_exec(move || {
                 // Create a new session and process group led by this process.
                 // Uses the current PID as the PGID of the new process group.
+                // Using only a new process group won't work as then bash will
+                // hang if the container has a tty attached.
                 //
                 // SAFETY: setsid is safe to call.
                 cerr(libc::setsid())?;
