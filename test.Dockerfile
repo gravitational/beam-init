@@ -6,7 +6,6 @@ FROM debian:trixie
 RUN apt install --update -y python3 python3-psutil
 COPY --from=builder /beam-init /bin/init
 COPY --from=builder /beamctl /bin/beamctl
-COPY --from=builder /src/tests /tests
 
 ENV BEAM_INIT_ENABLE_API=1
 ENTRYPOINT ["/bin/init"]
