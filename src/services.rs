@@ -21,6 +21,7 @@ pub struct ServiceManager {
     services: BTreeMap<String, Service>,
 }
 
+#[derive(Debug)]
 pub struct Service {
     pub config: ServiceConfig,
     pub state: ServiceState,
@@ -29,18 +30,20 @@ pub struct Service {
 /// The configuration of a service.
 ///
 /// This only changes when explicitly modified through the API.
+#[derive(Debug)]
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
 }
 
 /// The runtime state of a service.
+#[derive(Debug)]
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
