@@ -182,8 +182,8 @@ impl From<crate::services::ServiceStatus> for crate::api::ServiceStatus {
             crate::services::ServiceStatus::Stopping { main_pid } => {
                 ServiceStatus::Stopping { main_pid }
             }
-            crate::services::ServiceStatus::Failed(exit_status) => {
-                ServiceStatus::Failed(exit_status)
+            crate::services::ServiceStatus::Exited(exit_status) => {
+                ServiceStatus::Exited(exit_status)
             }
         }
     }

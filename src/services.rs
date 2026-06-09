@@ -57,8 +57,8 @@ pub enum ServiceStatus {
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
 
-    /// The service failed with the given exit status.
-    Failed(ExitStatus),
+    /// The service exited with the given exit status.
+    Exited(ExitStatus),
 }
 
 #[derive(Debug)]
@@ -97,7 +97,7 @@ impl ServiceManager {
             for service in self.services.values_mut() {
                 match service.state.status {
                     ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
-                        service.state.status = ServiceStatus::Failed(status);
+                        service.state.status = ServiceStatus::Exited(status);
                         return;
                     }
                     ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
@@ -217,14 +217,13 @@ impl ServiceManager {
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Exited(_) => {
                 // No process to freeze.
             }
             ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
-                // stop_process_group(main_pid as pid_t).unwrap();
                 stop_process_group(main_pid as pid_t).unwrap();
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
@@ -237,7 +236,7 @@ impl ServiceManager {
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Failed(_) => {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Exited(_) => {
                 // No process to thaw.
             }
             ServiceStatus::Running { .. } => {
@@ -263,7 +262,7 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 terminate_process(main_pid as pid_t).unwrap();
             }
-            ServiceStatus::Failed(_) => {
+            ServiceStatus::Exited(_) => {
                 // nothing to do
             }
         }
@@ -290,7 +289,7 @@ impl ServiceManager {
                     todo!()
                 }
             }
-            ServiceStatus::Failed(_) => {
+            ServiceStatus::Exited(_) => {
                 // nothing to do
             }
         }

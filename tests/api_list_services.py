@@ -41,7 +41,7 @@ assert "Running" in sleep, sleep
 assert isinstance(sleep["Running"]["main_pid"], int), sleep
 
 valid = services["valid"]
-assert valid == {"Failed": 0}, valid
+assert valid == {"Exited": 0}, valid
 
 invalid = services["invalid"]
-assert invalid == {"Failed": 256}, invalid
+assert invalid == {"Exited": 256}, invalid

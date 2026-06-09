@@ -32,7 +32,7 @@ pub enum ServiceStatus {
     Stopping { main_pid: u32 },
 
     /// The service failed with the given exit status.
-    Failed(
+    Exited(
         #[serde(
             serialize_with = "exit_status_serde::serialize",
             deserialize_with = "exit_status_serde::deserialize"
@@ -54,7 +54,7 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Stopping { main_pid } => {
                 write!(f, "stopping PID={main_pid}")
             }
-            ServiceStatus::Failed(exit_status) => {
+            ServiceStatus::Exited(exit_status) => {
                 if exit_status.success() {
                     write!(f, "exited normally")
                 } else {
