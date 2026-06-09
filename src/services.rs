@@ -1,17 +1,22 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::os::unix::process::CommandExt;
+use std::ffi::{CString, NulError};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
-use std::process::{Command, ExitStatus};
+use std::process::{self, ExitStatus};
+use std::ptr;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, WNOHANG, execvp, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio_stream::StreamExt;
 
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
+use crate::system::fork::unsafe_fork;
 use crate::system::{
     cerr, continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
 };
@@ -43,7 +48,7 @@ pub struct ServiceState {
     pub logs: Logs,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
@@ -59,11 +64,15 @@ pub enum ServiceStatus {
 
     /// The service exited with the given exit status.
     Exited(ExitStatus),
+
+    /// The service failed to start with the given error.
+    Error(io::Error),
 }
 
 #[derive(Debug)]
 pub enum ServiceError {
     ServiceNotFound { name: String },
+    SpawnFailed { cmd: String, err: io::Error },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -73,6 +82,11 @@ impl IntoResponse for ServiceError {
             ServiceError::ServiceNotFound { name } => (
                 StatusCode::NOT_FOUND,
                 format!("Service {name} was not found"),
+            )
+                .into_response(),
+            ServiceError::SpawnFailed { cmd, err } => (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to spawn {cmd}: {err}"),
             )
                 .into_response(),
         }
@@ -180,44 +194,34 @@ impl ServiceManager {
         println!("Starting service {name}");
 
         let log_writer = service.state.logs.new_writer().unwrap();
-        let mut cmd = Command::new(&service.config.cmd);
-        cmd.args(&service.config.args);
-        cmd.stdout(log_writer.try_clone().unwrap())
-            .stderr(log_writer);
-        old_sigmask.with_restored_sigmask(&mut cmd);
 
-        // SAFETY: the setsid function is async-signal-safe, see
-        // https://www.man7.org/linux/man-pages/man7/signal-safety.7.html
-        unsafe {
-            cmd.pre_exec(move || {
-                // Create a new session and process group led by this process.
-                // Uses the current PID as the PGID of the new process group.
-                // Using only a new process group won't work as then bash will
-                // hang if the container has a tty attached.
-                //
-                // SAFETY: setsid is safe to call.
-                cerr(libc::setsid())?;
-
+        match spawn_service(old_sigmask, &service.config, log_writer) {
+            Ok(child_pid) => {
+                service.state.status = ServiceStatus::Running {
+                    main_pid: child_pid as u32,
+                };
                 Ok(())
-            });
+            }
+            Err(err) => {
+                println!("[{name}] Failed to spawn: {err}");
+                // FIXME do something better than ExitStatus::from_raw(101 << 8)
+                service.state.status = ServiceStatus::Exited(ExitStatus::from_raw(101 << 8));
+                Err(ServiceError::SpawnFailed {
+                    cmd: service.config.cmd.clone(),
+                    err,
+                })
+            }
         }
-
-        // We respond to SIGCHLD to reap zombie processes
-        #[expect(clippy::zombie_processes)]
-        let child = cmd.spawn().unwrap();
-
-        service.state.status = ServiceStatus::Running {
-            main_pid: child.id(),
-        };
-
-        Ok(())
     }
 
     pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Exited(_) => {
+            ServiceStatus::Stopped
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
                 // No process to freeze.
             }
             ServiceStatus::Frozen { .. } => {
@@ -236,7 +240,10 @@ impl ServiceManager {
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } | ServiceStatus::Exited(_) => {
+            ServiceStatus::Stopped
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
                 // No process to thaw.
             }
             ServiceStatus::Running { .. } => {
@@ -262,7 +269,7 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 terminate_process(main_pid as pid_t).unwrap();
             }
-            ServiceStatus::Exited(_) => {
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
             }
         }
@@ -289,7 +296,7 @@ impl ServiceManager {
                     todo!()
                 }
             }
-            ServiceStatus::Exited(_) => {
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
             }
         }
@@ -297,9 +304,70 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn list_services(&self) -> impl Iterator<Item = (&String, ServiceStatus)> {
+    pub fn list_services(&self) -> impl Iterator<Item = (&String, &ServiceStatus)> {
         self.services
             .iter()
-            .map(|(name, service)| (name, service.state.status))
+            .map(|(name, service)| (name, &service.state.status))
+    }
+}
+
+fn spawn_service(
+    old_sigmask: OldSigmask,
+    config: &ServiceConfig,
+    log_writer: std::os::unix::prelude::OwnedFd,
+) -> io::Result<pid_t> {
+    let cmd = CString::new(config.cmd.clone())?;
+
+    let args = config
+        .args
+        .iter()
+        .map(|arg| CString::new(arg.to_owned()))
+        .collect::<Result<Vec<_>, NulError>>()?;
+    let args = Some(cmd.as_ptr())
+        .into_iter()
+        .chain(args.iter().map(|arg| arg.as_ptr()))
+        .chain(Some(ptr::null()))
+        .collect::<Vec<_>>();
+
+    let (mut err_rx, mut err_tx) = io::pipe()?;
+    // SAFETY: We only run async-signal-safe functions inside the child process.
+    let child_pid = unsafe {
+        unsafe_fork!({
+            old_sigmask
+                .restore_sigmask()
+                .expect("failed to restore sigmask");
+
+            // Create a new session and process group led by this process.
+            // Uses the current PID as the PGID of the new process group.
+            // Using only a new process group won't work as then bash will
+            // hang if the container has a tty attached.
+            //
+            // SAFETY: setsid is safe to call.
+            cerr(libc::setsid()).expect("failed to setsid");
+
+            // Set the log pipe as stdout and stderr
+            // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
+            // accessed after this point depends on stdout/stderr pointing to a particular fd.
+            cerr(libc::dup2(log_writer.as_raw_fd(), 1)).expect("failed to set stdout");
+            cerr(libc::dup2(log_writer.as_raw_fd(), 2)).expect("failed to set stderr");
+
+            execvp(cmd.as_ptr(), args.as_ptr());
+            let err = io::Error::last_os_error()
+                .raw_os_error()
+                .expect("last_os_error didn't return OS error");
+
+            err_tx
+                .write_all(&i32::to_ne_bytes(err))
+                .expect("failed to write error code");
+            process::exit(1)
+        })
+    }?;
+    drop(err_tx);
+
+    let mut err = [0; size_of::<i32>()];
+    match err_rx.read_exact(&mut err) {
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
+        Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
+        Err(err) => Err(err),
     }
 }

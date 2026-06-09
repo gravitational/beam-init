@@ -23,13 +23,19 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: u32 },
+    Running {
+        main_pid: u32,
+    },
 
     /// The service is paused but can be continued.
-    Frozen { main_pid: u32 },
+    Frozen {
+        main_pid: u32,
+    },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: u32 },
+    Stopping {
+        main_pid: u32,
+    },
 
     /// The service failed with the given exit status.
     Exited(
@@ -39,11 +45,13 @@ pub enum ServiceStatus {
         )]
         ExitStatus,
     ),
+
+    Error(String),
 }
 
 impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        match *self {
             ServiceStatus::Stopped => f.write_str("stopped"),
             ServiceStatus::Running { main_pid } => {
                 write!(f, "running PID={main_pid}")
@@ -61,6 +69,7 @@ impl std::fmt::Display for ServiceStatus {
                     write!(f, "failed with {exit_status}")
                 }
             }
+            ServiceStatus::Error(ref err) => write!(f, "failed to start with {}", err),
         }
     }
 }

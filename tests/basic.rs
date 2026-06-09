@@ -67,3 +67,10 @@ fn api_non_existent_service() {
         .run("./tests/api_non_existent_service.py")
         .wait();
 }
+
+#[test]
+fn api_start_invalid_service() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_start_invalid_service.py")
+        .wait();
+}

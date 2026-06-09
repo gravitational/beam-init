@@ -164,14 +164,14 @@ impl From<&crate::services::Service> for crate::api::Service {
         Self {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
-            status: value.state.status.into(),
+            status: (&value.state.status).into(),
         }
     }
 }
 
-impl From<crate::services::ServiceStatus> for crate::api::ServiceStatus {
-    fn from(value: crate::services::ServiceStatus) -> Self {
-        match value {
+impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
+    fn from(value: &crate::services::ServiceStatus) -> Self {
+        match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
             crate::services::ServiceStatus::Running { main_pid } => {
                 ServiceStatus::Running { main_pid }
@@ -185,6 +185,7 @@ impl From<crate::services::ServiceStatus> for crate::api::ServiceStatus {
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(exit_status)
             }
+            crate::services::ServiceStatus::Error(ref err) => ServiceStatus::Error(err.to_string()),
         }
     }
 }
