@@ -75,6 +75,7 @@ async fn main() {
             } else if let Some(signal) = status.signal() {
                 // SAFETY: This is always safe
                 unsafe { libc::raise(signal) };
+                process::abort();
             } else {
                 process::exit(1);
             }
