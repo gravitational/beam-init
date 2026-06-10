@@ -108,7 +108,9 @@ impl ServiceManager {
 
     pub fn handle_signal(&mut self, info: signalfd_siginfo) {
         if info.ssi_signo == SIGCHLD as u32 {
-            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).unwrap();
+            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).expect(
+                "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
+            );
             if pid == 0 {
                 return;
             }
@@ -237,7 +239,7 @@ impl ServiceManager {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
-                stop_process_group(main_pid as pid_t).unwrap();
+                stop_process_group(main_pid as pid_t).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
         }
@@ -259,7 +261,7 @@ impl ServiceManager {
                 // This process is already running.
             }
             ServiceStatus::Frozen { main_pid } => {
-                continue_process_group(main_pid as pid_t).unwrap();
+                continue_process_group(main_pid as pid_t).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
             }
         }
@@ -276,7 +278,7 @@ impl ServiceManager {
             }
             ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
                 service.state.status = ServiceStatus::Stopping { main_pid };
-                terminate_process(main_pid as pid_t).unwrap();
+                terminate_process(main_pid as pid_t).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
@@ -297,13 +299,7 @@ impl ServiceManager {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {
-                // `handle_signal` will update the status.
-                if let Err(e) = kill_process(main_pid as pid_t)
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    // NotFound means that we tried to kill a process that already exited.
-                    todo!()
-                }
+                kill_process(main_pid as pid_t).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
