@@ -204,7 +204,11 @@ impl ServiceManager {
 
         println!("Starting service {name}");
 
-        let log_writer = service.state.logs.new_writer().unwrap();
+        let log_writer = service
+            .state
+            .logs
+            .new_writer()
+            .expect("failed to create log writer");
 
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {
