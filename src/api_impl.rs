@@ -202,7 +202,7 @@ pub async fn handle_api_command(
                     cmd: service.cmd.clone(),
                     args: service.args.clone(),
                 },
-            );
+            )?;
             service_manager.start_service(&name)?;
             Ok(Json(service).into_response())
         }

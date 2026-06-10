@@ -71,6 +71,7 @@ pub enum ServiceStatus {
 #[derive(Debug)]
 pub enum ServiceError {
     ServiceNotFound { name: String },
+    ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
 }
 
@@ -81,6 +82,11 @@ impl IntoResponse for ServiceError {
             ServiceError::ServiceNotFound { name } => (
                 StatusCode::NOT_FOUND,
                 format!("Service {name} was not found"),
+            )
+                .into_response(),
+            ServiceError::ServiceExists { name } => (
+                StatusCode::CONFLICT,
+                format!("Service {name} already exists"),
             )
                 .into_response(),
             ServiceError::SpawnFailed { cmd, err } => (
@@ -138,7 +144,11 @@ impl ServiceManager {
         Ok(service.state.logs.new_reader())
     }
 
-    pub fn create_service(&mut self, name: String, config: ServiceConfig) {
+    pub fn create_service(
+        &mut self,
+        name: String,
+        config: ServiceConfig,
+    ) -> Result<(), ServiceError> {
         let logs = Logs::new();
 
         let reader = logs.new_reader();
@@ -150,7 +160,7 @@ impl ServiceManager {
             }
         });
 
-        match self.services.entry(name) {
+        match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Service {
                     config,
@@ -159,9 +169,9 @@ impl ServiceManager {
                         logs,
                     },
                 });
+                Ok(())
             }
-            // FIXME error handling
-            Entry::Occupied(_) => todo!("service already exists"),
+            Entry::Occupied(_) => Err(ServiceError::ServiceExists { name }),
         }
     }
 

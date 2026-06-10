@@ -15,3 +15,7 @@ for proc in psutil.process_iter(['pid', 'name', 'status']):
     if info["name"] == "sleep":
         found_sleep = True
 assert found_sleep, "Sleep not started"
+
+output = subprocess.run(["beamctl", "start", "sleep", "--", "sleep", "10"], stderr=subprocess.PIPE).stderr
+print(output)
+assert output == b"Service sleep already exists\n"
