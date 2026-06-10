@@ -329,12 +329,22 @@ fn spawn_service(
         .collect::<Vec<_>>();
 
     let (mut err_rx, mut err_tx) = io::pipe()?;
+    fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
+        match res {
+            Ok(x) => x,
+            Err(err) => {
+                eprintln!("{msg}: {err}");
+                unsafe {
+                    // SAFETY: _exit is safe to call
+                    libc::_exit(101);
+                }
+            }
+        }
+    }
     // SAFETY: We only run async-signal-safe functions inside the child process.
     let child_pid = unsafe {
         unsafe_fork!({
-            old_sigmask
-                .restore_sigmask()
-                .expect("failed to restore sigmask");
+            expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
             // Create a new session and process group led by this process.
             // Uses the current PID as the PGID of the new process group.
@@ -342,23 +352,33 @@ fn spawn_service(
             // hang if the container has a tty attached.
             //
             // SAFETY: setsid is safe to call.
-            cerr(libc::setsid()).expect("failed to setsid");
+            expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
             // Set the log pipe as stdout and stderr
             // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
             // accessed after this point depends on stdout/stderr pointing to a particular fd.
-            cerr(libc::dup2(log_writer.as_raw_fd(), 1)).expect("failed to set stdout");
-            cerr(libc::dup2(log_writer.as_raw_fd(), 2)).expect("failed to set stderr");
+            expect_no_panic(
+                cerr(libc::dup2(log_writer.as_raw_fd(), 1)),
+                "failed to set stdout",
+            );
+            expect_no_panic(
+                cerr(libc::dup2(log_writer.as_raw_fd(), 2)),
+                "failed to set stderr",
+            );
 
             execvp(cmd.as_ptr(), args.as_ptr());
-            // If we reach this point, the exec failed.
-            let err = io::Error::last_os_error()
-                .raw_os_error()
-                .expect("last_os_error didn't return OS error");
 
-            err_tx
-                .write_all(&i32::to_ne_bytes(err))
-                .expect("failed to write error code");
+            // If we reach this point, the exec failed.
+            let Some(err) = io::Error::last_os_error().raw_os_error() else {
+                eprintln!("last_os_error didn't return OS error");
+                // SAFETY: _exit is safe to call
+                libc::_exit(101);
+            };
+
+            expect_no_panic(
+                err_tx.write_all(&i32::to_ne_bytes(err)),
+                "failed to write error code",
+            );
             // SAFETY: _exit is safe to call
             libc::_exit(1);
         })
