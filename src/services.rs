@@ -3,7 +3,6 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::{self, ExitStatus};
 use std::ptr;
@@ -72,7 +71,7 @@ pub enum ServiceStatus {
 #[derive(Debug)]
 pub enum ServiceError {
     ServiceNotFound { name: String },
-    SpawnFailed { cmd: String, err: io::Error },
+    SpawnFailed { cmd: String, err: String },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -203,12 +202,12 @@ impl ServiceManager {
                 Ok(())
             }
             Err(err) => {
-                println!("[{name}] Failed to spawn: {err}");
-                // FIXME do something better than ExitStatus::from_raw(101 << 8)
-                service.state.status = ServiceStatus::Exited(ExitStatus::from_raw(101 << 8));
+                let err_str = err.to_string();
+                println!("[{name}] Failed to spawn: {err_str}");
+                service.state.status = ServiceStatus::Error(err);
                 Err(ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
-                    err,
+                    err: err_str,
                 })
             }
         }
@@ -352,6 +351,7 @@ fn spawn_service(
             cerr(libc::dup2(log_writer.as_raw_fd(), 2)).expect("failed to set stderr");
 
             execvp(cmd.as_ptr(), args.as_ptr());
+            // If we reach this point, the exec failed.
             let err = io::Error::last_os_error()
                 .raw_os_error()
                 .expect("last_os_error didn't return OS error");

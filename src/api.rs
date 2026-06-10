@@ -23,21 +23,15 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running {
-        main_pid: u32,
-    },
+    Running { main_pid: u32 },
 
     /// The service is paused but can be continued.
-    Frozen {
-        main_pid: u32,
-    },
+    Frozen { main_pid: u32 },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping {
-        main_pid: u32,
-    },
+    Stopping { main_pid: u32 },
 
-    /// The service failed with the given exit status.
+    /// The service exited with the given exit status.
     Exited(
         #[serde(
             serialize_with = "exit_status_serde::serialize",
@@ -46,6 +40,7 @@ pub enum ServiceStatus {
         ExitStatus,
     ),
 
+    /// The service failed to start with the given error.
     Error(String),
 }
 
