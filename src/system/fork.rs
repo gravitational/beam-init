@@ -23,6 +23,7 @@ macro_rules! unsafe_fork {
                 // Ensure we never unwind out of this function in the forked process
                 let _bomb = $crate::system::fork::DropBomb;
 
+                // Ensure that the provided block diverges.
                 let _: std::convert::Infallible = { $f };
             }
             Ok(pid) => Ok(pid),

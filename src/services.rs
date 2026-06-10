@@ -4,7 +4,7 @@ use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::pin::pin;
-use std::process::{self, ExitStatus};
+use std::process::ExitStatus;
 use std::ptr;
 
 use axum::response::{IntoResponse, Response};
@@ -359,7 +359,8 @@ fn spawn_service(
             err_tx
                 .write_all(&i32::to_ne_bytes(err))
                 .expect("failed to write error code");
-            process::exit(1)
+            // SAFETY: _exit is safe to call
+            libc::_exit(1);
         })
     }?;
     drop(err_tx);
