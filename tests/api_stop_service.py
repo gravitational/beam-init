@@ -12,7 +12,7 @@ def process_exists(process_name):
 
     return False
 
-subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
+subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
 
 # Wait a bit to ensure the service has started
 time.sleep(.1)

@@ -25,7 +25,7 @@ def assert_process_status(process_name, expected_status):
     return proc
 
 
-subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
+subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
 time.sleep(0.1) # Wait a bit to ensure the service has started.
 sleep_proc = assert_process_status("sleep", psutil.STATUS_SLEEPING)
 

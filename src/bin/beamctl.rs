@@ -115,9 +115,9 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     Start {
-        #[arg(index = 1)]
-        service: String,
-        #[arg(trailing_var_arg = true, index = 2, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
     },
     Stop {
@@ -151,16 +151,18 @@ fn main() {
     let client = Client::new_local();
 
     match args.command {
-        Command::Start { service, command } => {
+        Command::Start { name, command } => {
+            let name = name.unwrap_or_else(gen_name);
             let _resp: api::CreateService = client
                 .post(
-                    &format!("/service/{}", service),
+                    &format!("/service/{}", name),
                     api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
+            eprintln!("Started service {name}");
         }
         Command::Stop { name } => {
             let _resp: () = client
@@ -213,4 +215,11 @@ fn main() {
             }
         }
     }
+}
+
+fn gen_name() -> String {
+    let mut buf = [0u8; 8];
+    // SAFETY: We pass a valid mutable byte array of the given size.
+    unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    format!("{:016x}", u64::from_ne_bytes(buf))
 }
