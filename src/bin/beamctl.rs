@@ -112,34 +112,44 @@ struct Cli {
     command: Command,
 }
 
+/// Service manager client for beams
 #[derive(clap::Subcommand)]
 enum Command {
+    /// Create and start a service
     Start {
+        /// Name of the service to create
         #[arg(long)]
         name: Option<String>,
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
     },
+    /// Stop a service
     Stop {
         #[arg(index = 1)]
         name: String,
     },
+    /// Freeze all processes of a service
     Freeze {
         #[arg(index = 1)]
         name: String,
     },
+    /// Resume all processes of a service
     Thaw {
         #[arg(index = 1)]
         name: String,
     },
+    /// Show information about a service
     Show {
         #[arg(index = 1)]
         name: String,
     },
+    /// List all services
     List,
+    /// Show logs of a service
     Logs {
         #[arg(index = 1)]
         name: String,
+        /// Follow logs as they are produced. If not enabled a snapshot of the logs will be shown.
         #[arg(long)]
         follow: bool,
     },
