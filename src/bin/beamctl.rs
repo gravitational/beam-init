@@ -128,6 +128,11 @@ enum Command {
         #[arg(index = 1)]
         name: String,
     },
+    /// Stop and then start a service.
+    Restart {
+        #[arg(index = 1)]
+        name: String,
+    },
     /// Freeze all processes of a service
     Freeze {
         #[arg(index = 1)]
@@ -177,6 +182,11 @@ fn main() {
         Command::Stop { name } => {
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
+                .unwrap_or_else(show_error_and_exit);
+        }
+        Command::Restart { name } => {
+            let _resp: () = client
+                .post(&format!("/service/{}/restart", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Freeze { name } => {

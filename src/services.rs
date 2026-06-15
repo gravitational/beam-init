@@ -45,6 +45,7 @@ pub struct ServiceConfig {
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
+    pub start_attempts: u32,
 }
 
 #[derive(Debug)]
@@ -86,7 +87,7 @@ impl IntoResponse for ServiceError {
                 .into_response(),
             ServiceError::ServiceExists { name } => (
                 StatusCode::CONFLICT,
-                format!("Service {name} already exists"),
+                format!("Service named `{name}` already exists"),
             )
                 .into_response(),
             ServiceError::SpawnFailed { cmd, err } => (
@@ -169,6 +170,7 @@ impl ServiceManager {
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
                         logs,
+                        start_attempts: 0,
                     },
                 });
                 Ok(())
@@ -209,6 +211,8 @@ impl ServiceManager {
             .logs
             .new_writer()
             .expect("failed to create log writer");
+
+        service.state.start_attempts = service.state.start_attempts.saturating_add(1);
 
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {

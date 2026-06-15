@@ -74,3 +74,10 @@ fn api_start_invalid_service() {
         .run("./tests/api_start_invalid_service.py")
         .wait();
 }
+
+#[test]
+fn api_restart_service() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_restart_service.py")
+        .wait();
+}
