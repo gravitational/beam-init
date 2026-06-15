@@ -114,7 +114,12 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    Start(StartArgs),
+    Start {
+        #[arg(index = 1)]
+        service: String,
+        #[arg(trailing_var_arg = true, index = 2, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+        command: Vec<String>,
+    },
     Stop {
         #[arg(index = 1)]
         name: String,
@@ -140,27 +145,19 @@ enum Command {
     },
 }
 
-#[derive(clap::Args)]
-struct StartArgs {
-    #[arg(index = 1)]
-    service: String,
-    #[arg(trailing_var_arg = true, index = 2, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
-    command: Vec<String>,
-}
-
 fn main() {
     let args = Cli::parse();
 
     let client = Client::new_local();
 
     match args.command {
-        Command::Start(start) => {
+        Command::Start { service, command } => {
             let _resp: api::CreateService = client
                 .post(
-                    &format!("/service/{}", start.service),
+                    &format!("/service/{}", service),
                     api::CreateService {
-                        cmd: start.command[0].clone(),
-                        args: start.command[1..].to_owned(),
+                        cmd: command[0].clone(),
+                        args: command[1..].to_owned(),
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
