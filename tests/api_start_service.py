@@ -1,9 +1,10 @@
 import os
 import psutil
+import re
 import subprocess
 import time
 
-subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
+subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
 
 # Wait a bit to ensure the service has started
 time.sleep(.1)
@@ -16,6 +17,10 @@ for proc in psutil.process_iter(['pid', 'name', 'status']):
         found_sleep = True
 assert found_sleep, "Sleep not started"
 
-output = subprocess.run(["beamctl", "start", "sleep", "--", "sleep", "10"], stderr=subprocess.PIPE).stderr
+output = subprocess.run(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"], stderr=subprocess.PIPE).stderr
 print(output)
 assert output == b"Service sleep already exists\n"
+
+output = subprocess.run(["beamctl", "start", "sleep", "10"], stderr=subprocess.PIPE).stderr
+print(output)
+assert re.fullmatch(rb"Started service [0-9a-f]{16}\n", output), output

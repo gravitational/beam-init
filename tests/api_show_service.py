@@ -5,7 +5,7 @@ import re
 import subprocess
 import time
 
-subprocess.check_call(["beamctl", "start", "sleep", "--", "sleep", "10"])
+subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
 time.sleep(.1) # Wait a bit to ensure the service has started
 output = subprocess.check_output(["beamctl", "show", "sleep"])
 assert re.fullmatch(rb"sleep \(running PID=\d+\): sleep 10\n", output), output
@@ -24,7 +24,7 @@ subprocess.check_call(["beamctl", "stop", "sleep"])
 output = subprocess.check_output(["beamctl", "show", "sleep"])
 assert output == b"sleep (stopped): sleep 10\n", output
 
-subprocess.check_call(["beamctl", "start", "invalid", "--", "false"])
+subprocess.check_call(["beamctl", "start", "--name", "invalid", "--", "false"])
 time.sleep(.1)
 output = subprocess.check_output(["beamctl", "show", "invalid"])
 assert output == b"invalid (failed with exit status: 1): false\n", output

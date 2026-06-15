@@ -112,40 +112,47 @@ struct Cli {
     command: Command,
 }
 
+/// Service manager client for beams
 #[derive(clap::Subcommand)]
 enum Command {
-    Start(StartArgs),
+    /// Create and start a service
+    Start {
+        /// Name of the service to create
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
+        command: Vec<String>,
+    },
+    /// Stop a service
     Stop {
         #[arg(index = 1)]
         name: String,
     },
+    /// Freeze all processes of a service
     Freeze {
         #[arg(index = 1)]
         name: String,
     },
+    /// Resume all processes of a service
     Thaw {
         #[arg(index = 1)]
         name: String,
     },
+    /// Show information about a service
     Show {
         #[arg(index = 1)]
         name: String,
     },
+    /// List all services
     List,
+    /// Show logs of a service
     Logs {
         #[arg(index = 1)]
         name: String,
+        /// Follow logs as they are produced. If not enabled a snapshot of the logs will be shown.
         #[arg(long)]
         follow: bool,
     },
-}
-
-#[derive(clap::Args)]
-struct StartArgs {
-    #[arg(index = 1)]
-    service: String,
-    #[arg(trailing_var_arg = true, index = 2, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
-    command: Vec<String>,
 }
 
 fn main() {
@@ -154,16 +161,18 @@ fn main() {
     let client = Client::new_local();
 
     match args.command {
-        Command::Start(start) => {
+        Command::Start { name, command } => {
+            let name = name.unwrap_or_else(gen_name);
             let _resp: api::CreateService = client
                 .post(
-                    &format!("/service/{}", start.service),
+                    &format!("/service/{}", name),
                     api::CreateService {
-                        cmd: start.command[0].clone(),
-                        args: start.command[1..].to_owned(),
+                        cmd: command[0].clone(),
+                        args: command[1..].to_owned(),
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
+            eprintln!("Started service {name}");
         }
         Command::Stop { name } => {
             let _resp: () = client
@@ -216,4 +225,11 @@ fn main() {
             }
         }
     }
+}
+
+fn gen_name() -> String {
+    let mut buf = [0u8; 8];
+    // SAFETY: We pass a valid mutable byte array of the given size.
+    unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    format!("{:016x}", u64::from_ne_bytes(buf))
 }
