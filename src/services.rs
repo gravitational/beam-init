@@ -71,6 +71,7 @@ pub enum ServiceStatus {
 #[derive(Debug)]
 pub enum ServiceError {
     ServiceNotFound { name: String },
+    ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
 }
 
@@ -81,6 +82,11 @@ impl IntoResponse for ServiceError {
             ServiceError::ServiceNotFound { name } => (
                 StatusCode::NOT_FOUND,
                 format!("Service {name} was not found"),
+            )
+                .into_response(),
+            ServiceError::ServiceExists { name } => (
+                StatusCode::CONFLICT,
+                format!("Service {name} already exists"),
             )
                 .into_response(),
             ServiceError::SpawnFailed { cmd, err } => (
@@ -102,7 +108,9 @@ impl ServiceManager {
 
     pub fn handle_signal(&mut self, info: signalfd_siginfo) {
         if info.ssi_signo == SIGCHLD as u32 {
-            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).unwrap();
+            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).expect(
+                "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
+            );
             if pid == 0 {
                 return;
             }
@@ -138,7 +146,11 @@ impl ServiceManager {
         Ok(service.state.logs.new_reader())
     }
 
-    pub fn create_service(&mut self, name: String, config: ServiceConfig) {
+    pub fn create_service(
+        &mut self,
+        name: String,
+        config: ServiceConfig,
+    ) -> Result<(), ServiceError> {
         let logs = Logs::new();
 
         let reader = logs.new_reader();
@@ -150,7 +162,7 @@ impl ServiceManager {
             }
         });
 
-        match self.services.entry(name) {
+        match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Service {
                     config,
@@ -159,9 +171,9 @@ impl ServiceManager {
                         logs,
                     },
                 });
+                Ok(())
             }
-            // FIXME error handling
-            Entry::Occupied(_) => todo!("service already exists"),
+            Entry::Occupied(_) => Err(ServiceError::ServiceExists { name }),
         }
     }
 
@@ -192,7 +204,11 @@ impl ServiceManager {
 
         println!("Starting service {name}");
 
-        let log_writer = service.state.logs.new_writer().unwrap();
+        let log_writer = service
+            .state
+            .logs
+            .new_writer()
+            .expect("failed to create log writer");
 
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {
@@ -227,7 +243,7 @@ impl ServiceManager {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
-                stop_process_group(main_pid as pid_t).unwrap();
+                stop_process_group(main_pid as pid_t).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
         }
@@ -249,7 +265,7 @@ impl ServiceManager {
                 // This process is already running.
             }
             ServiceStatus::Frozen { main_pid } => {
-                continue_process_group(main_pid as pid_t).unwrap();
+                continue_process_group(main_pid as pid_t).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
             }
         }
@@ -266,7 +282,7 @@ impl ServiceManager {
             }
             ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
                 service.state.status = ServiceStatus::Stopping { main_pid };
-                terminate_process(main_pid as pid_t).unwrap();
+                terminate_process(main_pid as pid_t).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
@@ -287,13 +303,7 @@ impl ServiceManager {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {
-                // `handle_signal` will update the status.
-                if let Err(e) = kill_process(main_pid as pid_t)
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    // NotFound means that we tried to kill a process that already exited.
-                    todo!()
-                }
+                kill_process(main_pid as pid_t).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
