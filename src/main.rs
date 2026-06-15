@@ -68,7 +68,7 @@ async fn main() {
         }
 
         if let Some(service) = service_manager.try_get_service("bootstrap")
-            && let ServiceStatus::Failed(status) = service.state.status
+            && let ServiceStatus::Exited(status) = service.state.status
         {
             if let Some(code) = status.code() {
                 process::exit(code);

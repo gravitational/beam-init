@@ -1,0 +1,5 @@
+disallowed-types = [
+    # Uses waitpid, which conflicts with the zombie reaper
+    "std::process::Command",
+    "std::process::Child",
+]

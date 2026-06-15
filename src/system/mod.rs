@@ -5,6 +5,7 @@ use std::process::ExitStatus;
 
 use libc::pid_t;
 
+pub mod fork;
 pub mod signal_set;
 
 pub fn cerr(retval: c_int) -> io::Result<c_int> {

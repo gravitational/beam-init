@@ -3,8 +3,6 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::mem;
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 
 use libc::{SFD_CLOEXEC, SFD_NONBLOCK, signalfd, signalfd_siginfo};
 use tokio::io::Interest;
@@ -57,15 +55,8 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
 pub struct OldSigmask(SignalSet);
 
 impl OldSigmask {
-    pub fn with_restored_sigmask<'a>(&self, cmd: &'a mut Command) -> &'a mut Command {
-        let old_sigmask = self.0;
-        // SAFETY: SignalSet::set_mask calls pthread_sigmask, which is an async signal safe function
-        unsafe {
-            cmd.pre_exec(move || {
-                old_sigmask.set_mask()?;
-
-                Ok(())
-            })
-        }
+    pub fn restore_sigmask(&self) -> io::Result<()> {
+        self.0.set_mask()?;
+        Ok(())
     }
 }
