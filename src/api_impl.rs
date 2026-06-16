@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 use crate::Event;
-use crate::services::{self, ServiceError, ServiceManager};
+use crate::services::{self, ServiceError, ServiceManager, StartReason};
 use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
@@ -21,6 +21,9 @@ pub enum Command {
     CreateService {
         name: String,
         service: CreateService,
+    },
+    RestartService {
+        name: String,
     },
     StopService {
         name: String,
@@ -47,6 +50,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
     let router = Router::new()
         .route("/services", get(list_services))
         .route("/service/{name}", post(create_service))
+        .route("/service/{name}/restart", post(restart_service))
         .route("/service/{name}/stop", post(stop_service))
         .route("/service/{name}/freeze", post(freeze_service))
         .route("/service/{name}/thaw", post(thaw_service))
@@ -84,6 +88,18 @@ async fn stop_service(
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command(Command::StopService { name }, tx))
+        .await
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
+}
+
+async fn restart_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command(Command::RestartService { name }, tx))
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -165,6 +181,7 @@ impl From<&crate::services::Service> for crate::api::Service {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
+            automatic_restart_attempts: value.state.automatic_restart_attempts,
         }
     }
 }
@@ -190,6 +207,19 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     }
 }
 
+async fn stop_service_cmd(
+    service_manager: &mut ServiceManager,
+    name: &str,
+) -> Result<(), ServiceError> {
+    service_manager.terminate_service(name)?;
+
+    // FIXME: pick a more principled duration, and potentially perform the kill
+    // below in an async way.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    service_manager.kill_service(name)
+}
+
 pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
@@ -203,17 +233,17 @@ pub async fn handle_api_command(
                     args: service.args.clone(),
                 },
             )?;
-            service_manager.start_service(&name)?;
+            service_manager.start_service(&name, StartReason::User)?;
             Ok(Json(service).into_response())
         }
+        Command::RestartService { name } => {
+            let () = stop_service_cmd(service_manager, &name).await?;
+            service_manager.start_service(&name, StartReason::User)?;
+
+            Ok(Json(()).into_response())
+        }
         Command::StopService { name } => {
-            service_manager.terminate_service(&name)?;
-
-            // FIXME: pick a more principled duration, and potentially perform the kill
-            // below in an async way.
-            tokio::time::sleep(Duration::from_millis(5)).await;
-
-            service_manager.kill_service(&name)?;
+            let () = stop_service_cmd(service_manager, &name).await?;
 
             Ok(Json(()).into_response())
         }

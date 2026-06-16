@@ -17,10 +17,12 @@ for proc in psutil.process_iter(['pid', 'name', 'status']):
         found_sleep = True
 assert found_sleep, "Sleep not started"
 
+# Starting another service with the same name is an error.
 output = subprocess.run(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"], stderr=subprocess.PIPE).stderr
 print(output)
-assert output == b"Service sleep already exists\n"
+assert output == b"Service named `sleep` already exists\n"
 
+# Start the same service, but have beamctl auto-generate a name.
 output = subprocess.run(["beamctl", "start", "sleep", "10"], stderr=subprocess.PIPE).stderr
 print(output)
 assert re.fullmatch(rb"Started service [0-9a-f]{16}\n", output), output
