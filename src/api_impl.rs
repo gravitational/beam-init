@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 use crate::Event;
-use crate::services::{self, ServiceError, ServiceManager};
+use crate::services::{self, ServiceError, ServiceManager, StartReason};
 use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
@@ -181,7 +181,7 @@ impl From<&crate::services::Service> for crate::api::Service {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
-            start_attempts: value.state.start_attempts,
+            automatic_restart_attempts: value.state.automatic_restart_attempts,
         }
     }
 }
@@ -233,12 +233,12 @@ pub async fn handle_api_command(
                     args: service.args.clone(),
                 },
             )?;
-            service_manager.start_service(&name)?;
+            service_manager.start_service(&name, StartReason::User)?;
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
             let () = stop_service_cmd(service_manager, &name).await?;
-            service_manager.start_service(&name)?;
+            service_manager.start_service(&name, StartReason::User)?;
 
             Ok(Json(()).into_response())
         }

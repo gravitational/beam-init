@@ -128,7 +128,7 @@ enum Command {
         #[arg(index = 1)]
         name: String,
     },
-    /// Stop and then start a service.
+    /// Stop a service if currently running and start it again.
     Restart {
         #[arg(index = 1)]
         name: String,

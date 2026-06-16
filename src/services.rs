@@ -45,7 +45,7 @@ pub struct ServiceConfig {
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
-    pub start_attempts: u32,
+    pub automatic_restart_attempts: u32,
 }
 
 #[derive(Debug)]
@@ -97,6 +97,14 @@ impl IntoResponse for ServiceError {
                 .into_response(),
         }
     }
+}
+
+pub(crate) enum StartReason {
+    /// The user requested that this service be (re)started.
+    User,
+    /// Beam-init requested that this service be (re)started (e.g. because it became unresponsive).
+    #[allow(dead_code)] // FIXME use this.
+    Automatic,
 }
 
 impl ServiceManager {
@@ -170,7 +178,7 @@ impl ServiceManager {
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
                         logs,
-                        start_attempts: 0,
+                        automatic_restart_attempts: 0,
                     },
                 });
                 Ok(())
@@ -199,7 +207,7 @@ impl ServiceManager {
             })
     }
 
-    pub fn start_service(&mut self, name: &str) -> Result<(), ServiceError> {
+    pub fn start_service(&mut self, name: &str, reason: StartReason) -> Result<(), ServiceError> {
         let old_sigmask = self.old_sigmask;
 
         let service = self.get_service_mut(name)?;
@@ -212,7 +220,10 @@ impl ServiceManager {
             .new_writer()
             .expect("failed to create log writer");
 
-        service.state.start_attempts = service.state.start_attempts.saturating_add(1);
+        service.state.automatic_restart_attempts = match reason {
+            StartReason::User => 0,
+            StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
+        };
 
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {

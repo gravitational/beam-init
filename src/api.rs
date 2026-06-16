@@ -15,7 +15,7 @@ pub struct Service {
     pub cmd: String,
     pub args: Vec<String>,
     pub status: ServiceStatus,
-    pub start_attempts: u32,
+    pub automatic_restart_attempts: u32,
 }
 
 #[derive(Serialize, Deserialize)]
