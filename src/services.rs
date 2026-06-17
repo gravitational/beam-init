@@ -9,7 +9,7 @@ use std::ptr;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, WNOHANG, execvp, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio_stream::StreamExt;
 
@@ -389,7 +389,7 @@ fn spawn_service(
                 "failed to set stderr",
             );
 
-            execvp(cmd.as_ptr(), args.as_ptr());
+            libc::execvp(cmd.as_ptr(), args.as_ptr());
 
             // If we reach this point, the exec failed.
             let Some(err) = io::Error::last_os_error().raw_os_error() else {
