@@ -26,14 +26,7 @@ pub fn kill_process_group(pgid: pid_t, sig: c_int) -> io::Result<i32> {
     assert!(pgid > 1, "process group {pgid} is not valid");
 
     // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
-    match cerr(unsafe { libc::kill(-pgid, sig) }) {
-        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
-            // The process moved to another process group, only kill the single process.
-            // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
-            cerr(unsafe { libc::kill(pgid, sig) })
-        }
-        other => other,
-    }
+    cerr(unsafe { libc::kill(-pgid, sig) })
 }
 
 pub fn _exit(code: c_int) -> ! {
