@@ -17,7 +17,8 @@ use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
 use crate::system::{
-    cerr, continue_process_group, kill_process, stop_process_group, terminate_process, waitpid,
+    _exit, cerr, continue_process_group, kill_process, stop_process_group, terminate_process,
+    waitpid,
 };
 
 pub struct ServiceManager {
@@ -359,10 +360,7 @@ fn spawn_service(
             Ok(x) => x,
             Err(err) => {
                 eprintln!("{msg}: {err}");
-                unsafe {
-                    // SAFETY: _exit is safe to call
-                    libc::_exit(101);
-                }
+                _exit(101);
             }
         }
     }
@@ -396,16 +394,14 @@ fn spawn_service(
             // If we reach this point, the exec failed.
             let Some(err) = io::Error::last_os_error().raw_os_error() else {
                 eprintln!("last_os_error didn't return OS error");
-                // SAFETY: _exit is safe to call
-                libc::_exit(101);
+                _exit(101);
             };
 
             expect_no_panic(
                 err_tx.write_all(&i32::to_ne_bytes(err)),
                 "failed to write error code",
             );
-            // SAFETY: _exit is safe to call
-            libc::_exit(1);
+            _exit(1);
         })
     }?;
     drop(err_tx);

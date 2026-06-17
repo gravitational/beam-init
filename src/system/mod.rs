@@ -1,7 +1,7 @@
 use std::ffi::c_int;
-use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
+use std::{io, process};
 
 use libc::pid_t;
 
@@ -60,4 +60,15 @@ pub fn continue_process_group(pid: pid_t) -> io::Result<i32> {
         }
         other => other,
     }
+}
+
+pub fn _exit(code: c_int) -> ! {
+    // SAFETY: _exit is safe to call
+    unsafe { libc::_exit(code) };
+}
+
+pub fn exit_with_signal(sig: c_int) -> ! {
+    // SAFETY: This is always safe
+    unsafe { libc::raise(sig) };
+    process::abort();
 }
