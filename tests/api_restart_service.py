@@ -18,6 +18,7 @@ time.sleep(.1)
 
 status = json.loads(subprocess.check_output(["beamctl", "--json", "show", name]))
 assert status["automatic_restart_attempts"] == 0, status
+print(status)
 new_pid = status["status"]["Running"]["main_pid"]
 
 # The service really was restarted, it has a new PID now.

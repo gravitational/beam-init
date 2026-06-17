@@ -5,7 +5,10 @@ use std::{io, process};
 
 use libc::pid_t;
 
+use crate::system::pidfd::Pidfd;
+
 pub mod fork;
+pub mod pidfd;
 pub mod signal_set;
 
 pub fn cerr(retval: c_int) -> io::Result<c_int> {
@@ -20,6 +23,10 @@ pub fn waitpid(pid: pid_t, options: c_int) -> io::Result<(pid_t, ExitStatus)> {
     // SAFETY: A valid mutable pointer is passed as status argument.
     let pid = cerr(unsafe { libc::waitpid(pid, &mut status, options) })?;
     Ok((pid, ExitStatus::from_raw(status)))
+}
+
+pub fn kill_process(pidfd: &mut Pidfd, sig: c_int) -> io::Result<()> {
+    pidfd.send_signal(sig)
 }
 
 pub fn kill_process_group(pgid: pid_t, sig: c_int) -> io::Result<i32> {

@@ -1,4 +1,5 @@
 use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::{env, process};
 
 use axum::response::{IntoResponse, Response};
@@ -17,6 +18,7 @@ mod system;
 
 enum Event {
     Command(api_impl::Command, oneshot::Sender<Response>),
+    Exit(String, ExitStatus),
     Signal(signalfd_siginfo),
 }
 
@@ -52,16 +54,17 @@ async fn main() {
 
     if env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1") {
         // Listen for API commands
-        api_impl::bind_api_socket(tx_event).expect("failed to bind api socket");
+        api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
     }
 
-    let mut service_manager = ServiceManager::new(old_sigmask);
+    let mut service_manager = ServiceManager::new(old_sigmask, tx_event);
     loop {
         match rx_event
             .recv()
             .await
             .expect("signal stream and api socket tasks failed")
         {
+            Event::Exit(service, status) => service_manager.handle_exit(&service, status),
             Event::Signal(info) => service_manager.handle_signal(info),
             Event::Command(cmd, tx) => {
                 let res = api_impl::handle_api_command(&mut service_manager, cmd).await;

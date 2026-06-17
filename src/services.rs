@@ -5,66 +5,75 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::pin::pin;
 use std::process::ExitStatus;
-use std::ptr;
+use std::{mem, ptr};
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{ESRCH, SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
+use crate::Event;
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
-use crate::system::{_exit, cerr, kill_process_group, waitpid};
+use crate::system::pidfd::Pidfd;
+use crate::system::{_exit, cerr, kill_process, kill_process_group, waitpid};
 
-pub struct ServiceManager {
+pub(crate) struct ServiceManager {
     old_sigmask: OldSigmask,
+    tx_event: mpsc::Sender<Event>,
     services: BTreeMap<String, Service>,
 }
 
 #[derive(Debug)]
-pub struct Service {
-    pub config: ServiceConfig,
-    pub state: ServiceState,
+pub(crate) struct Service {
+    pub(crate) config: ServiceConfig,
+    pub(crate) state: ServiceState,
 }
 
 /// The configuration of a service.
 ///
 /// This only changes when explicitly modified through the API.
 #[derive(Debug)]
-pub struct ServiceConfig {
-    pub cmd: String,
-    pub args: Vec<String>,
+pub(crate) struct ServiceConfig {
+    pub(crate) cmd: String,
+    pub(crate) args: Vec<String>,
 }
 
 /// The runtime state of a service.
 #[derive(Debug)]
-pub struct ServiceState {
-    pub status: ServiceStatus,
-    pub logs: Logs,
-    pub automatic_restart_attempts: u32,
+pub(crate) struct ServiceState {
+    pub(crate) status: ServiceStatus,
+    pub(crate) logs: Logs,
+    pub(crate) automatic_restart_attempts: u32,
 }
 
 #[derive(Debug)]
-pub enum ServiceStatus {
+pub(crate) enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: u32 },
+    Running { main_pid: Pidfd },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen { main_pid: u32 },
+    Frozen { main_pid: Pidfd },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: u32 },
+    Stopping { main_pid: Pidfd },
 
     /// The service exited with the given exit status.
     Exited(ExitStatus),
 
     /// The service failed to start with the given error.
     Error(io::Error),
+
+    /// A placeholder value to temporarily swap in while changing the status.
+    /// This is a workaround for rustc not liking the target of a mutable
+    /// reference temporarily being left uninitialized.
+    Placeholder,
 }
 
 #[derive(Debug)]
@@ -106,35 +115,34 @@ pub(crate) enum StartReason {
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask) -> Self {
+    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>) -> Self {
         ServiceManager {
             old_sigmask,
+            tx_event,
             services: BTreeMap::new(),
         }
     }
 
     pub fn handle_signal(&mut self, info: signalfd_siginfo) {
         if info.ssi_signo == SIGCHLD as u32 {
-            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).expect(
-                "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
-            );
-            if pid == 0 {
+            waitpid(info.ssi_pid as pid_t, WNOHANG); /*.expect(
+            "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
+            );*/
+        }
+    }
+
+    pub fn handle_exit(&mut self, name: &str, status: ExitStatus) {
+        let service = self.services.get_mut(name).unwrap();
+        match service.state.status {
+            ServiceStatus::Running { .. } => {
+                service.state.status = ServiceStatus::Exited(status);
                 return;
             }
-
-            for service in self.services.values_mut() {
-                match service.state.status {
-                    ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
-                        service.state.status = ServiceStatus::Exited(status);
-                        return;
-                    }
-                    ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
-                        service.state.status = ServiceStatus::Stopped;
-                        return;
-                    }
-                    _ => { /* ignore */ }
-                }
+            ServiceStatus::Stopping { .. } => {
+                service.state.status = ServiceStatus::Stopped;
+                return;
             }
+            _ => { /* ignore */ }
         }
     }
 
@@ -207,6 +215,7 @@ impl ServiceManager {
 
     pub fn start_service(&mut self, name: &str, reason: StartReason) -> Result<(), ServiceError> {
         let old_sigmask = self.old_sigmask;
+        let tx_event = self.tx_event.clone();
 
         let service = self.get_service_mut(name)?;
 
@@ -225,8 +234,15 @@ impl ServiceManager {
 
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {
+                let name = name.to_owned();
+                let child_pid2 = child_pid.try_clone().unwrap();
+                tokio::spawn(async move {
+                    let status = child_pid2.wait().await.unwrap();
+                    tx_event.send(Event::Exit(name, status)).await.unwrap();
+                });
+
                 service.state.status = ServiceStatus::Running {
-                    main_pid: child_pid as u32,
+                    main_pid: child_pid,
                 };
                 Ok(())
             }
@@ -245,20 +261,23 @@ impl ServiceManager {
     pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
         let service = self.get_service_mut(name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped
+        match mem::replace(&mut service.state.status, ServiceStatus::Placeholder) {
+            old @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
+            | ServiceStatus::Error(_)) => {
                 // No process to freeze.
+                service.state.status = old;
             }
-            ServiceStatus::Frozen { .. } => {
+            old @ ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
+                service.state.status = old;
             }
             ServiceStatus::Running { main_pid } => {
-                kill_process_group(main_pid as pid_t, SIGSTOP).expect("process to exist");
+                kill_process_group(main_pid.pid(), SIGSTOP).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
+            ServiceStatus::Placeholder => unreachable!(),
         }
 
         Ok(())
@@ -267,20 +286,23 @@ impl ServiceManager {
     pub fn thaw_service(&mut self, name: &str) -> Result<(), ServiceError> {
         let service = self.get_service_mut(name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped
+        match mem::replace(&mut service.state.status, ServiceStatus::Placeholder) {
+            old @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
+            | ServiceStatus::Error(_)) => {
                 // No process to thaw.
+                service.state.status = old;
             }
-            ServiceStatus::Running { .. } => {
+            old @ ServiceStatus::Running { .. } => {
                 // This process is already running.
+                service.state.status = old;
             }
             ServiceStatus::Frozen { main_pid } => {
-                kill_process_group(main_pid as pid_t, SIGCONT).expect("process to exist");
+                kill_process_group(main_pid.pid(), SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
             }
+            ServiceStatus::Placeholder => unreachable!(),
         }
 
         Ok(())
@@ -289,17 +311,20 @@ impl ServiceManager {
     pub fn terminate_service(&mut self, name: &str) -> Result<(), ServiceError> {
         let service = self.get_service_mut(name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
+        match mem::replace(&mut service.state.status, ServiceStatus::Placeholder) {
+            old @ (ServiceStatus::Stopped | ServiceStatus::Stopping { .. }) => {
                 // all good
+                service.state.status = old;
             }
-            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Running { mut main_pid } | ServiceStatus::Frozen { mut main_pid } => {
+                kill_process(&mut main_pid, SIGTERM).expect("process to exist");
                 service.state.status = ServiceStatus::Stopping { main_pid };
-                kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+            old @ (ServiceStatus::Exited(_) | ServiceStatus::Error(_)) => {
                 // nothing to do
+                service.state.status = old;
             }
+            ServiceStatus::Placeholder => unreachable!(),
         }
 
         Ok(())
@@ -308,7 +333,7 @@ impl ServiceManager {
     pub fn kill_service(&mut self, name: &str) -> Result<(), ServiceError> {
         let service = self.get_service_mut(name)?;
 
-        match service.state.status {
+        match &mut service.state.status {
             ServiceStatus::Stopped => {
                 // all good
             }
@@ -316,11 +341,17 @@ impl ServiceManager {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {
-                kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
+                match main_pid.send_signal(SIGKILL) {
+                    Ok(()) => Ok(()),
+                    Err(err) if err.raw_os_error() == Some(ESRCH) => Ok(()),
+                    Err(err) => Err(err),
+                }
+                .expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
             }
+            ServiceStatus::Placeholder => unreachable!(),
         }
 
         Ok(())
@@ -337,7 +368,7 @@ fn spawn_service(
     old_sigmask: OldSigmask,
     config: &ServiceConfig,
     log_writer: std::os::unix::prelude::OwnedFd,
-) -> io::Result<pid_t> {
+) -> io::Result<Pidfd> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -405,7 +436,8 @@ fn spawn_service(
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(Pidfd::for_pid(child_pid)
+            .expect("child somehow doesn't exist anymore without waitpid call???")),
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }

@@ -188,21 +188,22 @@ impl From<&crate::services::Service> for crate::api::Service {
 
 impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
-        match *value {
+        match value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid } => {
-                ServiceStatus::Running { main_pid }
-            }
-            crate::services::ServiceStatus::Frozen { main_pid } => {
-                ServiceStatus::Frozen { main_pid }
-            }
-            crate::services::ServiceStatus::Stopping { main_pid } => {
-                ServiceStatus::Stopping { main_pid }
-            }
+            crate::services::ServiceStatus::Running { main_pid } => ServiceStatus::Running {
+                main_pid: main_pid.pid() as u32,
+            },
+            crate::services::ServiceStatus::Frozen { main_pid } => ServiceStatus::Frozen {
+                main_pid: main_pid.pid() as u32,
+            },
+            crate::services::ServiceStatus::Stopping { main_pid } => ServiceStatus::Stopping {
+                main_pid: main_pid.pid() as u32,
+            },
             crate::services::ServiceStatus::Exited(exit_status) => {
-                ServiceStatus::Exited(exit_status)
+                ServiceStatus::Exited(*exit_status)
             }
-            crate::services::ServiceStatus::Error(ref err) => ServiceStatus::Error(err.to_string()),
+            crate::services::ServiceStatus::Error(err) => ServiceStatus::Error(err.to_string()),
+            crate::services::ServiceStatus::Placeholder => unreachable!(),
         }
     }
 }
