@@ -1,7 +1,7 @@
 use std::ffi::c_int;
-use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
+use std::{io, process};
 
 use libc::pid_t;
 
@@ -22,42 +22,33 @@ pub fn waitpid(pid: pid_t, options: c_int) -> io::Result<(pid_t, ExitStatus)> {
     Ok((pid, ExitStatus::from_raw(status)))
 }
 
-pub fn terminate_process(pid: pid_t) -> io::Result<i32> {
-    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    cerr(unsafe { libc::kill(pid, libc::SIGTERM) })
+pub fn kill_process(pid: pid_t, sig: c_int) -> io::Result<i32> {
+    // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
+    cerr(unsafe { libc::kill(pid, sig) })
 }
 
-pub fn kill_process(pid: pid_t) -> io::Result<i32> {
-    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    cerr(unsafe { libc::kill(pid, libc::SIGKILL) })
-}
-
-pub fn stop_process_group(pid: pid_t) -> io::Result<i32> {
+pub fn kill_process_group(pid: pid_t, sig: c_int) -> io::Result<i32> {
     // SAFETY: getpgid is safe to call.
     let pgid = cerr(unsafe { libc::getpgid(pid) })?;
 
-    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    match cerr(unsafe { libc::kill(-pgid, libc::SIGSTOP) }) {
+    // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
+    match cerr(unsafe { libc::kill(-pgid, sig) }) {
         Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
             // The process moved to another process group.
-            // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-            cerr(unsafe { libc::kill(pid, libc::SIGSTOP) })
+            // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
+            cerr(unsafe { libc::kill(pid, sig) })
         }
         other => other,
     }
 }
 
-pub fn continue_process_group(pid: pid_t) -> io::Result<i32> {
-    // SAFETY: getpgid is safe to call.
-    let pgid = cerr(unsafe { libc::getpgid(pid) })?;
+pub fn _exit(code: c_int) -> ! {
+    // SAFETY: _exit is safe to call
+    unsafe { libc::_exit(code) };
+}
 
-    // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-    match cerr(unsafe { libc::kill(-pgid, libc::SIGCONT) }) {
-        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
-            // The process moved to another process group.
-            // SAFETY: kill is given a valid signal, and won't cause UB for a nonexistent PID.
-            cerr(unsafe { libc::kill(pid, libc::SIGCONT) })
-        }
-        other => other,
-    }
+pub fn exit_with_signal(sig: c_int) -> ! {
+    // SAFETY: This is always safe
+    unsafe { libc::raise(sig) };
+    process::abort();
 }

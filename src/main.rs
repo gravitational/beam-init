@@ -6,6 +6,7 @@ use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
 use crate::services::{ServiceManager, ServiceStatus};
+use crate::system::exit_with_signal;
 use beam_init::api;
 
 mod api_impl;
@@ -73,9 +74,7 @@ async fn main() {
             if let Some(code) = status.code() {
                 process::exit(code);
             } else if let Some(signal) = status.signal() {
-                // SAFETY: This is always safe
-                unsafe { libc::raise(signal) };
-                process::abort();
+                exit_with_signal(signal)
             } else {
                 process::exit(1);
             }
