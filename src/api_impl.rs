@@ -220,6 +220,14 @@ async fn stop_service_cmd(
     service_manager.kill_service(name)
 }
 
+pub async fn automatic_restart(
+    service_manager: &mut ServiceManager,
+    name: &str,
+) -> Result<(), ServiceError> {
+    stop_service_cmd(service_manager, name).await?;
+    service_manager.start_service(name, StartReason::Automatic)
+}
+
 pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
@@ -229,7 +237,7 @@ pub async fn handle_api_command(
             let CreateService {
                 cmd,
                 args,
-                readiness: _, // FIXME use this.
+                readiness,
             } = &service;
 
             service_manager.create_service(
@@ -237,6 +245,7 @@ pub async fn handle_api_command(
                 services::ServiceConfig {
                     cmd: cmd.clone(),
                     args: args.clone(),
+                    readiness: readiness.clone(),
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

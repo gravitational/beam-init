@@ -11,22 +11,35 @@ use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
+use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
+use crate::Event;
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::api::Probe;
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
+    tx_event: mpsc::Sender<Event>,
 }
 
 #[derive(Debug)]
 pub struct Service {
     pub config: ServiceConfig,
     pub state: ServiceState,
+}
+
+impl Service {
+    fn abort_readiness_probe(&mut self) {
+        if let Some(handle) = self.state.readiness_probe.take() {
+            handle.abort();
+        }
+    }
 }
 
 /// The configuration of a service.
@@ -36,6 +49,7 @@ pub struct Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub readiness: Option<Probe>,
 }
 
 /// The runtime state of a service.
@@ -44,6 +58,7 @@ pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
     pub automatic_restart_attempts: u32,
+    pub readiness_probe: Option<AbortHandle>,
 }
 
 #[derive(Debug)]
@@ -101,15 +116,15 @@ pub(crate) enum StartReason {
     /// The user requested that this service be (re)started.
     User,
     /// Beam-init requested that this service be (re)started (e.g. because it became unresponsive).
-    #[allow(dead_code)] // FIXME use this.
     Automatic,
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask) -> Self {
+    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
+            tx_event,
         }
     }
 
@@ -127,10 +142,16 @@ impl ServiceManager {
                 match service.state.status {
                     ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Exited(status);
+                        if let Some(handle) = service.state.readiness_probe.take() {
+                            handle.abort();
+                        }
                         return;
                     }
                     ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Stopped;
+                        if let Some(handle) = service.state.readiness_probe.take() {
+                            handle.abort();
+                        }
                         return;
                     }
                     _ => { /* ignore */ }
@@ -178,6 +199,7 @@ impl ServiceManager {
                         status: ServiceStatus::Stopped,
                         logs,
                         automatic_restart_attempts: 0,
+                        readiness_probe: None,
                     },
                 });
                 Ok(())
@@ -229,6 +251,7 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid as u32,
                 };
+                self.spawn_readiness_probe(name);
                 Ok(())
             }
             Err(err) => {
@@ -241,6 +264,26 @@ impl ServiceManager {
                 })
             }
         }
+    }
+
+    /// (Re)start the readiness probe task for a service.
+    fn spawn_readiness_probe(&mut self, name: &str) {
+        let tx_event = self.tx_event.clone();
+
+        let Ok(service) = self.get_service_mut(name) else {
+            return;
+        };
+
+        if let Some(handle) = service.state.readiness_probe.take() {
+            handle.abort();
+        }
+
+        let Some(probe) = service.config.readiness.clone() else {
+            return;
+        };
+
+        let handle = tokio::spawn(run_readiness_probe(name.to_owned(), probe, tx_event));
+        service.state.readiness_probe = Some(handle.abort_handle());
     }
 
     pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
@@ -257,6 +300,7 @@ impl ServiceManager {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
+                service.abort_readiness_probe();
                 kill_process_group(main_pid as pid_t, SIGSTOP).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
@@ -281,6 +325,8 @@ impl ServiceManager {
             ServiceStatus::Frozen { main_pid } => {
                 kill_process_group(main_pid as pid_t, SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
+                // Resume probing now that the process is running again.
+                self.spawn_readiness_probe(name);
             }
         }
 
@@ -295,6 +341,7 @@ impl ServiceManager {
                 // all good
             }
             ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+                service.abort_readiness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
@@ -331,6 +378,39 @@ impl ServiceManager {
         self.services
             .iter()
             .map(|(name, service)| (name, &service.state.status))
+    }
+}
+
+async fn run_readiness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<Event>) {
+    tokio::time::sleep(probe.initial_delay).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{}{}", probe.port, probe.path);
+    let mut consecutive_failures: usize = 0;
+
+    loop {
+        let healthy = match client.get(url.as_str()).timeout(probe.period).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        };
+
+        if healthy {
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures += 1;
+            eprintln!(
+                "[{name}] readiness probe failed ({consecutive_failures}/{})",
+                probe.failure_threshold
+            );
+
+            if consecutive_failures >= probe.failure_threshold {
+                eprintln!("[{name}] readiness probe exhausted. requesting restart");
+                let _ = tx_event.send(Event::ProbeFailed { name }).await;
+                return;
+            }
+        }
+
+        tokio::time::sleep(probe.period).await;
     }
 }
 
