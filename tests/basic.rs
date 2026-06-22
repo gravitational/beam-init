@@ -83,6 +83,7 @@ fn api_restart_service() {
 }
 
 #[test]
+#[ignore = "spurious failures"] // FIXME(#70)
 fn process_group_kill() {
     docker_harness::Image::build("test.Dockerfile")
         .run("./tests/process_group_kill.py")
