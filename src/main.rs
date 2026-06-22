@@ -18,6 +18,7 @@ mod system;
 enum Event {
     Command(api_impl::Command, oneshot::Sender<Response>),
     Signal(signalfd_siginfo),
+    ProbeFailed { name: String },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,10 +53,10 @@ async fn main() {
 
     if env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1") {
         // Listen for API commands
-        api_impl::bind_api_socket(tx_event).expect("failed to bind api socket");
+        api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
     }
 
-    let mut service_manager = ServiceManager::new(old_sigmask);
+    let mut service_manager = ServiceManager::new(old_sigmask, tx_event);
     loop {
         match rx_event
             .recv()
@@ -66,6 +67,11 @@ async fn main() {
             Event::Command(cmd, tx) => {
                 let res = api_impl::handle_api_command(&mut service_manager, cmd).await;
                 let _ = tx.send(res.into_response());
+            }
+            Event::ProbeFailed { name } => {
+                if let Err(e) = api_impl::automatic_restart(&mut service_manager, &name).await {
+                    eprintln!("failed to automatically restart {name}: {e:?}");
+                }
             }
         }
 
