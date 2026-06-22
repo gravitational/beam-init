@@ -22,21 +22,15 @@ pub fn waitpid(pid: pid_t, options: c_int) -> io::Result<(pid_t, ExitStatus)> {
     Ok((pid, ExitStatus::from_raw(status)))
 }
 
-pub fn kill_process(pid: pid_t, sig: c_int) -> io::Result<i32> {
-    // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
-    cerr(unsafe { libc::kill(pid, sig) })
-}
-
-pub fn kill_process_group(pid: pid_t, sig: c_int) -> io::Result<i32> {
-    // SAFETY: getpgid is safe to call.
-    let pgid = cerr(unsafe { libc::getpgid(pid) })?;
+pub fn kill_process_group(pgid: pid_t, sig: c_int) -> io::Result<i32> {
+    assert!(pgid > 1, "process group {pgid} is not valid");
 
     // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
     match cerr(unsafe { libc::kill(-pgid, sig) }) {
         Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {
-            // The process moved to another process group.
+            // The process moved to another process group, only kill the single process.
             // SAFETY: kill won't cause UB for a nonexistent PID or invalid signal.
-            cerr(unsafe { libc::kill(pid, sig) })
+            cerr(unsafe { libc::kill(pgid, sig) })
         }
         other => other,
     }

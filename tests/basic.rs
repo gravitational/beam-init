@@ -81,3 +81,10 @@ fn api_restart_service() {
         .run("./tests/api_restart_service.py")
         .wait();
 }
+
+#[test]
+fn process_group_kill() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/process_group_kill.py")
+        .wait();
+}

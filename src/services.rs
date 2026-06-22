@@ -16,7 +16,7 @@ use tokio_stream::StreamExt;
 use crate::logs::Logs;
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
-use crate::system::{_exit, cerr, kill_process, kill_process_group, waitpid};
+use crate::system::{_exit, cerr, kill_process_group, waitpid};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -295,7 +295,7 @@ impl ServiceManager {
             }
             ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
                 service.state.status = ServiceStatus::Stopping { main_pid };
-                kill_process(main_pid as pid_t, SIGTERM).expect("process to exist");
+                kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
@@ -316,7 +316,7 @@ impl ServiceManager {
                 panic!("service {name} was killed without being terminated")
             }
             ServiceStatus::Stopping { main_pid } => {
-                kill_process(main_pid as pid_t, SIGKILL).expect("process to exist");
+                kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
