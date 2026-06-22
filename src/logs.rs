@@ -50,7 +50,7 @@ impl Logs {
                 .await
                 .expect("failed to read from pipe")
             {
-                let line = String::from_utf8_lossy(&line).into_owned();
+                let line = to_utf8_fast(line);
                 entries.lock().await.push(line);
                 next_entry.notify_waiters();
             }
@@ -173,4 +173,23 @@ enum RingBufferEntry {
 
     /// No new entries have been added after the reader position.
     Empty,
+}
+
+/// Micro-optimization: convert the input without an additional allocation if not absolutely necessary,
+/// which it typically won't be.
+fn to_utf8_fast(line: Vec<u8>) -> String {
+    String::from_utf8(line)
+        .unwrap_or_else(|err| String::from_utf8_lossy(&err.into_bytes()).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn log_sanitizer() {
+        let hello = b"hello".to_vec();
+        let p = hello.as_ptr();
+        let hello = super::to_utf8_fast(hello);
+        let q = hello.as_ptr();
+        assert_eq!(p, q);
+    }
 }
