@@ -179,6 +179,8 @@ enum RingBufferEntry {
 fn sanitize(line: Vec<u8>) -> String {
     // Micro-optimization: convert the input without an additional allocation if not absolutely necessary,
     // which it typically won't be.
+    // NOTE: If https://doc.rust-lang.org/stable/std/string/struct.String.html#method.from_utf8_lossy_owned gets
+    // stabilized, that could replace this construction.
     let line = String::from_utf8(line)
         .unwrap_or_else(|err| String::from_utf8_lossy(&err.into_bytes()).into_owned());
 
