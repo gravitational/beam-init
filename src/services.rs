@@ -35,10 +35,21 @@ pub struct Service {
 }
 
 impl Service {
+    /// Stop the readiness probe task for a service.
     fn abort_readiness_probe(&mut self) {
         if let Some(handle) = self.state.readiness_probe.take() {
             handle.abort();
         }
+    }
+
+    /// (Re)start the readiness probe task for a service.
+    fn spawn_readiness_probe(&mut self, name: String, tx_event: mpsc::Sender<Event>) {
+        let Some(probe) = self.config.readiness.clone() else {
+            return;
+        };
+
+        let handle = tokio::spawn(run_readiness_probe(name, probe, tx_event));
+        self.state.readiness_probe = Some(handle.abort_handle());
     }
 }
 
@@ -142,16 +153,12 @@ impl ServiceManager {
                 match service.state.status {
                     ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Exited(status);
-                        if let Some(handle) = service.state.readiness_probe.take() {
-                            handle.abort();
-                        }
+                        service.abort_readiness_probe();
                         return;
                     }
                     ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Stopped;
-                        if let Some(handle) = service.state.readiness_probe.take() {
-                            handle.abort();
-                        }
+                        service.abort_readiness_probe();
                         return;
                     }
                     _ => { /* ignore */ }
@@ -231,6 +238,7 @@ impl ServiceManager {
     pub fn start_service(&mut self, name: &str, reason: StartReason) -> Result<(), ServiceError> {
         let old_sigmask = self.old_sigmask;
 
+        let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
         println!("Starting service {name}");
@@ -251,7 +259,7 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid as u32,
                 };
-                self.spawn_readiness_probe(name);
+                service.spawn_readiness_probe(name.to_owned(), tx_event);
                 Ok(())
             }
             Err(err) => {
@@ -264,26 +272,6 @@ impl ServiceManager {
                 })
             }
         }
-    }
-
-    /// (Re)start the readiness probe task for a service.
-    fn spawn_readiness_probe(&mut self, name: &str) {
-        let tx_event = self.tx_event.clone();
-
-        let Ok(service) = self.get_service_mut(name) else {
-            return;
-        };
-
-        if let Some(handle) = service.state.readiness_probe.take() {
-            handle.abort();
-        }
-
-        let Some(probe) = service.config.readiness.clone() else {
-            return;
-        };
-
-        let handle = tokio::spawn(run_readiness_probe(name.to_owned(), probe, tx_event));
-        service.state.readiness_probe = Some(handle.abort_handle());
     }
 
     pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
@@ -310,6 +298,7 @@ impl ServiceManager {
     }
 
     pub fn thaw_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
@@ -326,7 +315,7 @@ impl ServiceManager {
                 kill_process_group(main_pid as pid_t, SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
                 // Resume probing now that the process is running again.
-                self.spawn_readiness_probe(name);
+                service.spawn_readiness_probe(name.to_owned(), tx_event)
             }
         }
 
