@@ -226,11 +226,17 @@ pub async fn handle_api_command(
 ) -> Result<Response<Body>, ServiceError> {
     match cmd {
         Command::CreateService { name, service } => {
+            let CreateService {
+                cmd,
+                args,
+                readiness: _, // FIXME use this.
+            } = &service;
+
             service_manager.create_service(
                 name.clone(),
                 services::ServiceConfig {
-                    cmd: service.cmd.clone(),
-                    args: service.args.clone(),
+                    cmd: cmd.clone(),
+                    args: args.clone(),
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

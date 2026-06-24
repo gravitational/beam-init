@@ -1,4 +1,4 @@
-use std::process::ExitStatus;
+use std::{process::ExitStatus, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +8,16 @@ pub const SOCKET_PATH: &str = "/run/beam-init";
 pub struct CreateService {
     pub cmd: String,
     pub args: Vec<String>,
+    pub readiness: Option<Probe>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Probe {
+    pub path: String,
+    pub port: u16,
+    pub initial_delay: Duration,
+    pub period: Duration,
+    pub failure_threshold: usize,
 }
 
 #[derive(Serialize, Deserialize)]

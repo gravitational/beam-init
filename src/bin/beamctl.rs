@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 use std::{fs, process};
 
 use clap::Parser;
@@ -6,7 +7,7 @@ use reqwest::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use beam_init::api;
+use beam_init::api::{self, Probe};
 
 struct Client {
     client: reqwest::blocking::Client,
@@ -113,7 +114,7 @@ struct Cli {
 }
 
 /// Service manager client for beams
-#[derive(clap::Subcommand)]
+#[derive(Debug, clap::Subcommand)]
 enum Command {
     /// Create and start a service
     Start {
@@ -122,6 +123,8 @@ enum Command {
         name: Option<String>,
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
+        #[command(flatten)]
+        readiness: Option<ReadinessProbe>,
     },
     /// Stop a service
     Stop {
@@ -160,13 +163,59 @@ enum Command {
     },
 }
 
+// Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
+//
+// The fields are optional, and only when the port is specified are the other fields accepted.
+#[derive(Debug, Clone, clap::Args)]
+struct ReadinessProbe {
+    /// Port the readiness probe connects to.
+    #[arg(long = "readiness-port", required = false)]
+    port: u16,
+
+    #[arg(long = "readiness-path", default_value = "/readyz", requires = "port")]
+    path: String,
+
+    #[arg(long = "readiness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
+    initial_delay: Duration,
+
+    #[arg(long = "readiness-period-seconds", value_parser = parse_duration_seconds, default_value = "10", requires = "port")]
+    period: Duration,
+
+    #[arg(
+        long = "readiness-failure-threshold",
+        default_value_t = 3,
+        requires = "port"
+    )]
+    failure_threshold: usize,
+}
+
+impl From<ReadinessProbe> for Probe {
+    fn from(value: ReadinessProbe) -> Self {
+        Probe {
+            port: value.port,
+            path: value.path,
+            initial_delay: value.initial_delay,
+            period: value.period,
+            failure_threshold: value.failure_threshold,
+        }
+    }
+}
+
+fn parse_duration_seconds(s: &str) -> Result<Duration, std::num::ParseIntError> {
+    Ok(Duration::from_secs(s.parse()?))
+}
+
 fn main() {
     let args = Cli::parse();
 
     let client = Client::new_local();
 
     match args.command {
-        Command::Start { name, command } => {
+        Command::Start {
+            name,
+            command,
+            readiness,
+        } => {
             let name = name.unwrap_or_else(gen_name);
             let _resp: api::CreateService = client
                 .post(
@@ -174,6 +223,7 @@ fn main() {
                     api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
+                        readiness: readiness.map(Into::into),
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
@@ -242,4 +292,68 @@ fn gen_name() -> String {
     // SAFETY: We pass a valid mutable byte array of the given size.
     unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
     format!("{:016x}", u64::from_ne_bytes(buf))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clap_config_is_valid() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    mod readiness {
+        use super::*;
+
+        fn parse(args: &[&str]) -> Option<ReadinessProbe> {
+            let argv = [&["beamctl", "start"], args, &["--", "sleep", "10"]].concat();
+            match Cli::try_parse_from(argv).expect("should parse").command {
+                Command::Start { readiness, .. } => readiness,
+                other => panic!("expected a Start command, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn no_flags() {
+            assert!(parse(&[]).is_none());
+        }
+
+        #[test]
+        fn port_enables_probe_with_defaults() {
+            let probe = parse(&["--readiness-port", "8080"]).unwrap();
+            assert_eq!(probe.port, 8080);
+
+            // The defaults.
+            assert_eq!(probe.path, "/readyz");
+            assert_eq!(probe.initial_delay, Duration::from_secs(0));
+            assert_eq!(probe.period, Duration::from_secs(10));
+            assert_eq!(probe.failure_threshold, 3);
+        }
+
+        #[test]
+        fn flags_without_port_are_rejected() {
+            // The other readiness flags should only parse when a port has been specified.
+            let flags = [
+                vec!["--readiness-path", "/x"],
+                vec!["--readiness-initial-delay-seconds", "5"],
+                vec!["--readiness-period-seconds", "2"],
+                vec!["--readiness-failure-threshold", "1"],
+            ];
+
+            for flag in flags {
+                let argv = [
+                    &["beamctl", "start"],
+                    flag.as_slice(),
+                    &["--", "sleep", "10"],
+                ]
+                .concat();
+                assert!(
+                    Cli::try_parse_from(argv).is_err(),
+                    "{flag:?} without `--readiness-port` should be rejected",
+                );
+            }
+        }
+    }
 }
