@@ -115,6 +115,7 @@ impl ServiceManager {
 
     pub fn handle_signal(&mut self, info: signalfd_siginfo) {
         if info.ssi_signo == SIGCHLD as u32 {
+            #[allow(clippy::disallowed_methods, reason = "this is the only place waitpid is ok")]
             let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).expect(
                 "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
             );

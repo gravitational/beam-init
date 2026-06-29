@@ -3,3 +3,9 @@ disallowed-types = [
     "std::process::Command",
     "std::process::Child",
 ]
+disallowed-methods = [
+    # conflicts with the zombie reaper
+    "libc::waitpid",
+    # allow-invalid is necessary because of a false positive from clippy
+    { path = "beam_init::system::waitpid", allow-invalid = true },
+]
