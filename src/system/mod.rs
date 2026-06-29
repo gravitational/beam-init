@@ -17,6 +17,10 @@ pub fn cerr(retval: c_int) -> io::Result<c_int> {
 
 pub fn waitpid(pid: pid_t, options: c_int) -> io::Result<(pid_t, ExitStatus)> {
     let mut status = 0;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "wrapper for libc::waitpid, itself marked as disallowed"
+    )]
     // SAFETY: A valid mutable pointer is passed as status argument.
     let pid = cerr(unsafe { libc::waitpid(pid, &mut status, options) })?;
     Ok((pid, ExitStatus::from_raw(status)))
