@@ -22,7 +22,7 @@ assert isinstance(status["Running"]["main_pid"], int), status
 
 subprocess.check_call(["beamctl", "stop", "sleep"])
 output = subprocess.check_output(["beamctl", "show", "sleep"])
-assert output == b"sleep (stopped): sleep 10\n", output
+assert output == b"sleep (stopped reason=user): sleep 10\n", output
 
 subprocess.check_call(["beamctl", "start", "--name", "invalid", "--", "false"])
 time.sleep(.1)
@@ -38,4 +38,4 @@ assert json.loads(output) == service
 
 assert service["cmd"] == "sleep", service
 assert service["args"] == ["10"], service
-assert service["status"] == "Stopped", service
+assert service["status"] == {'Stopped': {'reason': 'User'}}, service

@@ -29,9 +29,24 @@ pub struct Service {
 }
 
 #[derive(Serialize, Deserialize)]
+pub enum StopReason {
+    User,
+    Automatic,
+}
+
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StopReason::User => f.write_str("user"),
+            StopReason::Automatic => f.write_str("automatic"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
-    Stopped,
+    Stopped { reason: StopReason },
 
     /// The service is currently running.
     Running { main_pid: u32 },
@@ -40,7 +55,7 @@ pub enum ServiceStatus {
     Frozen { main_pid: u32 },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: u32 },
+    Stopping { main_pid: u32, reason: StopReason },
 
     /// The service exited with the given exit status.
     Exited(
@@ -58,15 +73,20 @@ pub enum ServiceStatus {
 impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
-            ServiceStatus::Stopped => f.write_str("stopped"),
+            ServiceStatus::Stopped { ref reason } => {
+                write!(f, "stopped reason={reason}")
+            }
             ServiceStatus::Running { main_pid } => {
                 write!(f, "running PID={main_pid}")
             }
             ServiceStatus::Frozen { main_pid } => {
                 write!(f, "frozen PID={main_pid}")
             }
-            ServiceStatus::Stopping { main_pid } => {
-                write!(f, "stopping PID={main_pid}")
+            ServiceStatus::Stopping {
+                main_pid,
+                ref reason,
+            } => {
+                write!(f, "stopping PID={main_pid} reason={reason}")
             }
             ServiceStatus::Exited(exit_status) => {
                 if exit_status.success() {

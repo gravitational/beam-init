@@ -87,7 +87,7 @@ async fn main() {
             }
         }
         if let Some(service) = service_manager.try_get_service("bootstrap")
-            && let ServiceStatus::Stopped = service.state.status
+            && let ServiceStatus::Stopped { .. } = service.state.status
         {
             process::exit(0);
         }

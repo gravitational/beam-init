@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 use crate::Event;
-use crate::services::{self, ServiceError, ServiceManager, StartReason};
+use crate::services::{self, ServiceError, ServiceManager, StartReason, StopReason};
 use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
@@ -189,15 +189,20 @@ impl From<&crate::services::Service> for crate::api::Service {
 impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
-            crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
+            crate::services::ServiceStatus::Stopped { reason } => ServiceStatus::Stopped {
+                reason: reason.into(),
+            },
             crate::services::ServiceStatus::Running { main_pid } => {
                 ServiceStatus::Running { main_pid }
             }
             crate::services::ServiceStatus::Frozen { main_pid } => {
                 ServiceStatus::Frozen { main_pid }
             }
-            crate::services::ServiceStatus::Stopping { main_pid } => {
-                ServiceStatus::Stopping { main_pid }
+            crate::services::ServiceStatus::Stopping { main_pid, reason } => {
+                ServiceStatus::Stopping {
+                    main_pid,
+                    reason: reason.into(),
+                }
             }
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(exit_status)
@@ -207,15 +212,25 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     }
 }
 
+impl From<crate::services::StopReason> for crate::api::StopReason {
+    fn from(value: crate::services::StopReason) -> Self {
+        match value {
+            StopReason::User => crate::api::StopReason::User,
+            StopReason::Automatic => crate::api::StopReason::Automatic,
+        }
+    }
+}
+
 async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
     name: &str,
+    reason: StopReason,
 ) -> Result<(), ServiceError> {
-    service_manager.terminate_service(name)?;
+    service_manager.terminate_service(name, reason)?;
 
     // FIXME: pick a more principled duration, and potentially perform the kill
     // below in an async way.
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     service_manager.kill_service(name)
 }
@@ -224,8 +239,17 @@ pub async fn automatic_restart(
     service_manager: &mut ServiceManager,
     name: &str,
 ) -> Result<(), ServiceError> {
-    stop_service_cmd(service_manager, name).await?;
-    service_manager.start_service(name, StartReason::Automatic)
+    stop_service_cmd(service_manager, name, StopReason::Automatic).await?;
+    let service = service_manager.get_service(name)?;
+    let services::ServiceStatus::Stopped { reason } = service.state.status else {
+        dbg!(&service.state.status);
+        unreachable!()
+    };
+
+    match reason {
+        StopReason::User => Ok(()),
+        StopReason::Automatic => service_manager.start_service(name, StartReason::Automatic),
+    }
 }
 
 pub async fn handle_api_command(
@@ -252,13 +276,13 @@ pub async fn handle_api_command(
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
-            let () = stop_service_cmd(service_manager, &name).await?;
+            let () = stop_service_cmd(service_manager, &name, StopReason::User).await?;
             service_manager.start_service(&name, StartReason::User)?;
 
             Ok(Json(()).into_response())
         }
         Command::StopService { name } => {
-            let () = stop_service_cmd(service_manager, &name).await?;
+            let () = stop_service_cmd(service_manager, &name, StopReason::User).await?;
 
             Ok(Json(()).into_response())
         }
