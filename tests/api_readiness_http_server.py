@@ -46,7 +46,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("0.0.0.0", {PORT}), Handler).serve_forever()
 """
 
-# NOTE: the readiness-initial-delay-seconds=0 means the first readiness check is failed instantly.
+# NOTE: the readiness-initial-delay-seconds=1 is kind of load-bearing, otherwise you might
+# find that the port is not yet ready to handle connections.
 subprocess.check_call(
     [
         "beamctl",
@@ -58,7 +59,7 @@ subprocess.check_call(
         "--readiness-port",
         str(PORT),
         "--readiness-initial-delay-seconds",
-        "0",
+        "1",
         "--readiness-period-seconds",
         "1",
         "--readiness-failure-threshold",

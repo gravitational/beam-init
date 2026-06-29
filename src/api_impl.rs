@@ -196,6 +196,12 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
             crate::services::ServiceStatus::Frozen { main_pid } => {
                 ServiceStatus::Frozen { main_pid }
             }
+            crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
+                ServiceStatus::Restarting {
+                    main_pid,
+                    name: name.to_owned(),
+                }
+            }
             crate::services::ServiceStatus::Stopping { main_pid } => {
                 ServiceStatus::Stopping { main_pid }
             }
@@ -224,8 +230,13 @@ pub async fn automatic_restart(
     service_manager: &mut ServiceManager,
     name: &str,
 ) -> Result<(), ServiceError> {
-    stop_service_cmd(service_manager, name).await?;
-    service_manager.start_service(name, StartReason::Automatic)
+    service_manager.terminate_restart_service(name)?;
+
+    // FIXME: pick a more principled duration, and potentially perform the kill
+    // below in an async way.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    service_manager.kill_restart_service(name)
 }
 
 pub async fn handle_api_command(

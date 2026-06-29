@@ -77,6 +77,9 @@ pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
 
+    /// The service was stopped, but will soon be started again as part of a restart.
+    Restarting { main_pid: u32, name: String },
+
     /// The service is currently running.
     Running { main_pid: u32 },
 
@@ -161,6 +164,16 @@ impl ServiceManager {
                         service.abort_readiness_probe();
                         return;
                     }
+                    ServiceStatus::Restarting { main_pid, ref name }
+                        if main_pid == info.ssi_pid =>
+                    {
+                        let name = name.clone();
+                        service.abort_readiness_probe();
+                        // FIXME error handling?
+                        let _ = self.start_service(&name, StartReason::Automatic);
+                        return;
+                    }
+
                     _ => { /* ignore */ }
                 }
             }
@@ -280,6 +293,7 @@ impl ServiceManager {
         match service.state.status {
             ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
                 // No process to freeze.
@@ -304,6 +318,7 @@ impl ServiceManager {
         match service.state.status {
             ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
                 // No process to thaw.
@@ -329,9 +344,36 @@ impl ServiceManager {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Running { main_pid }
+            | ServiceStatus::Frozen { main_pid }
+            | ServiceStatus::Restarting { main_pid, .. } => {
                 service.abort_readiness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid };
+                kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
+            }
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn terminate_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
+
+        match service.state.status {
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. } => {
+                // all good
+            }
+            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+                service.abort_readiness_probe();
+                service.state.status = ServiceStatus::Restarting {
+                    main_pid,
+                    name: name.to_owned(),
+                };
                 kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
@@ -352,7 +394,28 @@ impl ServiceManager {
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid } => {
+            ServiceStatus::Stopping { main_pid } | ServiceStatus::Restarting { main_pid, .. } => {
+                kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
+            }
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn kill_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
+
+        match service.state.status {
+            ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
+                // all good
+            }
+            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
+                panic!("service {name} was killed without being terminated")
+            }
+            ServiceStatus::Restarting { main_pid, .. } => {
                 kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
