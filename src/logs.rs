@@ -155,7 +155,9 @@ impl RingBuffer {
             //         ^   ^
             //         |   next_idx
             //         reader
-            let line = self.entries[usize::try_from(reader.0 - first_idx).unwrap()].clone();
+            let entry =
+                usize::try_from(reader.0 - first_idx).expect("overflow should be handled above");
+            let line = self.entries[entry].clone();
             reader.0 += 1;
             RingBufferEntry::Line(line)
         }
@@ -200,7 +202,7 @@ fn sanitize(line: Vec<u8>) -> String {
                 // which is U+2400 + the ASCII code; i.e. '\a' (U+0007) => '␇' (U+2407).
                 //
                 // PANIC: It is not possible for this conversion to fail
-                char::from_u32(u32::from(ch) + 0x2400).unwrap()
+                char::from_u32(u32::from(ch) + 0x2400).expect("conversion can't fail")
             } else {
                 // For CC1 control codes, pictures don't exist so replace with a more generic
                 // replacement.

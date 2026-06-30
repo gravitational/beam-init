@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+
 use std::os::unix::process::ExitStatusExt;
 use std::{env, process};
 
