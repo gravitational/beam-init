@@ -15,6 +15,9 @@ def get(path):
             return resp.status, resp.read()
     except urllib.error.HTTPError as err:
         return err.code, err.read()
+    except (urllib.error.URLError, ConnectionError, TimeoutError):
+        # The server isn't accepting connections (e.g. it's mid-restart).
+        return 0, b""
 
 def show():
     return json.loads(subprocess.check_output(["beamctl", "--json", "show", "web"]))
@@ -74,13 +77,10 @@ subprocess.check_call(
 
 # Wait until the server is actually listening and gives a healthy status back.
 for _ in range(100):
-    try:
-        status, body = get("/readyz")
-        if status == 200:
-            assert body == b"ok", body
-            break
-    except (urllib.error.URLError, ConnectionError):
-        pass
+    status, body = get("/readyz")
+    if status == 200:
+        assert body == b"ok", body
+        break
     time.sleep(0.1)
 else:
     raise AssertionError("server never became ready")
