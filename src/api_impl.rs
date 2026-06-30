@@ -248,7 +248,7 @@ pub async fn handle_api_command(
             let CreateService {
                 cmd,
                 args,
-                readiness,
+                liveness,
             } = &service;
 
             service_manager.create_service(
@@ -256,7 +256,7 @@ pub async fn handle_api_command(
                 services::ServiceConfig {
                     cmd: cmd.clone(),
                     args: args.clone(),
-                    readiness: readiness.clone(),
+                    liveness: liveness.clone(),
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

@@ -124,7 +124,7 @@ enum Command {
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
         #[command(flatten)]
-        readiness: Option<ReadinessProbe>,
+        liveness: Option<LivenessProbe>,
     },
     /// Stop a service
     Stop {
@@ -167,30 +167,30 @@ enum Command {
 //
 // The fields are optional, and only when the port is specified are the other fields accepted.
 #[derive(Debug, Clone, clap::Args)]
-struct ReadinessProbe {
-    /// Port the readiness probe connects to.
-    #[arg(long = "readiness-port", required = false)]
+struct LivenessProbe {
+    /// Port the liveness probe connects to.
+    #[arg(long = "liveness-port", required = false)]
     port: u16,
 
-    #[arg(long = "readiness-path", default_value = "/readyz", requires = "port")]
+    #[arg(long = "liveness-path", default_value = "/readyz", requires = "port")]
     path: String,
 
-    #[arg(long = "readiness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
+    #[arg(long = "liveness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
     initial_delay: Duration,
 
-    #[arg(long = "readiness-period-seconds", value_parser = parse_duration_seconds, default_value = "10", requires = "port")]
+    #[arg(long = "liveness-period-seconds", value_parser = parse_duration_seconds, default_value = "10", requires = "port")]
     period: Duration,
 
     #[arg(
-        long = "readiness-failure-threshold",
+        long = "liveness-failure-threshold",
         default_value_t = 3,
         requires = "port"
     )]
     failure_threshold: usize,
 }
 
-impl From<ReadinessProbe> for Probe {
-    fn from(value: ReadinessProbe) -> Self {
+impl From<LivenessProbe> for Probe {
+    fn from(value: LivenessProbe) -> Self {
         Probe {
             port: value.port,
             path: value.path,
@@ -214,7 +214,7 @@ fn main() {
         Command::Start {
             name,
             command,
-            readiness,
+            liveness,
         } => {
             let name = name.unwrap_or_else(gen_name);
             let _resp: api::CreateService = client
@@ -223,7 +223,7 @@ fn main() {
                     api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
-                        readiness: readiness.map(Into::into),
+                        liveness: liveness.map(Into::into),
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
@@ -304,13 +304,13 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    mod readiness {
+    mod liveness {
         use super::*;
 
-        fn parse(args: &[&str]) -> Option<ReadinessProbe> {
+        fn parse(args: &[&str]) -> Option<LivenessProbe> {
             let argv = [&["beamctl", "start"], args, &["--", "sleep", "10"]].concat();
             match Cli::try_parse_from(argv).expect("should parse").command {
-                Command::Start { readiness, .. } => readiness,
+                Command::Start { liveness, .. } => liveness,
                 other => panic!("expected a Start command, got {other:?}"),
             }
         }
@@ -322,7 +322,7 @@ mod tests {
 
         #[test]
         fn port_enables_probe_with_defaults() {
-            let probe = parse(&["--readiness-port", "8080"]).unwrap();
+            let probe = parse(&["--liveness-port", "8080"]).unwrap();
             assert_eq!(probe.port, 8080);
 
             // The defaults.
@@ -334,12 +334,12 @@ mod tests {
 
         #[test]
         fn flags_without_port_are_rejected() {
-            // The other readiness flags should only parse when a port has been specified.
+            // The other liveness flags should only parse when a port has been specified.
             let flags = [
-                vec!["--readiness-path", "/x"],
-                vec!["--readiness-initial-delay-seconds", "5"],
-                vec!["--readiness-period-seconds", "2"],
-                vec!["--readiness-failure-threshold", "1"],
+                vec!["--liveness-path", "/x"],
+                vec!["--liveness-initial-delay-seconds", "5"],
+                vec!["--liveness-period-seconds", "2"],
+                vec!["--liveness-failure-threshold", "1"],
             ];
 
             for flag in flags {
@@ -351,7 +351,7 @@ mod tests {
                 .concat();
                 assert!(
                     Cli::try_parse_from(argv).is_err(),
-                    "{flag:?} without `--readiness-port` should be rejected",
+                    "{flag:?} without `--liveness-port` should be rejected",
                 );
             }
         }

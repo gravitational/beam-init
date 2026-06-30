@@ -8,7 +8,7 @@ pub const SOCKET_PATH: &str = "/run/beam-init";
 pub struct CreateService {
     pub cmd: String,
     pub args: Vec<String>,
-    pub readiness: Option<Probe>,
+    pub liveness: Option<Probe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -35,21 +35,21 @@ pub struct Service {
 }
 
 impl Service {
-    /// Stop the readiness probe task for a service.
-    fn abort_readiness_probe(&mut self) {
-        if let Some(handle) = self.state.readiness_probe.take() {
+    /// Stop the liveness probe task for a service.
+    fn abort_liveness_probe(&mut self) {
+        if let Some(handle) = self.state.liveness_probe.take() {
             handle.abort();
         }
     }
 
-    /// (Re)start the readiness probe task for a service.
-    fn spawn_readiness_probe(&mut self, name: String, tx_event: mpsc::Sender<Event>) {
-        let Some(probe) = self.config.readiness.clone() else {
+    /// (Re)start the liveness probe task for a service.
+    fn spawn_liveness_probe(&mut self, name: String, tx_event: mpsc::Sender<Event>) {
+        let Some(probe) = self.config.liveness.clone() else {
             return;
         };
 
-        let handle = tokio::spawn(run_readiness_probe(name, probe, tx_event));
-        self.state.readiness_probe = Some(handle.abort_handle());
+        let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event));
+        self.state.liveness_probe = Some(handle.abort_handle());
     }
 }
 
@@ -60,7 +60,7 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
-    pub readiness: Option<Probe>,
+    pub liveness: Option<Probe>,
 }
 
 /// The runtime state of a service.
@@ -69,7 +69,7 @@ pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
     pub automatic_restart_attempts: u32,
-    pub readiness_probe: Option<AbortHandle>,
+    pub liveness_probe: Option<AbortHandle>,
 }
 
 #[derive(Debug)]
@@ -156,19 +156,19 @@ impl ServiceManager {
                 match service.state.status {
                     ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Exited(status);
-                        service.abort_readiness_probe();
+                        service.abort_liveness_probe();
                         return;
                     }
                     ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Stopped;
-                        service.abort_readiness_probe();
+                        service.abort_liveness_probe();
                         return;
                     }
                     ServiceStatus::Restarting { main_pid, ref name }
                         if main_pid == info.ssi_pid =>
                     {
                         let name = name.clone();
-                        service.abort_readiness_probe();
+                        service.abort_liveness_probe();
                         // start_service will set the service status to Error when an error occurs.
                         // There is nothing else we can do with an error here, so ignore it.
                         let _ = self.start_service(&name, StartReason::Automatic);
@@ -220,7 +220,7 @@ impl ServiceManager {
                         status: ServiceStatus::Stopped,
                         logs,
                         automatic_restart_attempts: 0,
-                        readiness_probe: None,
+                        liveness_probe: None,
                     },
                 });
                 Ok(())
@@ -273,7 +273,7 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid as u32,
                 };
-                service.spawn_readiness_probe(name.to_owned(), tx_event);
+                service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
             }
             Err(err) => {
@@ -303,7 +303,7 @@ impl ServiceManager {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
-                service.abort_readiness_probe();
+                service.abort_liveness_probe();
                 kill_process_group(main_pid as pid_t, SIGSTOP).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
@@ -331,7 +331,7 @@ impl ServiceManager {
                 kill_process_group(main_pid as pid_t, SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
                 // Resume probing now that the process is running again.
-                service.spawn_readiness_probe(name.to_owned(), tx_event)
+                service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
         }
 
@@ -348,7 +348,7 @@ impl ServiceManager {
             ServiceStatus::Running { main_pid }
             | ServiceStatus::Frozen { main_pid }
             | ServiceStatus::Restarting { main_pid, .. } => {
-                service.abort_readiness_probe();
+                service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid };
                 kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
@@ -370,7 +370,7 @@ impl ServiceManager {
                 // all good
             }
             ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
-                service.abort_readiness_probe();
+                service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,
                     name: name.to_owned(),
@@ -437,7 +437,7 @@ impl ServiceManager {
     }
 }
 
-async fn run_readiness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<Event>) {
+async fn run_liveness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<Event>) {
     tokio::time::sleep(probe.initial_delay).await;
 
     let client = reqwest::Client::new();
@@ -455,12 +455,12 @@ async fn run_readiness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<
         } else {
             consecutive_failures += 1;
             eprintln!(
-                "[{name}] readiness probe failed ({consecutive_failures}/{})",
+                "[{name}] liveness probe failed ({consecutive_failures}/{})",
                 probe.failure_threshold
             );
 
             if consecutive_failures >= probe.failure_threshold {
-                eprintln!("[{name}] readiness probe exhausted. requesting restart");
+                eprintln!("[{name}] liveness probe exhausted. requesting restart");
                 let _ = tx_event.send(Event::ProbeFailed { name }).await;
                 return;
             }

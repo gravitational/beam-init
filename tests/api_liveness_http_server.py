@@ -25,20 +25,20 @@ def show():
 server = f"""
 import http.server
 
-ready = True
+live = True
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        global ready
-        if self.path == "/readyz":
-            self.send_response(200 if ready else 500)
+        global live
+        if self.path == "/livez":
+            self.send_response(200 if live else 500)
             self.end_headers()
-            self.wfile.write(b"ok" if ready else b"not ready")
-        elif self.path == "/flip-readiness":
-            ready = not ready
+            self.wfile.write(b"ok" if live else b"not live")
+        elif self.path == "/flip-liveness":
+            live = not live
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"ok" if ready else b"not ready")
+            self.wfile.write(b"ok" if live else b"not live")
         else:
             self.send_response(404)
             self.end_headers()
@@ -49,23 +49,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("0.0.0.0", {PORT}), Handler).serve_forever()
 """
 
-# NOTE: the readiness-initial-delay-seconds=1 is kind of load-bearing, otherwise you might
-# find that the port is not yet ready to handle connections.
+# NOTE: the liveness-initial-delay-seconds=1 is kind of load-bearing, otherwise you might
+# find that the port is not yet able to handle connections.
 subprocess.check_call(
     [
         "beamctl",
         "start",
         "--name",
         "web",
-        "--readiness-path",
-        "/readyz",
-        "--readiness-port",
+        "--liveness-path",
+        "/livez",
+        "--liveness-port",
         str(PORT),
-        "--readiness-initial-delay-seconds",
+        "--liveness-initial-delay-seconds",
         "1",
-        "--readiness-period-seconds",
+        "--liveness-period-seconds",
         "1",
-        "--readiness-failure-threshold",
+        "--liveness-failure-threshold",
         "2",
         "--",
         "python3",
@@ -77,7 +77,7 @@ subprocess.check_call(
 
 # Wait until the server is actually listening and gives a healthy status back.
 for _ in range(100):
-    status, body = get("/readyz")
+    status, body = get("/livez")
     if status == 200:
         assert body == b"ok", body
         break
@@ -91,9 +91,9 @@ assert "Running" in service["status"], service
 assert service["automatic_restart_attempts"] == 0, service
 first_pid = service["status"]["Running"]["main_pid"]
 
-# Now mark the server as unready.
-get("/flip-readiness")
-assert get("/readyz")[0] == 500
+# Now mark the server as unalive.
+get("/flip-liveness")
+assert get("/livez")[0] == 500
 
 # Wait for the automatic restart.
 timeout = time.monotonic() + 5 # seconds
@@ -105,7 +105,7 @@ while time.monotonic() < timeout:
         break
     time.sleep(0.2)
 
-assert restarted, f"service was not restarted by the readiness probe: {service}"
+assert restarted, f"service was not restarted by the liveness probe: {service}"
 
 # After the restart the service runs under a new PID and is healthy again.
 for _ in range(100):
@@ -118,7 +118,7 @@ else:
     raise AssertionError(f"service did not come back under a new PID: {service}")
 
 for _ in range(100):
-    if get("/readyz") == (200, b"ok"):
+    if get("/livez") == (200, b"ok"):
         break
     time.sleep(0.1)
 else:

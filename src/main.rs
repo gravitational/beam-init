@@ -41,7 +41,7 @@ async fn main() {
         service: api::CreateService {
             cmd,
             args: args.collect(),
-            readiness: None,
+            liveness: None,
         },
     };
     // The channel is empty, so sending always succeeds.
