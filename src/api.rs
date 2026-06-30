@@ -33,14 +33,14 @@ pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
 
-    /// The service has been requested to terminate and is in the process of shutting down.
-    Restarting { main_pid: u32, name: String },
-
     /// The service is currently running.
     Running { main_pid: u32 },
 
     /// The service is paused but can be continued.
     Frozen { main_pid: u32 },
+
+    /// The service has been requested to restart and is in the process of shutting down.
+    Restarting { main_pid: u32, name: String },
 
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },

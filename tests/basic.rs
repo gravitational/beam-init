@@ -91,7 +91,7 @@ fn process_group_kill() {
 }
 
 #[test]
-fn readiness_probe() {
+fn api_readiness_http_server() {
     docker_harness::Image::build("test.Dockerfile")
         .run("./tests/api_readiness_http_server.py")
         .wait();
