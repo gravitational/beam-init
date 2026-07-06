@@ -1,5 +1,6 @@
 use std::{process::ExitStatus, time::Duration};
 
+use libc::pid_t;
 use serde::{Deserialize, Serialize};
 
 pub const SOCKET_PATH: &str = "/run/beam-init";
@@ -35,16 +36,16 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: u32 },
+    Running { main_pid: pid_t },
 
     /// The service is paused but can be continued.
-    Frozen { main_pid: u32 },
+    Frozen { main_pid: pid_t },
 
     /// The service has been requested to restart and is in the process of shutting down.
-    Restarting { main_pid: u32, name: String },
+    Restarting { main_pid: pid_t, name: String },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: u32 },
+    Stopping { main_pid: pid_t },
 
     /// The service exited with the given exit status.
     Exited(
