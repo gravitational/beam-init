@@ -4,9 +4,10 @@ import subprocess
 import time
 
 def process_exists(process_name):
-    for proc in psutil.process_iter(['pid', 'name', 'status']):
+    psutil.process_iter.cache_clear()
+    for proc in psutil.process_iter(['pid', 'ppid', 'name', 'status']):
         info = proc.info
-        print(f"{info["pid"]:<2} {info["name"]:<10} {info["status"]}")
+        print(f"{info["pid"]:<2} {info["ppid"]:<2} {info["name"]:<10} {info["status"]}")
         if info["name"] == process_name:
             return True
 

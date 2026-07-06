@@ -147,38 +147,48 @@ impl ServiceManager {
 
     pub fn handle_signal(&mut self, info: signalfd_siginfo) {
         if info.ssi_signo == SIGCHLD as u32 {
-            #[allow(clippy::disallowed_methods, reason = "this is the only place waitpid is ok")]
-            let (pid, status) = waitpid(info.ssi_pid as pid_t, WNOHANG).expect(
-                "got SIGCHLD for non-existent process. maybe there is an incorrect waitpid elsewhere?",
-            );
-            if pid == 0 {
-                return;
-            }
+            loop {
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "this is the only place waitpid is ok"
+                )]
+                let (pid, status) = match waitpid(-1, WNOHANG) {
+                    Ok((pid, status)) => (pid, status),
+                    Err(err) if err.raw_os_error() == Some(libc::ECHILD) => {
+                        // No more zombies to wait for
+                        break;
+                    }
+                    Err(err) => panic!("waitpid failed with {err:?}"),
+                };
+                if pid == 0 {
+                    return;
+                }
 
-            for service in self.services.values_mut() {
-                match service.state.status {
-                    ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
-                        service.state.status = ServiceStatus::Exited(status);
-                        service.abort_liveness_probe();
-                        return;
-                    }
-                    ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
-                        service.state.status = ServiceStatus::Stopped;
-                        service.abort_liveness_probe();
-                        return;
-                    }
-                    ServiceStatus::Restarting { main_pid, ref name }
-                        if main_pid == info.ssi_pid =>
-                    {
-                        let name = name.clone();
-                        service.abort_liveness_probe();
-                        // start_service will set the service status to Error when an error occurs.
-                        // There is nothing else we can do with an error here, so ignore it.
-                        let _ = self.start_service(&name, StartReason::Automatic);
-                        return;
-                    }
+                for service in self.services.values_mut() {
+                    match service.state.status {
+                        ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
+                            service.state.status = ServiceStatus::Exited(status);
+                            service.abort_liveness_probe();
+                            break;
+                        }
+                        ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
+                            service.state.status = ServiceStatus::Stopped;
+                            service.abort_liveness_probe();
+                            break;
+                        }
+                        ServiceStatus::Restarting { main_pid, ref name }
+                            if main_pid == info.ssi_pid =>
+                        {
+                            let name = name.clone();
+                            service.abort_liveness_probe();
+                            // start_service will set the service status to Error when an error occurs.
+                            // There is nothing else we can do with an error here, so ignore it.
+                            let _ = self.start_service(&name, StartReason::Automatic);
+                            break;
+                        }
 
-                    _ => { /* ignore */ }
+                        _ => { /* ignore */ }
+                    }
                 }
             }
         }
