@@ -6,6 +6,7 @@ use std::os::fd::AsRawFd;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
+use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
@@ -16,7 +17,7 @@ use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
 use crate::Event;
-use crate::logs::Logs;
+use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
@@ -48,7 +49,9 @@ impl Service {
             return;
         };
 
-        let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event));
+        let log_queue = Arc::clone(&self.state.logs.queue);
+
+        let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event, log_queue));
         self.state.liveness_probe = Some(handle.abort_handle());
     }
 }
@@ -437,7 +440,12 @@ impl ServiceManager {
     }
 }
 
-async fn run_liveness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<Event>) {
+async fn run_liveness_probe(
+    name: String,
+    probe: Probe,
+    tx_event: mpsc::Sender<Event>,
+    logger: Arc<AsyncRingBuffer>,
+) {
     tokio::time::sleep(probe.initial_delay).await;
 
     let client = reqwest::Client::new();
@@ -454,13 +462,17 @@ async fn run_liveness_probe(name: String, probe: Probe, tx_event: mpsc::Sender<E
             consecutive_failures = 0;
         } else {
             consecutive_failures += 1;
-            eprintln!(
-                "[{name}] liveness probe failed ({consecutive_failures}/{})",
-                probe.failure_threshold
-            );
+            logger
+                .push(format!(
+                    "[liveness probe failed ({consecutive_failures}/{})]",
+                    probe.failure_threshold
+                ))
+                .await;
 
             if consecutive_failures >= probe.failure_threshold {
-                eprintln!("[{name}] liveness probe exhausted. requesting restart");
+                logger
+                    .push("[liveness probe exhausted. requesting restart]".to_owned())
+                    .await;
                 let _ = tx_event.send(Event::ProbeFailed { name }).await;
                 return;
             }
