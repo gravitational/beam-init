@@ -1,3 +1,6 @@
+// You can use the following inside the container to attach a debugger to beam-init:
+// subprocess.check_call(["gdbserver", "--attach", ":1234", "1"])
+
 use std::path::PathBuf;
 
 use crate::docker;
