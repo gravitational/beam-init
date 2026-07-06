@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+
+permissions: {}
+env:
+  RUST_VERSION: "1.96.1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ github.ref_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - label: linux-aarch64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --target ${{ matrix.target }}
+          rustup default "${RUST_VERSION}"
+
+      - name: Build
+        run: RUSTFLAGS="-Ctarget-feature=+crt-static" cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          package="beam-init-${VERSION}-${{ matrix.label }}"
+          mkdir -p "dist" "${package}"
+          cp "target/${{ matrix.target }}/release/beam-init" "${package}/"
+          cp "target/${{ matrix.target }}/release/beamctl" "${package}/"
+
+          for file in LICENSE README.md; do
+            if [[ -f "${file}" ]]; then
+              cp "${file}" "${package}/"
+            fi
+          done
+
+          tar -czf "dist/${package}.tar.gz" "${package}"
+          (
+            cd dist
+            sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256"
+          )
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: beam-init-${{ matrix.label }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    name: Publish release
+    needs:
+      - build
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Download build artifacts
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh run download "${GITHUB_RUN_ID}" --dir dist
+
+      - name: Create GitHub release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          mapfile -t assets < <(find dist -type f \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) | sort)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No release assets found" >&2
+            exit 1
+          fi
+
+          args=(--verify-tag --title "${VERSION}" --generate-notes)
+          if [[ "${VERSION}" == *-rc.* ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${VERSION}" "${assets[@]}" "${args[@]}"
