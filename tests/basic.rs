@@ -1,3 +1,6 @@
+// You can use the following inside the container to attach a debugger to beam-init:
+// subprocess.check_call(["gdbserver", "--attach", ":1234", "1"])
+
 #[test]
 fn self_test_pass() {
     docker_harness::Image::build("test.Dockerfile")

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{LazyLock, Mutex};
 
 static IMAGE_MAP: LazyLock<Mutex<HashMap<PathBuf, Image>>> =
@@ -47,11 +48,17 @@ impl Image {
     }
 
     pub fn run(&self, script_path: &str) -> Container {
+        static N: AtomicUsize = AtomicUsize::new(1234);
+
         let mut cmd = Command::new("docker");
 
         cmd.arg("run").arg("-i").arg("--rm");
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
+        cmd.arg("-p").arg(format!(
+            "{}:1234",
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         cmd.arg(&self.tag).arg("python3").arg("/mnt/script.py");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 

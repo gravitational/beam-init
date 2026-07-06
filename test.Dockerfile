@@ -9,4 +9,5 @@ COPY --from=builder /beamctl /bin/beamctl
 
 ENV BEAM_INIT_ENABLE_API=1
 ENV RUST_BACKTRACE=1
+RUN apt install --update -y gdbserver
 ENTRYPOINT ["/bin/init"]
