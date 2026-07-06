@@ -271,7 +271,7 @@ impl ServiceManager {
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
-                    main_pid: child_pid as u32,
+                    main_pid: child_pid.cast_unsigned(),
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
