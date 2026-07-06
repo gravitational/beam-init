@@ -64,6 +64,7 @@ pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
     pub liveness: Option<Probe>,
+    pub pty: bool,
 }
 
 /// The runtime state of a service.
@@ -572,17 +573,36 @@ fn spawn_service(
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            // Set the log pipe as stdout and stderr
-            // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
-            // accessed after this point depends on stdout/stderr pointing to a particular fd.
-            expect_no_panic(
-                cerr(libc::dup2(log_writer.as_raw_fd(), 1)),
-                "failed to set stdout",
-            );
-            expect_no_panic(
-                cerr(libc::dup2(log_writer.as_raw_fd(), 2)),
-                "failed to set stderr",
-            );
+            if config.pty {
+                let naughtty = std::fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/tmp/faketerm")
+                    .expect("FIXME");
+                // Set a pseudoterminal as stdin, stdout and stderr
+                // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
+                // accessed after this point depends on stdout/stderr pointing to a particular fd.
+                expect_no_panic(
+                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                        .into_iter()
+                        .try_for_each(|fd| {
+                            cerr(libc::dup2(naughtty.as_raw_fd(), fd))?;
+                            Ok(())
+                        }),
+                    "failed to attach pty",
+                );
+            } else {
+                // Set the log pipe as stdout and stderr
+                // SAFETY: as above
+                expect_no_panic(
+                    cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
+                    "failed to set stdout",
+                );
+                expect_no_panic(
+                    cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
+                    "failed to set stderr",
+                );
+            }
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
 

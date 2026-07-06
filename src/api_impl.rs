@@ -271,6 +271,7 @@ pub async fn handle_api_command(
                 cmd,
                 args,
                 liveness,
+                pty,
             } = &service;
 
             service_manager.create_service(
@@ -279,6 +280,7 @@ pub async fn handle_api_command(
                     cmd: cmd.clone(),
                     args: args.clone(),
                     liveness: liveness.clone(),
+                    pty: *pty,
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

@@ -10,6 +10,7 @@ pub struct CreateService {
     pub cmd: String,
     pub args: Vec<String>,
     pub liveness: Option<Probe>,
+    pub pty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
