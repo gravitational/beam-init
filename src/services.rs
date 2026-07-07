@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -72,6 +73,7 @@ pub struct ServiceConfig {
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
+    pub pty: Option<(PathBuf, OwnedFd)>,
     pub automatic_restart_attempts: u32,
     pub liveness_probe: Option<AbortHandle>,
 }
@@ -241,6 +243,17 @@ impl ServiceManager {
             });
         }
 
+        let pty = config.pty.then(|| {
+            let path = PathBuf::from("/tmp/faketerm");
+            let naughtty = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("FIXME");
+
+            (path, OwnedFd::from(naughtty))
+        });
+
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Service {
@@ -248,6 +261,7 @@ impl ServiceManager {
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
                         logs,
+                        pty,
                         automatic_restart_attempts: 0,
                         liveness_probe: None,
                     },
@@ -293,7 +307,7 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        match spawn_service(old_sigmask, &service.config, log_writer) {
+        match spawn_service(old_sigmask, service, log_writer) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
@@ -534,7 +548,7 @@ async fn run_liveness_probe(
 
 fn spawn_service(
     old_sigmask: OldSigmask,
-    config: &ServiceConfig,
+    Service { config, state }: &Service,
     log_writer: std::os::unix::prelude::OwnedFd,
 ) -> io::Result<pid_t> {
     let cmd = CString::new(config.cmd.clone())?;
@@ -573,20 +587,15 @@ fn spawn_service(
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            if config.pty {
-                let naughtty = std::fs::File::options()
-                    .read(true)
-                    .write(true)
-                    .open("/tmp/faketerm")
-                    .expect("FIXME");
-                // Set a pseudoterminal as stdin, stdout and stderr
+            if let Some((_, pty_fd)) = &state.pty {
+                // Set the pseudoterminal as stdin, stdout and stderr
                 // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
                 // accessed after this point depends on stdout/stderr pointing to a particular fd.
                 expect_no_panic(
                     [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
                         .into_iter()
                         .try_for_each(|fd| {
-                            cerr(libc::dup2(naughtty.as_raw_fd(), fd))?;
+                            cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
                             Ok(())
                         }),
                     "failed to attach pty",
