@@ -29,6 +29,7 @@ pub struct Service {
     pub args: Vec<String>,
     pub status: ServiceStatus,
     pub automatic_restart_attempts: u32,
+    pub pty: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

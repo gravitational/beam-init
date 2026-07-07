@@ -312,7 +312,15 @@ fn main() {
                 let mut args = service.args;
                 args.insert(0, service.cmd);
 
-                println!("{name} ({}): {}", service.status, args.join(" "));
+                println!(
+                    "{name} ({}{}): {}",
+                    service.status,
+                    service
+                        .pty
+                        .map(|pty| format!(", {pty}"))
+                        .unwrap_or_default(),
+                    args.join(" ")
+                );
             }
         }
         Command::List => {

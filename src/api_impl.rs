@@ -203,6 +203,7 @@ impl From<&crate::services::Service> for crate::api::Service {
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
+            pty: value.state.pty.as_ref().map(ToString::to_string),
         }
     }
 }
