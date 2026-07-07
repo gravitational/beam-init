@@ -15,24 +15,41 @@ const LOG_COUNT: usize = 100;
 /// A log store with support for multiple async readers and a single pipe writer.
 #[derive(Debug)]
 pub struct Logs {
-    entries: Arc<Mutex<RingBuffer>>,
-    next_entry: Arc<Notify>,
+    pub(crate) queue: Arc<AsyncRingBuffer>,
     abort_handle: Option<AbortHandle>,
+}
+
+#[derive(Debug)]
+pub struct AsyncRingBuffer {
+    entries: Mutex<RingBuffer>,
+    next_entry: Notify,
+}
+
+impl AsyncRingBuffer {
+    pub fn new() -> Self {
+        Self {
+            entries: Mutex::new(RingBuffer::default()),
+            next_entry: Notify::new(),
+        }
+    }
+
+    pub async fn push(&self, line: String) {
+        self.entries.lock().await.push(line);
+        self.next_entry.notify_waiters();
+    }
 }
 
 impl Logs {
     pub fn new() -> Self {
         Self {
-            entries: Arc::new(Mutex::new(RingBuffer::default())),
-            next_entry: Arc::new(Notify::new()),
+            queue: Arc::new(AsyncRingBuffer::new()),
             abort_handle: None,
         }
     }
 
     pub fn new_writer(&mut self) -> io::Result<OwnedFd> {
         let (tx, rx) = pipe::pipe()?;
-        let entries = Arc::clone(&self.entries);
-        let next_entry = Arc::clone(&self.next_entry);
+        let queue = Arc::clone(&self.queue);
 
         // Ensure we only have a single writer. There should be a single log
         // pipe per service. If a service passes the log pipe to another process
@@ -51,11 +68,10 @@ impl Logs {
                 .expect("failed to read from pipe")
             {
                 let line = sanitize(line);
-                entries.lock().await.push(line);
-                next_entry.notify_waiters();
+                queue.push(line).await;
             }
 
-            entries.lock().await.push("[log stream closed]".to_owned());
+            queue.push("[log stream closed]".to_owned()).await;
         });
         self.abort_handle = Some(handle.abort_handle());
 
@@ -65,15 +81,14 @@ impl Logs {
     }
 
     pub fn new_reader(&self) -> impl Stream<Item = String> + 'static {
-        let entries = Arc::clone(&self.entries);
         let mut reader = RingBufferReader(0);
-        let next_entry = Arc::clone(&self.next_entry);
+        let queue = Arc::clone(&self.queue);
 
         async_stream::stream! {
-            let mut next_entry_notified = next_entry.notified();
+            let mut next_entry_notified = queue.next_entry.notified();
 
             loop {
-                match entries.lock().await.get(&mut reader) {
+                match queue.entries.lock().await.get(&mut reader) {
                     RingBufferEntry::Line(line) => {
                         yield line;
                         continue;
@@ -86,13 +101,14 @@ impl Logs {
                 }
 
                 next_entry_notified.await;
-                next_entry_notified = next_entry.notified();
+                next_entry_notified = queue.next_entry.notified();
             }
         }
     }
 
     pub async fn copy_logs(&self) -> Vec<String> {
-        self.entries.lock().await.entries.iter().cloned().collect()
+        let entries = &self.queue.entries.lock().await.entries;
+        entries.iter().cloned().collect()
     }
 }
 

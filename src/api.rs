@@ -8,7 +8,7 @@ pub const SOCKET_PATH: &str = "/run/beam-init";
 pub struct CreateService {
     pub cmd: String,
     pub args: Vec<String>,
-    pub readiness: Option<Probe>,
+    pub liveness: Option<Probe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +39,9 @@ pub enum ServiceStatus {
     /// The service is paused but can be continued.
     Frozen { main_pid: u32 },
 
+    /// The service has been requested to restart and is in the process of shutting down.
+    Restarting { main_pid: u32, name: String },
+
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
 
@@ -67,6 +70,9 @@ impl std::fmt::Display for ServiceStatus {
             }
             ServiceStatus::Stopping { main_pid } => {
                 write!(f, "stopping PID={main_pid}")
+            }
+            ServiceStatus::Restarting { main_pid, name: _ } => {
+                write!(f, "restarting PID={main_pid}")
             }
             ServiceStatus::Exited(exit_status) => {
                 if exit_status.success() {

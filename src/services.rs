@@ -6,27 +6,54 @@ use std::os::fd::AsRawFd;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
+use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
+use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
-use crate::logs::Logs;
+use crate::Event;
+use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::api::Probe;
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
+    tx_event: mpsc::Sender<Event>,
 }
 
 #[derive(Debug)]
 pub struct Service {
     pub config: ServiceConfig,
     pub state: ServiceState,
+}
+
+impl Service {
+    /// Stop the liveness probe task for a service.
+    fn abort_liveness_probe(&mut self) {
+        if let Some(handle) = self.state.liveness_probe.take() {
+            handle.abort();
+        }
+    }
+
+    /// (Re)start the liveness probe task for a service.
+    fn spawn_liveness_probe(&mut self, name: String, tx_event: mpsc::Sender<Event>) {
+        let Some(probe) = self.config.liveness.clone() else {
+            return;
+        };
+
+        let log_queue = Arc::clone(&self.state.logs.queue);
+
+        let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event, log_queue));
+        self.state.liveness_probe = Some(handle.abort_handle());
+    }
 }
 
 /// The configuration of a service.
@@ -36,6 +63,7 @@ pub struct Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub liveness: Option<Probe>,
 }
 
 /// The runtime state of a service.
@@ -44,6 +72,7 @@ pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
     pub automatic_restart_attempts: u32,
+    pub liveness_probe: Option<AbortHandle>,
 }
 
 #[derive(Debug)]
@@ -56,6 +85,9 @@ pub enum ServiceStatus {
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen { main_pid: u32 },
+
+    /// The service was stopped, but will soon be started again as part of a restart.
+    Restarting { main_pid: u32, name: String },
 
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping { main_pid: u32 },
@@ -101,15 +133,15 @@ pub(crate) enum StartReason {
     /// The user requested that this service be (re)started.
     User,
     /// Beam-init requested that this service be (re)started (e.g. because it became unresponsive).
-    #[allow(dead_code)] // FIXME use this.
     Automatic,
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask) -> Self {
+    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
+            tx_event,
         }
     }
 
@@ -127,12 +159,25 @@ impl ServiceManager {
                 match service.state.status {
                     ServiceStatus::Running { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Exited(status);
+                        service.abort_liveness_probe();
                         return;
                     }
                     ServiceStatus::Stopping { main_pid } if main_pid == info.ssi_pid => {
                         service.state.status = ServiceStatus::Stopped;
+                        service.abort_liveness_probe();
                         return;
                     }
+                    ServiceStatus::Restarting { main_pid, ref name }
+                        if main_pid == info.ssi_pid =>
+                    {
+                        let name = name.clone();
+                        service.abort_liveness_probe();
+                        // start_service will set the service status to Error when an error occurs.
+                        // There is nothing else we can do with an error here, so ignore it.
+                        let _ = self.start_service(&name, StartReason::Automatic);
+                        return;
+                    }
+
                     _ => { /* ignore */ }
                 }
             }
@@ -178,6 +223,7 @@ impl ServiceManager {
                         status: ServiceStatus::Stopped,
                         logs,
                         automatic_restart_attempts: 0,
+                        liveness_probe: None,
                     },
                 });
                 Ok(())
@@ -209,6 +255,7 @@ impl ServiceManager {
     pub fn start_service(&mut self, name: &str, reason: StartReason) -> Result<(), ServiceError> {
         let old_sigmask = self.old_sigmask;
 
+        let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
         println!("Starting service {name}");
@@ -227,8 +274,9 @@ impl ServiceManager {
         match spawn_service(old_sigmask, &service.config, log_writer) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
-                    main_pid: child_pid as u32,
+                    main_pid: child_pid.cast_unsigned(),
                 };
+                service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
             }
             Err(err) => {
@@ -249,6 +297,7 @@ impl ServiceManager {
         match service.state.status {
             ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
                 // No process to freeze.
@@ -257,6 +306,7 @@ impl ServiceManager {
                 // This process is already frozen.
             }
             ServiceStatus::Running { main_pid } => {
+                service.abort_liveness_probe();
                 kill_process_group(main_pid as pid_t, SIGSTOP).expect("process to exist");
                 service.state.status = ServiceStatus::Frozen { main_pid };
             }
@@ -266,11 +316,13 @@ impl ServiceManager {
     }
 
     pub fn thaw_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
         match service.state.status {
             ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
                 // No process to thaw.
@@ -281,6 +333,8 @@ impl ServiceManager {
             ServiceStatus::Frozen { main_pid } => {
                 kill_process_group(main_pid as pid_t, SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid };
+                // Resume probing now that the process is running again.
+                service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
         }
 
@@ -294,8 +348,36 @@ impl ServiceManager {
             ServiceStatus::Stopped | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Running { main_pid }
+            | ServiceStatus::Frozen { main_pid }
+            | ServiceStatus::Restarting { main_pid, .. } => {
+                service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid };
+                kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
+            }
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn terminate_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
+
+        match service.state.status {
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. } => {
+                // all good
+            }
+            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+                service.abort_liveness_probe();
+                service.state.status = ServiceStatus::Restarting {
+                    main_pid,
+                    name: name.to_owned(),
+                };
                 kill_process_group(main_pid as pid_t, SIGTERM).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
@@ -316,7 +398,31 @@ impl ServiceManager {
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid } => {
+            ServiceStatus::Stopping { main_pid } | ServiceStatus::Restarting { main_pid, .. } => {
+                // For Restarting, prevent the restart, only stop this service.
+                service.state.status = ServiceStatus::Stopping { main_pid };
+
+                kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
+            }
+            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn kill_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(name)?;
+
+        match service.state.status {
+            ServiceStatus::Stopped => {
+                // all good
+            }
+            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
+                panic!("service {name} was killed without being terminated")
+            }
+            ServiceStatus::Stopping { main_pid } | ServiceStatus::Restarting { main_pid, .. } => {
                 kill_process_group(main_pid as pid_t, SIGKILL).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
@@ -331,6 +437,48 @@ impl ServiceManager {
         self.services
             .iter()
             .map(|(name, service)| (name, &service.state.status))
+    }
+}
+
+async fn run_liveness_probe(
+    name: String,
+    probe: Probe,
+    tx_event: mpsc::Sender<Event>,
+    logger: Arc<AsyncRingBuffer>,
+) {
+    tokio::time::sleep(probe.initial_delay).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{}{}", probe.port, probe.path);
+    let mut consecutive_failures: usize = 0;
+
+    loop {
+        let healthy = match client.get(url.as_str()).timeout(probe.period).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        };
+
+        if healthy {
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures += 1;
+            logger
+                .push(format!(
+                    "[liveness probe failed ({consecutive_failures}/{})]",
+                    probe.failure_threshold
+                ))
+                .await;
+
+            if consecutive_failures >= probe.failure_threshold {
+                logger
+                    .push("[liveness probe exhausted. requesting restart]".to_owned())
+                    .await;
+                let _ = tx_event.send(Event::ProbeFailed { name }).await;
+                return;
+            }
+        }
+
+        tokio::time::sleep(probe.period).await;
     }
 }
 
