@@ -175,6 +175,13 @@ struct LivenessProbe {
     #[arg(long = "liveness-path", default_value = "/livez", requires = "port")]
     path: String,
 
+    #[arg(
+        long = "liveness-max-retries",
+        default_value = "1024",
+        requires = "port"
+    )]
+    max_retries: usize,
+
     #[arg(long = "liveness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
     initial_delay: Duration,
 
@@ -191,12 +198,22 @@ struct LivenessProbe {
 
 impl From<LivenessProbe> for Probe {
     fn from(value: LivenessProbe) -> Self {
+        let LivenessProbe {
+            port,
+            path,
+            max_retries,
+            initial_delay,
+            period,
+            failure_threshold,
+        } = value;
+
         Probe {
-            port: value.port,
-            path: value.path,
-            initial_delay: value.initial_delay,
-            period: value.period,
-            failure_threshold: value.failure_threshold,
+            port,
+            path,
+            max_retries,
+            initial_delay,
+            period,
+            failure_threshold,
         }
     }
 }
@@ -330,6 +347,7 @@ mod tests {
             assert_eq!(probe.initial_delay, Duration::from_secs(0));
             assert_eq!(probe.period, Duration::from_secs(10));
             assert_eq!(probe.failure_threshold, 3);
+            assert_eq!(probe.max_retries, 1024);
         }
 
         #[test]
@@ -340,6 +358,7 @@ mod tests {
                 vec!["--liveness-initial-delay-seconds", "5"],
                 vec!["--liveness-period-seconds", "2"],
                 vec!["--liveness-failure-threshold", "1"],
+                vec!["--liveness-max-retries", "32"],
             ];
 
             for flag in flags {

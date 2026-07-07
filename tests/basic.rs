@@ -96,3 +96,10 @@ fn api_readiness_http_server() {
         .run("./tests/api_liveness_http_server.py")
         .wait();
 }
+
+#[test]
+fn api_liveness_max_retries() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_liveness_max_retries.py")
+        .wait();
+}

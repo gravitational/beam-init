@@ -15,6 +15,7 @@ pub struct CreateService {
 pub struct Probe {
     pub path: String,
     pub port: u16,
+    pub max_retries: usize,
     pub initial_delay: Duration,
     pub period: Duration,
     pub failure_threshold: usize,
