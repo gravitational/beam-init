@@ -1,9 +1,9 @@
-use std::ffi::{CString, OsString};
+use std::ffi::{CStr, OsStr};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::{ffi::OsStringExt, fs::OpenOptionsExt};
-use std::path::PathBuf;
+use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 use crate::system::cerr;
 
@@ -22,10 +22,8 @@ impl Pty {
         // - if it doesn't return -1, it returns a valid file descriptor for from_raw_fd
         let master = unsafe { OwnedFd::from_raw_fd(cerr(libc::posix_openpt(flags))?) };
 
-        let mut buffer: Vec<u8> = Vec::new();
-        buffer.resize(libc::PATH_MAX as usize, b'\0');
-
-        buffer = {
+        let mut buffer = [0u8; libc::PATH_MAX as usize];
+        let pts_name = {
             // SAFETY: ptsname_r is passed pointers to correct memory; no other assumptions are made
             let err = unsafe {
                 libc::ptsname_r(master.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len())
@@ -34,17 +32,17 @@ impl Pty {
                 return Err(io::Error::from_raw_os_error(err));
             }
 
-            let strlen = buffer.iter().position(|b| *b == 0).unwrap_or_default();
-            buffer.truncate(strlen + 1);
+            let c_str = CStr::from_bytes_until_nul(&buffer)
+                .expect("CStr conversion should not fail")
+                .to_bytes();
 
-            CString::from_vec_with_nul(buffer)
-                .expect("CString conversion should not fail")
-                .into_bytes()
+            Path::new(OsStr::from_bytes(c_str))
         };
 
-        let path: PathBuf = OsString::from_vec(buffer).into();
-
-        Ok(Pty { master, path })
+        Ok(Pty {
+            master,
+            path: pts_name.to_owned(),
+        })
     }
 
     pub fn grant(&self) -> io::Result<OwnedFd> {
