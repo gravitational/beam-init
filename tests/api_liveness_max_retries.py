@@ -1,11 +1,9 @@
-import json
 import subprocess
 import time
-import sys
 import urllib.error
 import urllib.request
 
-PORT = 8080
+PORT = 8081
 
 def get(path):
     try:
@@ -19,8 +17,8 @@ def get(path):
         # The server isn't accepting connections (e.g. it's mid-restart).
         return 0, b""
 
-def show():
-    return json.loads(subprocess.check_output(["beamctl", "--json", "show", "web"]))
+def logs():
+    return subprocess.check_output(["beamctl", "logs", "web"])
 
 server = f"""
 import http.server
@@ -49,8 +47,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("0.0.0.0", {PORT}), Handler).serve_forever()
 """
 
-# NOTE: the liveness-initial-delay-seconds=1 is kind of load-bearing, otherwise you might
-# find that the port is not yet able to handle connections.
+# max retries is 1 here, so we immediately stop the probe on the first failure.
 subprocess.check_call(
     [
         "beamctl",
@@ -66,16 +63,15 @@ subprocess.check_call(
         "--liveness-period-seconds",
         "1",
         "--liveness-failure-threshold",
-        "2",
+        "3",
         "--liveness-max-retries",
-        "10",
+        "1",
         "--",
         "python3",
         "-c",
         server,
     ]
 )
-
 
 # Wait until the server is actually listening and gives a healthy status back.
 for _ in range(100):
@@ -87,43 +83,31 @@ for _ in range(100):
 else:
     raise AssertionError("server never became ready")
 
-# All is healthy, no automatic restarts yet.
-service = show()
-assert "Running" in service["status"], service
-assert service["automatic_restart_attempts"] == 0, service
-first_pid = service["status"]["Running"]["main_pid"]
+# All healthy so far. 
+assert b"exceeded max retries" not in logs(), logs()
 
 # Now mark the server as unalive.
 get("/flip-liveness")
 assert get("/livez")[0] == 500
 
-# Wait for the automatic restart.
-timeout = time.monotonic() + 5 # seconds
-restarted = False
+# Once consecutive failures pass max-retries (1) the probe logs the warning.
+timeout = time.monotonic() + 5  # seconds
 while time.monotonic() < timeout:
-    service = show()
-    if service["automatic_restart_attempts"] >= 1:
-        restarted = True
+    if b"[liveness probe exceeded max retries (max_retries=1)]" in logs():
         break
     time.sleep(0.2)
-
-assert restarted, f"service was not restarted by the liveness probe: {service}"
-
-# After the restart the service runs under a new PID and is healthy again.
-for _ in range(100):
-    service = show()
-    status = service["status"]
-    if "Running" in status and status["Running"]["main_pid"] != first_pid:
-        break
-    time.sleep(0.1)
 else:
-    raise AssertionError(f"service did not come back under a new PID: {service}")
+    raise AssertionError(
+        f"probe never logged the max-retries warning: {logs()!r}"
+    )
 
-for _ in range(100):
-    if get("/livez") == (200, b"ok"):
-        break
-    time.sleep(0.1)
-else:
-    raise AssertionError("restarted server never became ready again")
+# Having exceeded max-retries the probe stops: waiting another period must not
+# produce any further "liveness probe failed" lines.
+failures_before = logs().count(b"[liveness probe failed")
+time.sleep(1.5)
+failures_after = logs().count(b"[liveness probe failed")
+assert failures_after == failures_before, (
+    f"probe kept failing after exceeding max-retries: {logs()!r}"
+)
 
 subprocess.check_call(["beamctl", "stop", "web"])

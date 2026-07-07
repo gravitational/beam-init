@@ -469,6 +469,16 @@ async fn run_liveness_probe(
                 ))
                 .await;
 
+            if consecutive_failures > probe.max_retries {
+                logger
+                    .push(format!(
+                        "[liveness probe exceeded max retries (max_retries={})]",
+                        probe.max_retries
+                    ))
+                    .await;
+                return;
+            }
+
             if consecutive_failures >= probe.failure_threshold {
                 logger
                     .push("[liveness probe exhausted. requesting restart]".to_owned())
