@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::os::fd::AsRawFd;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -20,6 +19,7 @@ use tokio_stream::StreamExt;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
+use crate::system::pty::Pty;
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
@@ -73,7 +73,7 @@ pub struct ServiceConfig {
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
-    pub pty: Option<(PathBuf, OwnedFd)>,
+    pub pty: Option<Pty>,
     pub automatic_restart_attempts: u32,
     pub liveness_probe: Option<AbortHandle>,
 }
@@ -243,16 +243,14 @@ impl ServiceManager {
             });
         }
 
-        let pty = config.pty.then(|| {
-            let path = PathBuf::from("/tmp/faketerm");
-            let naughtty = std::fs::File::options()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .expect("FIXME");
-
-            (path, OwnedFd::from(naughtty))
-        });
+        let pty = config.pty.then(Pty::new).transpose().map_err(|err| {
+            let err_str = err.to_string();
+            println!("[{name}] Failed to create a pty: {err_str}");
+            ServiceError::SpawnFailed {
+                cmd: config.cmd.clone(),
+                err: err_str,
+            }
+        })?;
 
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
@@ -587,7 +585,9 @@ fn spawn_service(
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            if let Some((_, pty_fd)) = &state.pty {
+            if let Some(pty) = &state.pty {
+                let pty_fd = expect_no_panic(pty.grant(), "could not grant the pty");
+
                 // Set the pseudoterminal as stdin, stdout and stderr
                 // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
                 // accessed after this point depends on stdout/stderr pointing to a particular fd.
