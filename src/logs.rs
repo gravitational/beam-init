@@ -26,16 +26,16 @@ pub struct AsyncRingBuffer {
 }
 
 impl AsyncRingBuffer {
-    pub async fn push(&self, line: String) {
-        self.entries.lock().await.push(line);
-        self.next_entry.notify_waiters();
-    }
-
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(RingBuffer::default()),
             next_entry: Notify::new(),
         }
+    }
+
+    pub async fn push(&self, line: String) {
+        self.entries.lock().await.push(line);
+        self.next_entry.notify_waiters();
     }
 }
 
@@ -108,7 +108,6 @@ impl Logs {
 
     pub async fn copy_logs(&self) -> Vec<String> {
         let entries = &self.queue.entries.lock().await.entries;
-
         entries.iter().cloned().collect()
     }
 }
