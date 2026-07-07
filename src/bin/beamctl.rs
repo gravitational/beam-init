@@ -172,7 +172,7 @@ struct LivenessProbe {
     #[arg(long = "liveness-port", required = false)]
     port: u16,
 
-    #[arg(long = "liveness-path", default_value = "/readyz", requires = "port")]
+    #[arg(long = "liveness-path", default_value = "/livez", requires = "port")]
     path: String,
 
     #[arg(long = "liveness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
@@ -326,7 +326,7 @@ mod tests {
             assert_eq!(probe.port, 8080);
 
             // The defaults.
-            assert_eq!(probe.path, "/readyz");
+            assert_eq!(probe.path, "/livez");
             assert_eq!(probe.initial_delay, Duration::from_secs(0));
             assert_eq!(probe.period, Duration::from_secs(10));
             assert_eq!(probe.failure_threshold, 3);
