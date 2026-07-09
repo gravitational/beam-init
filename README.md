@@ -1,5 +1,5 @@
 # beam-init
-Init system for beams - [INTERNAL USE]
+Init system for [beams](https://beams.run/)
 
 ## Testing
 
