@@ -51,6 +51,8 @@ async fn main() {
             liveness: None,
             pty: false,
         },
+        uid: 0,
+        gid: 0,
     };
     // The channel is empty, so sending always succeeds.
     tx_event

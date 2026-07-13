@@ -3,7 +3,7 @@ use std::io;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -21,6 +21,8 @@ pub enum Command {
     CreateService {
         name: String,
         service: CreateService,
+        uid: libc::uid_t,
+        gid: libc::gid_t,
     },
     RestartService {
         name: String,
@@ -45,6 +47,18 @@ pub enum Command {
     },
 }
 
+use axum::serve::IncomingStream;
+
+#[derive(Clone)]
+struct UCred(tokio::net::unix::UCred);
+
+impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> for UCred {
+    fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
+        let cred = stream.io().peer_cred().expect("no Unix peer credentials");
+        UCred(cred)
+    }
+}
+
 pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
     let socket = UnixListener::bind(SOCKET_PATH)?;
 
@@ -63,9 +77,12 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         .with_state(tx_event);
 
     tokio::spawn(async move {
-        axum::serve(socket, router)
-            .await
-            .expect("axum::serve is documented as never returning an error");
+        axum::serve(
+            socket,
+            router.into_make_service_with_connect_info::<UCred>(),
+        )
+        .await
+        .expect("axum::serve is documented as never returning an error");
     });
 
     Ok(())
@@ -74,11 +91,20 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 async fn create_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(UCred(ucred)): ConnectInfo<UCred>,
     Json(service): Json<CreateService>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::CreateService { name, service }, tx))
+        .send(Event::Command(
+            Command::CreateService {
+                name,
+                service,
+                uid: ucred.uid(),
+                gid: ucred.gid(),
+            },
+            tx,
+        ))
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -270,7 +296,12 @@ pub async fn handle_api_command(
     cmd: Command,
 ) -> Result<Response<Body>, ServiceError> {
     match cmd {
-        Command::CreateService { name, service } => {
+        Command::CreateService {
+            name,
+            service,
+            uid,
+            gid,
+        } => {
             let CreateService {
                 cmd,
                 args,
@@ -285,6 +316,8 @@ pub async fn handle_api_command(
                     args: args.clone(),
                     liveness: liveness.clone(),
                     pty: *pty,
+                    uid,
+                    gid,
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

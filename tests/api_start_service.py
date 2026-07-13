@@ -4,6 +4,9 @@ import re
 import subprocess
 import time
 
+our_uid = os.getuid()
+our_gid = os.getgid()
+
 subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
 
 # Wait a bit to ensure the service has started
@@ -15,6 +18,17 @@ for proc in psutil.process_iter(['pid', 'name', 'status']):
     print(f"{info["pid"]:<2} {info["name"]:<10} {info["status"]}")
     if info["name"] == "sleep":
         found_sleep = True
+
+        uids = proc.uids();
+        assert uids.real == our_uid
+        assert uids.effective == our_uid
+        assert uids.saved == our_uid
+
+        gids = proc.gids();
+        assert gids.real == our_gid
+        assert gids.effective == our_gid
+        assert gids.saved == our_gid
+
 assert found_sleep, "Sleep not started"
 
 # Starting another service with the same name is an error.
