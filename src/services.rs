@@ -73,7 +73,6 @@ pub struct ServiceConfig {
 pub struct ServiceState {
     pub status: ServiceStatus,
     pub logs: Logs,
-    pub pty: Option<Pty>,
     pub automatic_restart_attempts: u32,
     pub liveness_probe: Option<AbortHandle>,
 }
@@ -243,8 +242,6 @@ impl ServiceManager {
             });
         }
 
-        let pty = None;
-
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
                 vacant_entry.insert(Service {
@@ -252,7 +249,6 @@ impl ServiceManager {
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
                         logs,
-                        pty,
                         automatic_restart_attempts: 0,
                         liveness_probe: None,
                     },

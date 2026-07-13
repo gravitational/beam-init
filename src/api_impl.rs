@@ -198,12 +198,19 @@ async fn service_logs(
 
 impl From<&crate::services::Service> for crate::api::Service {
     fn from(value: &crate::services::Service) -> Self {
+        use crate::services::ServiceStatus;
         Self {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
-            pty: value.state.pty.as_ref().map(ToString::to_string),
+            pty: if let ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } =
+                &value.state.status
+            {
+                pty.as_ref().map(ToString::to_string)
+            } else {
+                None
+            },
         }
     }
 }
@@ -213,11 +220,9 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
             crate::services::ServiceStatus::Running { main_pid, .. } => {
-                // TODO
                 ServiceStatus::Running { main_pid }
             }
             crate::services::ServiceStatus::Frozen { main_pid, .. } => {
-                // TODO
                 ServiceStatus::Frozen { main_pid }
             }
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
