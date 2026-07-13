@@ -130,6 +130,10 @@ enum Command {
     Stop {
         #[arg(index = 1)]
         name: String,
+
+        /// Remove this service from the list of services.
+        #[arg(long)]
+        prune: bool,
     },
     /// Stop a service if currently running and start it again.
     Restart {
@@ -246,10 +250,10 @@ fn main() {
                 .unwrap_or_else(show_error_and_exit);
             eprintln!("Started service {name}");
         }
-        Command::Stop { name } => {
+        Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
-                .post(&format!("/service/{}/stop", name), name)
+                .post(&format!("/service/{}/stop?prune={prune}", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Restart { name } => {

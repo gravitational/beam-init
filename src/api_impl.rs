@@ -27,6 +27,7 @@ pub enum Command {
     },
     StopService {
         name: String,
+        prune: bool,
     },
     FreezeService {
         name: String,
@@ -54,7 +55,6 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         .route("/service/{name}/stop", post(stop_service))
         .route("/service/{name}/freeze", post(freeze_service))
         .route("/service/{name}/thaw", post(thaw_service))
-        // .route("/service/{name}/start", post(start_service))
         .route("/service/{name}/show", post(show_service))
         .route("/service/{name}/logs", get(service_logs))
         .with_state(tx_event);
@@ -81,13 +81,21 @@ async fn create_service(
     rx.await.expect("main task crashed")
 }
 
+#[derive(Deserialize)]
+struct StopServiceQuery {
+    #[serde(default)]
+    prune: bool,
+}
+
 async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    query: Query<StopServiceQuery>,
 ) -> Response {
+    let StopServiceQuery { prune } = query.0;
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::StopService { name }, tx))
+        .send(Event::Command(Command::StopService { name, prune }, tx))
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -202,8 +210,8 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
                     name: name.to_owned(),
                 }
             }
-            crate::services::ServiceStatus::Stopping { main_pid } => {
-                ServiceStatus::Stopping { main_pid }
+            crate::services::ServiceStatus::Stopping { main_pid, prune } => {
+                ServiceStatus::Stopping { main_pid, prune }
             }
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(exit_status)
@@ -216,8 +224,9 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
 async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
     name: &str,
+    prune: bool,
 ) -> Result<(), ServiceError> {
-    service_manager.terminate_service(name)?;
+    service_manager.terminate_service(name, prune)?;
 
     // FIXME: pick a more principled duration, and potentially perform the kill
     // below in an async way.
@@ -263,13 +272,14 @@ pub async fn handle_api_command(
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
-            let () = stop_service_cmd(service_manager, &name).await?;
+            let prune = false;
+            let () = stop_service_cmd(service_manager, &name, prune).await?;
             service_manager.start_service(&name, StartReason::User)?;
 
             Ok(Json(()).into_response())
         }
-        Command::StopService { name } => {
-            let () = stop_service_cmd(service_manager, &name).await?;
+        Command::StopService { name, prune } => {
+            let () = stop_service_cmd(service_manager, &name, prune).await?;
 
             Ok(Json(()).into_response())
         }
