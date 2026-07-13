@@ -249,10 +249,6 @@ impl ServiceManager {
         }
     }
 
-    pub fn try_get_service(&self, name: &str) -> Option<&Service> {
-        self.services.get(name)
-    }
-
     pub fn get_service(&self, name: &str) -> Result<&Service, ServiceError> {
         self.services
             .get(name)
