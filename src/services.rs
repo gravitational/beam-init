@@ -243,14 +243,7 @@ impl ServiceManager {
             });
         }
 
-        let pty = config.pty.then(Pty::new).transpose().map_err(|err| {
-            let err_str = err.to_string();
-            println!("[{name}] Failed to create a pty: {err_str}");
-            ServiceError::SpawnFailed {
-                cmd: config.cmd.clone(),
-                err: err_str,
-            }
-        })?;
+        let pty = None;
 
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
@@ -305,21 +298,29 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let neo_pty = None;
+        let mut pty = service
+            .config
+            .pty
+            .then(Pty::new)
+            .transpose()
+            .map_err(|err| {
+                let err_str = err.to_string();
+                println!("[{name}] Failed to create a pty: {err_str}");
+                ServiceError::SpawnFailed {
+                    cmd: service.config.cmd.clone(),
+                    err: err_str,
+                }
+            })?;
 
         match spawn_service(
             old_sigmask,
             &service.config,
-            if let Some(pty) = &mut service.state.pty {
-                Sink::PTY(pty)
-            } else {
-                Sink::Log(log_writer)
-            },
+            pty.as_mut().map_or(Sink::Log(log_writer), Sink::PTY),
         ) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
-                    pty: neo_pty,
+                    pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
@@ -352,7 +353,10 @@ impl ServiceManager {
             ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
             }
-            ServiceStatus::Running { main_pid, ref mut pty } => {
+            ServiceStatus::Running {
+                main_pid,
+                ref mut pty,
+            } => {
                 let pty = pty.take();
                 service.abort_liveness_probe();
                 kill_process_group(main_pid, SIGSTOP).expect("process to exist");
@@ -378,7 +382,10 @@ impl ServiceManager {
             ServiceStatus::Running { .. } => {
                 // This process is already running.
             }
-            ServiceStatus::Frozen { main_pid, ref mut pty } => {
+            ServiceStatus::Frozen {
+                main_pid,
+                ref mut pty,
+            } => {
                 let pty = pty.take();
                 kill_process_group(main_pid, SIGCONT).expect("process to exist");
                 service.state.status = ServiceStatus::Running { main_pid, pty };
