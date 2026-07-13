@@ -8,6 +8,7 @@ use libc::pid_t;
 pub mod fork;
 pub mod pty;
 pub mod signal_set;
+pub mod unix_socket;
 
 pub fn cerr(retval: c_int) -> io::Result<c_int> {
     if retval == -1 {

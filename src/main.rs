@@ -13,6 +13,7 @@ use crate::system::exit_with_signal;
 use beam_init::api;
 
 mod api_impl;
+mod fdstore;
 mod logs;
 mod services;
 mod signal_stream;
@@ -61,12 +62,20 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
+    let fdstore = if cfg!(feature = "unstable-pty")
+        && env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1")
+    {
+        fdstore::FdStore::bind_socket().expect("failed to bind fdstore socket")
+    } else {
+        fdstore::FdStore::no_socket()
+    };
+
     if env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1") {
         // Listen for API commands
         api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
     }
 
-    let mut service_manager = ServiceManager::new(old_sigmask, tx_event);
+    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, fdstore);
     loop {
         match rx_event
             .recv()
