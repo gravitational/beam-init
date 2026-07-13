@@ -30,3 +30,6 @@ docker_harness = { path = "crates/docker_harness" }
 [lints.clippy]
 missing_safety_doc = "warn"
 undocumented_unsafe_blocks = "warn"
+
+[features]
+unstable-pty = []
