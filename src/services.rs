@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -305,7 +305,15 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        match spawn_service(old_sigmask, service, log_writer) {
+        match spawn_service(
+            old_sigmask,
+            &service.config,
+            if let Some(pty) = &service.state.pty {
+                Sink::PTY(pty)
+            } else {
+                Sink::Log(log_writer)
+            },
+        ) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
@@ -544,11 +552,13 @@ async fn run_liveness_probe(
     }
 }
 
-fn spawn_service(
-    old_sigmask: OldSigmask,
-    Service { config, state }: &Service,
-    log_writer: std::os::unix::prelude::OwnedFd,
-) -> io::Result<pid_t> {
+#[allow(clippy::upper_case_acronyms)]
+enum Sink<'a> {
+    Log(OwnedFd),
+    PTY(&'a Pty),
+}
+
+fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -585,35 +595,38 @@ fn spawn_service(
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            if let Some(pty) = &state.pty {
-                let pty_fd = expect_no_panic(
-                    pty.make_tty(),
-                    "could not make the pty the controlling terminal",
-                );
+            match sink {
+                Sink::PTY(pty) => {
+                    let pty_fd = expect_no_panic(
+                        pty.make_tty(),
+                        "could not make the pty the controlling terminal",
+                    );
 
-                // Set the pseudoterminal as stdin, stdout and stderr
-                // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
-                // accessed after this point depends on stdout/stderr pointing to a particular fd.
-                expect_no_panic(
-                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                        .into_iter()
-                        .try_for_each(|fd| {
-                            cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
-                            Ok(())
-                        }),
-                    "failed to attach pty",
-                );
-            } else {
-                // Set the log pipe as stdout and stderr
-                // SAFETY: as above
-                expect_no_panic(
-                    cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
-                    "failed to set stdout",
-                );
-                expect_no_panic(
-                    cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
-                    "failed to set stderr",
-                );
+                    // Set the pseudoterminal as stdin, stdout and stderr
+                    // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
+                    // accessed after this point depends on stdout/stderr pointing to a particular fd.
+                    expect_no_panic(
+                        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                            .into_iter()
+                            .try_for_each(|fd| {
+                                cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
+                                Ok(())
+                            }),
+                        "failed to attach pty",
+                    );
+                }
+                Sink::Log(log_writer) => {
+                    // Set the log pipe as stdout and stderr
+                    // SAFETY: as above
+                    expect_no_panic(
+                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
+                        "failed to set stdout",
+                    );
+                    expect_no_panic(
+                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
+                        "failed to set stderr",
+                    );
+                }
             }
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
