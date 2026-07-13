@@ -308,7 +308,7 @@ impl ServiceManager {
         match spawn_service(
             old_sigmask,
             &service.config,
-            if let Some(pty) = &service.state.pty {
+            if let Some(pty) = &mut service.state.pty {
                 Sink::PTY(pty)
             } else {
                 Sink::Log(log_writer)
@@ -555,7 +555,7 @@ async fn run_liveness_probe(
 #[allow(clippy::upper_case_acronyms)]
 enum Sink<'a> {
     Log(OwnedFd),
-    PTY(&'a Pty),
+    PTY(&'a mut Pty),
 }
 
 fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
