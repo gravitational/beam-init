@@ -1,5 +1,5 @@
 use std::ffi::{CStr, OsStr};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
@@ -58,7 +58,7 @@ impl Pty {
         options.write(true);
         options.read(true);
         options.custom_flags(libc::O_NOCTTY);
-        let client = OwnedFd::from(File::options().read(true).write(true).open(&self.path)?);
+        let client = OwnedFd::from(options.open(&self.path)?);
 
         Ok(client)
     }
