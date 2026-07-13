@@ -84,10 +84,10 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: pid_t },
+    Running { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen { main_pid: pid_t },
+    Frozen { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service was stopped, but will soon be started again as part of a restart.
     Restarting { main_pid: pid_t, name: String },
@@ -172,7 +172,7 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid }
+                        ServiceStatus::Running { main_pid, .. }
                             if main_pid == info.ssi_pid as pid_t =>
                         {
                             service.state.status = ServiceStatus::Exited(status);
@@ -305,6 +305,8 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
+        let neo_pty = None;
+
         match spawn_service(
             old_sigmask,
             &service.config,
@@ -317,6 +319,7 @@ impl ServiceManager {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
+                    pty: neo_pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
@@ -349,10 +352,11 @@ impl ServiceManager {
             ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
             }
-            ServiceStatus::Running { main_pid } => {
+            ServiceStatus::Running { main_pid, ref mut pty } => {
+                let pty = pty.take();
                 service.abort_liveness_probe();
                 kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid };
+                service.state.status = ServiceStatus::Frozen { main_pid, pty };
             }
         }
 
@@ -374,9 +378,10 @@ impl ServiceManager {
             ServiceStatus::Running { .. } => {
                 // This process is already running.
             }
-            ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Frozen { main_pid, ref mut pty } => {
+                let pty = pty.take();
                 kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid };
+                service.state.status = ServiceStatus::Running { main_pid, pty };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -401,8 +406,8 @@ impl ServiceManager {
                     prune: prune || old_prune,
                 };
             }
-            ServiceStatus::Running { main_pid }
-            | ServiceStatus::Frozen { main_pid }
+            ServiceStatus::Running { main_pid, .. }
+            | ServiceStatus::Frozen { main_pid, .. }
             | ServiceStatus::Restarting { main_pid, .. } => {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid, prune };
@@ -425,7 +430,7 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Running { main_pid, .. } | ServiceStatus::Frozen { main_pid, .. } => {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,

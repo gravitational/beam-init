@@ -212,10 +212,10 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid } => {
+            crate::services::ServiceStatus::Running { main_pid, .. } => {  // TODO
                 ServiceStatus::Running { main_pid }
             }
-            crate::services::ServiceStatus::Frozen { main_pid } => {
+            crate::services::ServiceStatus::Frozen { main_pid, .. } => { // TODO
                 ServiceStatus::Frozen { main_pid }
             }
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
