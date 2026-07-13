@@ -586,7 +586,10 @@ fn spawn_service(
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
             if let Some(pty) = &state.pty {
-                let pty_fd = expect_no_panic(pty.grant(), "could not grant the pty");
+                let pty_fd = expect_no_panic(
+                    pty.make_tty(),
+                    "could not make the pty the controlling terminal",
+                );
 
                 // Set the pseudoterminal as stdin, stdout and stderr
                 // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing

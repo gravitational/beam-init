@@ -14,6 +14,7 @@ pub struct Pty {
 }
 
 impl Pty {
+    /// Create a new PTY, but leave it 'dangling'
     pub fn new() -> io::Result<Pty> {
         let flags = libc::O_RDWR | libc::O_NOCTTY;
 
@@ -45,7 +46,8 @@ impl Pty {
         })
     }
 
-    pub fn grant(&self) -> io::Result<OwnedFd> {
+    /// Associate the client side of the PTY to the current process
+    pub fn make_tty(&self) -> io::Result<OwnedFd> {
         let pty_fd = self.master.as_raw_fd();
 
         // SAFETY: these functions are a safe to call (and are being fed the correct file descriptor)
@@ -60,6 +62,8 @@ impl Pty {
         options.custom_flags(libc::O_NOCTTY);
         let client = OwnedFd::from(options.open(&self.path)?);
 
+        make_controlling_terminal(&client)?;
+
         Ok(client)
     }
 }
@@ -68,4 +72,11 @@ impl std::fmt::Display for Pty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.path.display())
     }
+}
+
+fn make_controlling_terminal(fd: &OwnedFd) -> io::Result<()> {
+    // SAFETY: this is a correct way to call the TIOCSCTTY ioctl, see:
+    // https://www.man7.org/linux/man-pages/man2/TIOCNOTTY.2const.html
+    cerr(unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSCTTY, 0) })?;
+    Ok(())
 }
