@@ -34,6 +34,9 @@ impl Pty {
             let err = unsafe {
                 libc::ptsname_r(master.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len())
             };
+            // "On success, ptsname_r() returns 0. On failure, an error number is returned to indicate the error."
+            // i.e. we cannot wrap the call to libc::ptsname_r in cerr() since that only considers -1 an error and
+            // expects the actual error value to be in errno (which the manpage doesn't guarantee for ptsname_r)
             if err != 0 {
                 return Err(io::Error::from_raw_os_error(err));
             }
