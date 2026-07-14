@@ -198,19 +198,11 @@ async fn service_logs(
 
 impl From<&crate::services::Service> for crate::api::Service {
     fn from(value: &crate::services::Service) -> Self {
-        use crate::services::ServiceStatus;
         Self {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
-            pty: if let ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } =
-                &value.state.status
-            {
-                pty.as_ref().map(ToString::to_string)
-            } else {
-                None
-            },
         }
     }
 }
@@ -219,12 +211,16 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid, .. } => {
-                ServiceStatus::Running { main_pid }
+            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
+                ServiceStatus::Running {
+                    main_pid,
+                    pty: pty.as_ref().map(|inner| inner.path.clone()),
+                }
             }
-            crate::services::ServiceStatus::Frozen { main_pid, .. } => {
-                ServiceStatus::Frozen { main_pid }
-            }
+            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
+                main_pid,
+                pty: pty.as_ref().map(|inner| inner.path.clone()),
+            },
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
                 ServiceStatus::Restarting {
                     main_pid,

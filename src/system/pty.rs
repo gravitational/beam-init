@@ -83,12 +83,6 @@ impl<'a> PtyClient<'a> {
     }
 }
 
-impl std::fmt::Display for Pty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.path.display())
-    }
-}
-
 fn make_controlling_terminal(fd: &OwnedFd) -> io::Result<()> {
     // SAFETY: this is a correct way to call the TIOCSCTTY ioctl, see:
     // https://www.man7.org/linux/man-pages/man2/TIOCNOTTY.2const.html

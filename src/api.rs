@@ -1,4 +1,4 @@
-use std::{process::ExitStatus, time::Duration};
+use std::{path::PathBuf, process::ExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,6 @@ pub struct Service {
     pub args: Vec<String>,
     pub status: ServiceStatus,
     pub automatic_restart_attempts: u32,
-    pub pty: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -38,10 +37,16 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: pid_t },
+    Running {
+        main_pid: pid_t,
+        pty: Option<PathBuf>,
+    },
 
     /// The service is paused but can be continued.
-    Frozen { main_pid: pid_t },
+    Frozen {
+        main_pid: pid_t,
+        pty: Option<PathBuf>,
+    },
 
     /// The service has been requested to restart and is in the process of shutting down.
     Restarting { main_pid: pid_t, name: String },
@@ -64,13 +69,21 @@ pub enum ServiceStatus {
 
 impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
+        match self {
             ServiceStatus::Stopped => f.write_str("stopped"),
-            ServiceStatus::Running { main_pid } => {
-                write!(f, "running PID={main_pid}")
+            ServiceStatus::Running { main_pid, pty } => {
+                write!(f, "running PID={main_pid}")?;
+                if let Some(path) = pty {
+                    write!(f, ", pty={}", path.display())?;
+                }
+                Ok(())
             }
-            ServiceStatus::Frozen { main_pid } => {
-                write!(f, "frozen PID={main_pid}")
+            ServiceStatus::Frozen { main_pid, pty } => {
+                write!(f, "frozen PID={main_pid}")?;
+                if let Some(path) = pty {
+                    write!(f, ", pty={}", path.display())?;
+                }
+                Ok(())
             }
             ServiceStatus::Stopping { main_pid, prune } => {
                 write!(f, "stopping PID={main_pid} (prune={prune})")
@@ -85,7 +98,7 @@ impl std::fmt::Display for ServiceStatus {
                     write!(f, "failed with {exit_status}")
                 }
             }
-            ServiceStatus::Error(ref err) => write!(f, "failed to start with {}", err),
+            ServiceStatus::Error(err) => write!(f, "failed to start with {}", err),
         }
     }
 }
