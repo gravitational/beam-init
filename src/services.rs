@@ -19,7 +19,7 @@ use tokio_stream::StreamExt;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
-use crate::system::pty::Pty;
+use crate::system::pty::{Pty, PtyClient};
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
@@ -294,25 +294,30 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let mut pty = service
+        let mut pty_fail = |err: io::Error| {
+            let err_str = err.to_string();
+            println!("[{name}] Failed to create a pty: {err_str}");
+            service.state.status = ServiceStatus::Error(err);
+            ServiceError::SpawnFailed {
+                cmd: service.config.cmd.clone(),
+                err: err_str,
+            }
+        };
+
+        let pty = service
             .config
             .pty
             .then(Pty::new)
             .transpose()
-            .map_err(|err| {
-                let err_str = err.to_string();
-                println!("[{name}] Failed to create a pty: {err_str}");
-                ServiceError::SpawnFailed {
-                    cmd: service.config.cmd.clone(),
-                    err: err_str,
-                }
-            })?;
+            .map_err(&mut pty_fail)?;
 
-        match spawn_service(
-            old_sigmask,
-            &service.config,
-            pty.as_mut().map_or(Sink::Log(log_writer), Sink::PTY),
-        ) {
+        let sink = if let Some(terminal) = &pty {
+            Sink::PTY(terminal.open_client().map_err(&mut pty_fail)?)
+        } else {
+            Sink::Log(log_writer)
+        };
+
+        match spawn_service(old_sigmask, &service.config, sink) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
@@ -563,7 +568,7 @@ async fn run_liveness_probe(
 #[allow(clippy::upper_case_acronyms)]
 enum Sink<'a> {
     Log(OwnedFd),
-    PTY(&'a mut Pty),
+    PTY(PtyClient<'a>),
 }
 
 fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {

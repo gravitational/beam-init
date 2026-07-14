@@ -10,12 +10,16 @@ use crate::system::cerr;
 #[derive(Debug)]
 pub struct Pty {
     master: OwnedFd,
-    client: Option<OwnedFd>,
     pub path: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct PtyClient<'a> {
+    master: &'a OwnedFd,
+    client: OwnedFd,
+}
+
 impl Pty {
-    /// Create a new PTY, but leave it 'dangling'
     pub fn new() -> io::Result<Pty> {
         let flags = libc::O_RDWR | libc::O_NOCTTY;
 
@@ -41,35 +45,41 @@ impl Pty {
             Path::new(OsStr::from_bytes(c_str))
         };
 
+        Ok(Pty {
+            master,
+            path: pts_name.to_owned(),
+        })
+    }
+
+    pub fn open_client(&self) -> io::Result<PtyClient<'_>> {
         // SAFETY: this function is safe to call (and is being fed the correct file descriptor)
         unsafe {
-            cerr(libc::unlockpt(master.as_raw_fd()))?;
+            cerr(libc::unlockpt(self.master.as_raw_fd()))?;
         }
 
         let mut options = OpenOptions::new();
         options.write(true);
         options.read(true);
         options.custom_flags(libc::O_NOCTTY);
-        let client = OwnedFd::from(options.open(pts_name)?);
+        let client = OwnedFd::from(options.open(&self.path)?);
 
-        Ok(Pty {
-            master,
-            client: Some(client),
-            path: pts_name.to_owned(),
-        })
+        let master = &self.master;
+
+        Ok(PtyClient { master, client })
     }
+}
 
+impl<'a> PtyClient<'a> {
     /// Associate the client side of the PTY to the current process
-    pub fn make_tty(&mut self) -> io::Result<OwnedFd> {
+    pub fn make_tty(self) -> io::Result<OwnedFd> {
         // SAFETY: this function is safe to call (and is being fed the correct file descriptor)
         unsafe {
             cerr(libc::grantpt(self.master.as_raw_fd()))?;
         }
 
-        let client = self.client.take().expect("PTY already taken");
-        make_controlling_terminal(&client)?;
+        make_controlling_terminal(&self.client)?;
 
-        Ok(client)
+        Ok(self.client)
     }
 }
 
