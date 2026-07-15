@@ -167,8 +167,6 @@ impl ServiceManager {
                     return;
                 }
 
-                let mut pruned = vec![];
-
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
                         ServiceStatus::Running { main_pid }
@@ -183,7 +181,8 @@ impl ServiceManager {
                         {
                             service.abort_liveness_probe();
                             if prune {
-                                pruned.push(name.to_string());
+                                let name = name.clone();
+                                self.services.remove(&name);
                             } else {
                                 service.state.status = ServiceStatus::Stopped;
                             }
@@ -203,10 +202,6 @@ impl ServiceManager {
 
                         _ => { /* ignore */ }
                     }
-                }
-
-                for name in pruned {
-                    self.services.remove(&name);
                 }
             }
         }
