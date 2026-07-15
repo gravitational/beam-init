@@ -247,32 +247,38 @@ fn main() {
             eprintln!("Started service {name}");
         }
         Command::Stop { name } => {
+            let name = prefix_match(&client, name);
             let _resp: () = client
                 .post(&format!("/service/{}/stop", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Restart { name } => {
+            let name = prefix_match(&client, name);
             let _resp: () = client
                 .post(&format!("/service/{}/restart", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Freeze { name } => {
+            let name = prefix_match(&client, name);
             let _resp: () = client
                 .post(&format!("/service/{}/freeze", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Thaw { name } => {
+            let name = prefix_match(&client, name);
             let _resp: () = client
                 .post(&format!("/service/{}/thaw", name), name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Logs { name, follow } => {
+            let name = prefix_match(&client, name);
             let mut resp = client
                 .get_raw(&format!("/service/{name}/logs?follow={follow}"))
                 .unwrap_or_else(show_error_and_exit);
             std::io::copy(&mut resp, &mut std::io::stdout()).unwrap();
         }
         Command::Show { name } => {
+            let name = prefix_match(&client, name);
             let service: beam_init::api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap_or_else(show_error_and_exit);
@@ -301,6 +307,27 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+/// As a userfriendliness feature, allow the user to match a service by only
+/// matching a prefix instead of the full service name.
+fn prefix_match(client: &Client, name: String) -> String {
+    let mut services: BTreeMap<String, beam_init::api::ServiceStatus> =
+        client.get("/services").unwrap_or_else(show_error_and_exit);
+
+    let mut service_names = services
+        .split_off(&name)
+        .into_keys()
+        .take_while(|key| key.starts_with(&name));
+
+    if let Some(found_name) = service_names.next()
+        && let None = service_names.next()
+    {
+        // the prefix uniquely defines exactly one service
+        found_name
+    } else {
+        name
     }
 }
 
