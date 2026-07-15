@@ -16,11 +16,11 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
-use crate::Event;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
+use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
 
 pub struct ServiceManager {
@@ -223,14 +223,16 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let logs = Logs::new();
 
-        let reader = logs.new_reader();
-        let name2 = name.clone();
-        tokio::spawn(async move {
-            let mut reader = pin!(reader);
-            while let Some(line) = reader.next().await {
-                println!("[{name2}] {line}");
-            }
-        });
+        if *DEBUG_LOGS {
+            let reader = logs.new_reader();
+            let name2 = name.clone();
+            tokio::spawn(async move {
+                let mut reader = pin!(reader);
+                while let Some(line) = reader.next().await {
+                    println!("[{name2}] {line}");
+                }
+            });
+        }
 
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
@@ -275,7 +277,9 @@ impl ServiceManager {
         let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
-        println!("Starting service {name}");
+        if *DEBUG_LOGS {
+            eprintln!("Starting service {name}");
+        }
 
         let log_writer = service
             .state
@@ -298,7 +302,9 @@ impl ServiceManager {
             }
             Err(err) => {
                 let err_str = err.to_string();
-                println!("[{name}] Failed to spawn: {err_str}");
+                if *DEBUG_LOGS {
+                    eprintln!("[{name}] Failed to spawn: {err_str}");
+                }
                 service.state.status = ServiceStatus::Error(err);
                 Err(ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
