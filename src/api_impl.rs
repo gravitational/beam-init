@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::net::UnixListener;
@@ -50,8 +50,10 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 
     let router = Router::new()
         .route("/services", get(list_services))
-        .route("/service/{name}", post(create_service))
-        .route("/service/{name}", delete(stop_with_prune_service))
+        .route(
+            "/service/{name}",
+            post(create_service).delete(delete_service),
+        )
         .route("/service/{name}/restart", post(restart_service))
         .route("/service/{name}/stop", post(stop_service))
         .route("/service/{name}/freeze", post(freeze_service))
@@ -82,18 +84,11 @@ async fn create_service(
     rx.await.expect("main task crashed")
 }
 
-#[derive(Deserialize)]
-struct StopServiceQuery {
-    #[serde(default)]
-    prune: bool,
-}
-
 async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
-    query: Query<StopServiceQuery>,
 ) -> Response {
-    let StopServiceQuery { prune } = query.0;
+    let prune = false;
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command(Command::StopService { name, prune }, tx))
@@ -102,7 +97,7 @@ async fn stop_service(
     rx.await.expect("main task crashed")
 }
 
-async fn stop_with_prune_service(
+async fn delete_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
 ) -> Response {
