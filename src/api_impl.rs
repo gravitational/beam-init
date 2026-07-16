@@ -88,10 +88,12 @@ async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
 ) -> Response {
-    let prune = false;
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::StopService { name, prune }, tx))
+        .send(Event::Command(
+            Command::StopService { name, prune: false },
+            tx,
+        ))
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -101,10 +103,12 @@ async fn delete_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
 ) -> Response {
-    let prune = true;
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::StopService { name, prune }, tx))
+        .send(Event::Command(
+            Command::StopService { name, prune: true },
+            tx,
+        ))
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
