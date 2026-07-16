@@ -1,6 +1,7 @@
 #![deny(clippy::unwrap_used)]
 
 use std::os::unix::process::ExitStatusExt;
+use std::sync::LazyLock;
 use std::{env, process};
 
 use axum::response::{IntoResponse, Response};
@@ -17,6 +18,12 @@ mod services;
 mod signal_stream;
 mod system;
 
+/// If true we will print log messages that may contain sensitive information.
+///
+/// Set to true using the `BEAM_INIT_ENABLE_DEBUG_LOGS=1` env var.
+static DEBUG_LOGS: LazyLock<bool> =
+    LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
+
 enum Event {
     Command(api_impl::Command, oneshot::Sender<Response>),
     Signal(signalfd_siginfo),
@@ -25,7 +32,7 @@ enum Event {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    println!("Starting beam-init");
+    eprintln!("Starting beam-init");
 
     // FIXME what is a reasonable channel capacity?
     let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
@@ -72,7 +79,17 @@ async fn main() {
             }
             Event::ProbeFailed { name } => {
                 if let Err(e) = api_impl::automatic_restart(&mut service_manager, &name).await {
-                    eprintln!("failed to automatically restart {name}: {e:?}");
+                    if *DEBUG_LOGS {
+                        eprintln!("failed to automatically restart {name}: {e:?}");
+                    }
+                    if let Ok(service) = service_manager.get_service(&name) {
+                        service
+                            .state
+                            .logs
+                            .queue
+                            .push(format!("[failed to automatically restart: {e:?}]"))
+                            .await;
+                    }
                 }
             }
         }
