@@ -20,7 +20,7 @@ mod system;
 
 /// If true we will print log messages that may contain sensitive information.
 ///
-/// Set to true using the `BEAM_INIT_ENABLE_DEBUG_LOGS=1`` env var.
+/// Set to true using the `BEAM_INIT_ENABLE_DEBUG_LOGS=1` env var.
 static DEBUG_LOGS: LazyLock<bool> =
     LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
 

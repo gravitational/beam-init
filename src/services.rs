@@ -277,9 +277,7 @@ impl ServiceManager {
         let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(name)?;
 
-        if *DEBUG_LOGS {
-            eprintln!("Starting service {name}");
-        }
+        eprintln!("Starting service {name}");
 
         let log_writer = service
             .state
