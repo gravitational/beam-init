@@ -78,6 +78,12 @@ impl Client {
             .json()
             .map_err(|error| Error::Internal { error, body: None })
     }
+
+    fn delete<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
+        Self::send(self.request(Method::DELETE, path))?
+            .json()
+            .map_err(|error| Error::Internal { error, body: None })
+    }
 }
 
 enum Error {
@@ -130,6 +136,10 @@ enum Command {
     Stop {
         #[arg(index = 1)]
         name: String,
+
+        /// Remove this service from the list of services.
+        #[arg(long)]
+        prune: bool,
     },
     /// Stop a service if currently running and start it again.
     Restart {
@@ -246,11 +256,18 @@ fn main() {
                 .unwrap_or_else(show_error_and_exit);
             eprintln!("Started service {name}");
         }
-        Command::Stop { name } => {
+        Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
-                .post(&format!("/service/{}/stop", name), name)
-                .unwrap_or_else(show_error_and_exit);
+
+            let _resp: () = if prune {
+                client
+                    .delete(&format!("/service/{}", name))
+                    .unwrap_or_else(show_error_and_exit)
+            } else {
+                client
+                    .post(&format!("/service/{}/stop", name), name)
+                    .unwrap_or_else(show_error_and_exit)
+            };
         }
         Command::Restart { name } => {
             let name = prefix_match(&client, name);

@@ -45,7 +45,7 @@ pub enum ServiceStatus {
     Restarting { main_pid: pid_t, name: String },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: pid_t },
+    Stopping { main_pid: pid_t, prune: bool },
 
     /// The service exited with the given exit status.
     Exited(
@@ -70,8 +70,8 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Frozen { main_pid } => {
                 write!(f, "frozen PID={main_pid}")
             }
-            ServiceStatus::Stopping { main_pid } => {
-                write!(f, "stopping PID={main_pid}")
+            ServiceStatus::Stopping { main_pid, prune } => {
+                write!(f, "stopping PID={main_pid} (prune={prune})")
             }
             ServiceStatus::Restarting { main_pid, name: _ } => {
                 write!(f, "restarting PID={main_pid}")
