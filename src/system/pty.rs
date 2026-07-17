@@ -14,7 +14,7 @@ pub struct Pty {
 
 #[derive(Debug)]
 pub struct PtyClient<'a> {
-    parent: &'a Pty,
+    parent: &'a mut Pty,
 }
 
 impl Pty {
@@ -52,7 +52,7 @@ impl Pty {
         })
     }
 
-    pub fn client(&self) -> PtyClient<'_> {
+    pub fn client(&mut self) -> PtyClient<'_> {
         PtyClient { parent: self }
     }
 }

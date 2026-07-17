@@ -294,7 +294,7 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let pty = service
+        let mut pty = service
             .config
             .pty
             .then(Pty::new)
@@ -309,7 +309,7 @@ impl ServiceManager {
                 }
             })?;
 
-        let sink = if let Some(terminal) = &pty {
+        let sink = if let Some(terminal) = &mut pty {
             Sink::PTY(terminal.client())
         } else {
             Sink::Log(log_writer)
