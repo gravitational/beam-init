@@ -52,8 +52,8 @@ impl Pty {
         })
     }
 
-    pub fn open_client(&self) -> io::Result<PtyClient<'_>> {
-        Ok(PtyClient { parent: self })
+    pub fn client(&self) -> PtyClient<'_> {
+        PtyClient { parent: self }
     }
 }
 

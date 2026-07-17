@@ -294,25 +294,23 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let mut pty_fail = |err: io::Error| {
-            let err_str = err.to_string();
-            println!("[{name}] Failed to create a pty: {err_str}");
-            service.state.status = ServiceStatus::Error(err);
-            ServiceError::SpawnFailed {
-                cmd: service.config.cmd.clone(),
-                err: err_str,
-            }
-        };
-
         let pty = service
             .config
             .pty
             .then(Pty::new)
             .transpose()
-            .map_err(&mut pty_fail)?;
+            .map_err(|err| {
+                let err_str = err.to_string();
+                println!("[{name}] Failed to create a pty: {err_str}");
+                service.state.status = ServiceStatus::Error(err);
+                ServiceError::SpawnFailed {
+                    cmd: service.config.cmd.clone(),
+                    err: err_str,
+                }
+            })?;
 
         let sink = if let Some(terminal) = &pty {
-            Sink::PTY(terminal.open_client().map_err(&mut pty_fail)?)
+            Sink::PTY(terminal.client())
         } else {
             Sink::Log(log_writer)
         };
