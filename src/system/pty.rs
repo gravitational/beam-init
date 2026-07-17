@@ -1,8 +1,7 @@
-use std::ffi::{CStr, OsStr};
-use std::fs::OpenOptions;
+use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::system::cerr;
@@ -15,8 +14,7 @@ pub struct Pty {
 
 #[derive(Debug)]
 pub struct PtyClient<'a> {
-    master: &'a OwnedFd,
-    client: OwnedFd,
+    parent: &'a Pty,
 }
 
 impl Pty {
@@ -55,40 +53,32 @@ impl Pty {
     }
 
     pub fn open_client(&self) -> io::Result<PtyClient<'_>> {
-        // SAFETY: this function is safe to call (and is being fed the correct file descriptor)
-        unsafe {
-            cerr(libc::unlockpt(self.master.as_raw_fd()))?;
-        }
-
-        let mut options = OpenOptions::new();
-        options.write(true);
-        options.read(true);
-        options.custom_flags(libc::O_NOCTTY);
-        let client = OwnedFd::from(options.open(&self.path)?);
-
-        let master = &self.master;
-
-        Ok(PtyClient { master, client })
+        Ok(PtyClient { parent: self })
     }
 }
 
 impl<'a> PtyClient<'a> {
     /// Associate the client side of the PTY to the current process
     pub fn make_tty(self) -> io::Result<OwnedFd> {
-        // SAFETY: this function is safe to call (and is being fed the correct file descriptor)
+        // SAFETY: these functions are safe to call (and are being fed the correct file descriptor)
         unsafe {
-            cerr(libc::grantpt(self.master.as_raw_fd()))?;
+            cerr(libc::grantpt(self.parent.master.as_raw_fd()))?;
+            cerr(libc::unlockpt(self.parent.master.as_raw_fd()))?;
         }
 
-        make_controlling_terminal(&self.client)?;
+        let path = CString::new(self.parent.path.as_os_str().as_bytes())
+            .expect("PTY path to not have null bytes");
 
-        Ok(self.client)
+        // SAFETY:
+        // - libc::open is passed a correct null-terminated C string
+        // - only if the fd is opened correctly is it passed to from_raw_fd
+        let client = unsafe {
+            // NOTE: Opening terminal device makes that the controlling terminal for this session;
+            // so by not passing O_NOCTTY we can avoid the TIOCSCTTY ioctl
+            let fd = cerr(libc::open(path.as_ptr(), libc::O_RDWR))?;
+            OwnedFd::from_raw_fd(fd)
+        };
+
+        Ok(client)
     }
-}
-
-fn make_controlling_terminal(fd: &OwnedFd) -> io::Result<()> {
-    // SAFETY: this is a correct way to call the TIOCSCTTY ioctl, see:
-    // https://www.man7.org/linux/man-pages/man2/TIOCNOTTY.2const.html
-    cerr(unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSCTTY, 0) })?;
-    Ok(())
 }
