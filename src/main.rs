@@ -108,7 +108,7 @@ async fn main() {
                     if *DEBUG_LOGS {
                         eprintln!("failed to automatically restart {name}: {e:?}");
                     }
-                    if let Ok(service) = service_manager.get_service(&name) {
+                    if let Ok(service) = service_manager.get_service(Credentials::root(), &name) {
                         service
                             .state
                             .logs
@@ -120,7 +120,7 @@ async fn main() {
             }
         }
 
-        if let Ok(service) = service_manager.get_service("bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
             && let ServiceStatus::Exited(status) = service.state.status
         {
             if let Some(code) = status.code() {
@@ -131,7 +131,7 @@ async fn main() {
                 process::exit(1);
             }
         }
-        if let Ok(service) = service_manager.get_service("bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
             && let ServiceStatus::Stopped = service.state.status
         {
             process::exit(0);
