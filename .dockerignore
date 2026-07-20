@@ -4,5 +4,6 @@
 # but these
 !Cargo.lock
 !Cargo.toml
+!rust-toolchain.toml
 !src/**/*
 !crates/**/*
