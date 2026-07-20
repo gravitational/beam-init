@@ -351,30 +351,39 @@ fn main() {
                 .unwrap_or_else(show_error_and_exit);
 
             let pty = match service.status {
-                api::ServiceStatus::Running {
-                    pty: Some((fd, _)), ..
+                api::ServiceStatus::Running { ref pty, .. }
+                | api::ServiceStatus::Frozen { ref pty, .. } => {
+                    if let Some((index, _)) = pty {
+                        get_fd_from_store(*index)
+                    } else {
+                        println!("task {name} does not have a pty attached");
+                        return;
+                    }
                 }
-                | api::ServiceStatus::Frozen {
-                    pty: Some((fd, _)), ..
-                } => {
-                    use std::io::Write;
-                    use std::os::unix::net::UnixStream;
-
-                    let mut socket = UnixStream::connect(api::FD_SOCKET_PATH).unwrap();
-                    socket.write_all(&u64::to_le_bytes(fd)).unwrap();
-                    let (_len, fd) = unix_socket::socket_recv_fd(&socket, &mut [0]).unwrap();
-                    fd
+                _ => {
+                    println!("could not attach to {name} ({})", service.status);
+                    return;
                 }
-                _ => todo!("print error"),
             };
 
-            if terminal::manage(pty.as_fd()).is_err() {
-                println!("could not attach to {name} ({})", service.status);
+            if let Err(err) = terminal::manage(pty.as_fd()) {
+                println!("pty error for process {name} ({})", err);
             } else {
                 println!("detached from {name} ({})", service.status);
             }
         }
     }
+}
+
+/// Retrieve a file descriptor over the dedicated socket
+fn get_fd_from_store(fdstore_idx: u64) -> std::os::fd::OwnedFd {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut socket = UnixStream::connect(api::FD_SOCKET_PATH).unwrap();
+    socket.write_all(&u64::to_le_bytes(fdstore_idx)).unwrap();
+    let (_len, fd) = unix_socket::socket_recv_fd(&socket, &mut [0]).unwrap();
+    fd
 }
 
 /// As a userfriendliness feature, allow the user to match a service by only
