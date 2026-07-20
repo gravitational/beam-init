@@ -22,8 +22,6 @@ pub enum Command {
     CreateService {
         name: String,
         service: CreateService,
-        uid: libc::uid_t,
-        gid: libc::gid_t,
     },
     RestartService {
         name: String,
@@ -114,13 +112,9 @@ async fn create_service(
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::CreateService {
-                name,
-                service,
-                uid: credentials.uid,
-                gid: credentials.gid,
-            },
+            command: Command::CreateService { name, service },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -130,12 +124,14 @@ async fn create_service(
 async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::StopService { name, prune: false },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -145,12 +141,14 @@ async fn stop_service(
 async fn delete_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::StopService { name, prune: true },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -160,12 +158,14 @@ async fn delete_service(
 async fn restart_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::RestartService { name },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -175,12 +175,14 @@ async fn restart_service(
 async fn freeze_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::FreezeService { name },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -190,12 +192,14 @@ async fn freeze_service(
 async fn thaw_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::ThawService { name },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -205,24 +209,30 @@ async fn thaw_service(
 async fn show_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::ShowService { name },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
 }
 
-async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response {
+async fn list_services(
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
             command: Command::ListServices,
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -238,6 +248,7 @@ struct ServiceLogsQuery {
 async fn service_logs(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
     query: Query<ServiceLogsQuery>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
@@ -248,6 +259,7 @@ async fn service_logs(
                 follow: query.follow,
             },
             tx,
+            credentials,
         })
         .await
         .expect("main task crashed");
@@ -330,14 +342,10 @@ pub async fn automatic_restart(
 pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
+    credentials: Credentials,
 ) -> Result<Response<Body>, ServiceError> {
     match cmd {
-        Command::CreateService {
-            name,
-            service,
-            uid,
-            gid,
-        } => {
+        Command::CreateService { name, service } => {
             let CreateService {
                 cmd,
                 args,
@@ -352,8 +360,8 @@ pub async fn handle_api_command(
                     args: args.clone(),
                     liveness: liveness.clone(),
                     pty: *pty,
-                    uid,
-                    gid,
+                    uid: credentials.uid,
+                    gid: credentials.gid,
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;

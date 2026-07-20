@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
+use crate::api_impl::Credentials;
 use crate::services::{ServiceManager, ServiceStatus};
 use crate::system::exit_with_signal;
 use beam_init::api;
@@ -29,6 +30,7 @@ enum Event {
     Command {
         command: api_impl::Command,
         tx: oneshot::Sender<Response>,
+        credentials: Credentials,
     },
     Signal(signalfd_siginfo),
     ProbeFailed {
@@ -57,14 +59,13 @@ async fn main() {
             liveness: None,
             pty: false,
         },
-        uid: 0,
-        gid: 0,
     };
     // The channel is empty, so sending always succeeds.
     tx_event
         .try_send(Event::Command {
             command: init_cmd,
             tx: oneshot::channel().0,
+            credentials: Credentials::root(),
         })
         .expect("channel should be empty");
 
@@ -96,8 +97,10 @@ async fn main() {
             Event::Command {
                 command: cmd,
                 tx,
+                credentials,
             } => {
-                let res = api_impl::handle_api_command(&mut service_manager, cmd).await;
+                let res =
+                    api_impl::handle_api_command(&mut service_manager, cmd, credentials).await;
                 let _ = tx.send(res.into_response());
             }
             Event::ProbeFailed { name } => {
