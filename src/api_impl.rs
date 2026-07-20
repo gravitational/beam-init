@@ -51,12 +51,24 @@ pub enum Command {
 use axum::serve::IncomingStream;
 
 #[derive(Clone)]
-struct UCred(tokio::net::unix::UCred);
+pub struct Credentials {
+    uid: libc::uid_t,
+    gid: libc::gid_t,
+}
 
-impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> for UCred {
+impl Credentials {
+    pub fn root() -> Self {
+        Self { uid: 0, gid: 0 }
+    }
+}
+
+impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> for Credentials {
     fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
         let cred = stream.io().peer_cred().expect("no Unix peer credentials");
-        UCred(cred)
+        Credentials {
+            uid: cred.uid(),
+            gid: cred.gid(),
+        }
     }
 }
 
@@ -84,7 +96,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
     tokio::spawn(async move {
         axum::serve(
             socket,
-            router.into_make_service_with_connect_info::<UCred>(),
+            router.into_make_service_with_connect_info::<Credentials>(),
         )
         .await
         .expect("axum::serve is documented as never returning an error");
@@ -96,7 +108,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 async fn create_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
-    ConnectInfo(UCred(ucred)): ConnectInfo<UCred>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
     Json(service): Json<CreateService>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
@@ -105,8 +117,8 @@ async fn create_service(
             Command::CreateService {
                 name,
                 service,
-                uid: ucred.uid(),
-                gid: ucred.gid(),
+                uid: credentials.uid,
+                gid: credentials.gid,
             },
             tx,
         ))
