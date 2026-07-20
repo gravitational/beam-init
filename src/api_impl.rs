@@ -113,15 +113,15 @@ async fn create_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::CreateService {
+        .send(Event::Command {
+            command: Command::CreateService {
                 name,
                 service,
                 uid: credentials.uid,
                 gid: credentials.gid,
             },
             tx,
-        ))
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -133,10 +133,10 @@ async fn stop_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::StopService { name, prune: false },
+        .send(Event::Command {
+            command: Command::StopService { name, prune: false },
             tx,
-        ))
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -148,10 +148,10 @@ async fn delete_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::StopService { name, prune: true },
+        .send(Event::Command {
+            command: Command::StopService { name, prune: true },
             tx,
-        ))
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -163,7 +163,10 @@ async fn restart_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::RestartService { name }, tx))
+        .send(Event::Command {
+            command: Command::RestartService { name },
+            tx,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -175,7 +178,10 @@ async fn freeze_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::FreezeService { name }, tx))
+        .send(Event::Command {
+            command: Command::FreezeService { name },
+            tx,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -187,7 +193,10 @@ async fn thaw_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ThawService { name }, tx))
+        .send(Event::Command {
+            command: Command::ThawService { name },
+            tx,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -199,7 +208,10 @@ async fn show_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ShowService { name }, tx))
+        .send(Event::Command {
+            command: Command::ShowService { name },
+            tx,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -208,7 +220,10 @@ async fn show_service(
 async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ListServices, tx))
+        .send(Event::Command {
+            command: Command::ListServices,
+            tx,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -227,13 +242,13 @@ async fn service_logs(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::ServiceLogs {
+        .send(Event::Command {
+            command: Command::ServiceLogs {
                 name,
                 follow: query.follow,
             },
             tx,
-        ))
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")

@@ -26,9 +26,14 @@ static DEBUG_LOGS: LazyLock<bool> =
     LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
 
 enum Event {
-    Command(api_impl::Command, oneshot::Sender<Response>),
+    Command {
+        command: api_impl::Command,
+        tx: oneshot::Sender<Response>,
+    },
     Signal(signalfd_siginfo),
-    ProbeFailed { name: String },
+    ProbeFailed {
+        name: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -57,7 +62,10 @@ async fn main() {
     };
     // The channel is empty, so sending always succeeds.
     tx_event
-        .try_send(Event::Command(init_cmd, oneshot::channel().0))
+        .try_send(Event::Command {
+            command: init_cmd,
+            tx: oneshot::channel().0,
+        })
         .expect("channel should be empty");
 
     // Listen for SIGCHLD signals
@@ -85,7 +93,10 @@ async fn main() {
             .expect("signal stream and api socket tasks failed")
         {
             Event::Signal(info) => service_manager.handle_signal(info),
-            Event::Command(cmd, tx) => {
+            Event::Command {
+                command: cmd,
+                tx,
+            } => {
                 let res = api_impl::handle_api_command(&mut service_manager, cmd).await;
                 let _ = tx.send(res.into_response());
             }
