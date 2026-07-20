@@ -127,6 +127,9 @@ enum Command {
         /// Name of the service to create
         #[arg(long)]
         name: Option<String>,
+        #[arg(long)]
+        #[cfg(feature = "unstable-pty")]
+        pty: bool,
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
         #[command(flatten)]
@@ -242,7 +245,11 @@ fn main() {
             name,
             command,
             liveness,
+            #[cfg(feature = "unstable-pty")]
+            pty,
         } => {
+            #[cfg(not(feature = "unstable-pty"))]
+            let pty = false;
             let name = name.unwrap_or_else(gen_name);
             let _resp: api::CreateService = client
                 .post(
@@ -251,6 +258,7 @@ fn main() {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
                         liveness: liveness.map(Into::into),
+                        pty,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);

@@ -49,6 +49,7 @@ async fn main() {
             cmd,
             args: args.collect(),
             liveness: None,
+            pty: false,
         },
     };
     // The channel is empty, so sending always succeeds.

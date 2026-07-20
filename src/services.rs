@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -19,6 +19,7 @@ use tokio_stream::StreamExt;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
+use crate::system::pty::{Pty, PtyClient};
 use crate::system::{_exit, cerr, kill_process_group, waitpid};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
@@ -64,6 +65,7 @@ pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
     pub liveness: Option<Probe>,
+    pub pty: bool,
 }
 
 /// The runtime state of a service.
@@ -81,10 +83,10 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: pid_t },
+    Running { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen { main_pid: pid_t },
+    Frozen { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service was stopped, but will soon be started again as part of a restart.
     Restarting { main_pid: pid_t, name: String },
@@ -169,7 +171,7 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid }
+                        ServiceStatus::Running { main_pid, .. }
                             if main_pid == info.ssi_pid as pid_t =>
                         {
                             service.state.status = ServiceStatus::Exited(status);
@@ -292,10 +294,32 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        match spawn_service(old_sigmask, &service.config, log_writer) {
+        let mut pty = service
+            .config
+            .pty
+            .then(Pty::new)
+            .transpose()
+            .map_err(|err| {
+                let err_str = err.to_string();
+                println!("[{name}] Failed to create a pty: {err_str}");
+                service.state.status = ServiceStatus::Error(err);
+                ServiceError::SpawnFailed {
+                    cmd: service.config.cmd.clone(),
+                    err: err_str,
+                }
+            })?;
+
+        let sink = if let Some(terminal) = &mut pty {
+            Sink::PTY(terminal.client())
+        } else {
+            Sink::Log(log_writer)
+        };
+
+        match spawn_service(old_sigmask, &service.config, sink) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
+                    pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
@@ -328,10 +352,14 @@ impl ServiceManager {
             ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
             }
-            ServiceStatus::Running { main_pid } => {
+            ServiceStatus::Running {
+                main_pid,
+                ref mut pty,
+            } => {
+                let pty = pty.take();
                 service.abort_liveness_probe();
                 kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid };
+                service.state.status = ServiceStatus::Frozen { main_pid, pty };
             }
         }
 
@@ -353,9 +381,13 @@ impl ServiceManager {
             ServiceStatus::Running { .. } => {
                 // This process is already running.
             }
-            ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Frozen {
+                main_pid,
+                ref mut pty,
+            } => {
+                let pty = pty.take();
                 kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid };
+                service.state.status = ServiceStatus::Running { main_pid, pty };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -380,8 +412,8 @@ impl ServiceManager {
                     prune: prune || old_prune,
                 };
             }
-            ServiceStatus::Running { main_pid }
-            | ServiceStatus::Frozen { main_pid }
+            ServiceStatus::Running { main_pid, .. }
+            | ServiceStatus::Frozen { main_pid, .. }
             | ServiceStatus::Restarting { main_pid, .. } => {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid, prune };
@@ -404,7 +436,7 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid } | ServiceStatus::Frozen { main_pid } => {
+            ServiceStatus::Running { main_pid, .. } | ServiceStatus::Frozen { main_pid, .. } => {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,
@@ -531,11 +563,13 @@ async fn run_liveness_probe(
     }
 }
 
-fn spawn_service(
-    old_sigmask: OldSigmask,
-    config: &ServiceConfig,
-    log_writer: std::os::unix::prelude::OwnedFd,
-) -> io::Result<pid_t> {
+#[allow(clippy::upper_case_acronyms)]
+enum Sink<'a> {
+    Log(OwnedFd),
+    PTY(PtyClient<'a>),
+}
+
+fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -572,17 +606,39 @@ fn spawn_service(
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            // Set the log pipe as stdout and stderr
-            // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
-            // accessed after this point depends on stdout/stderr pointing to a particular fd.
-            expect_no_panic(
-                cerr(libc::dup2(log_writer.as_raw_fd(), 1)),
-                "failed to set stdout",
-            );
-            expect_no_panic(
-                cerr(libc::dup2(log_writer.as_raw_fd(), 2)),
-                "failed to set stderr",
-            );
+            match sink {
+                Sink::PTY(pty) => {
+                    let pty_fd = expect_no_panic(
+                        pty.make_tty(),
+                        "could not make the pty the controlling terminal",
+                    );
+
+                    // Set the pseudoterminal as stdin, stdout and stderr
+                    // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
+                    // accessed after this point depends on stdout/stderr pointing to a particular fd.
+                    expect_no_panic(
+                        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                            .into_iter()
+                            .try_for_each(|fd| {
+                                cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
+                                Ok(())
+                            }),
+                        "failed to attach pty",
+                    );
+                }
+                Sink::Log(log_writer) => {
+                    // Set the log pipe as stdout and stderr
+                    // SAFETY: as above
+                    expect_no_panic(
+                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
+                        "failed to set stdout",
+                    );
+                    expect_no_panic(
+                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
+                        "failed to set stderr",
+                    );
+                }
+            }
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
 

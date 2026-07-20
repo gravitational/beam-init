@@ -211,12 +211,16 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid } => {
-                ServiceStatus::Running { main_pid }
+            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
+                ServiceStatus::Running {
+                    main_pid,
+                    pty: pty.as_ref().map(|inner| inner.path.clone()),
+                }
             }
-            crate::services::ServiceStatus::Frozen { main_pid } => {
-                ServiceStatus::Frozen { main_pid }
-            }
+            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
+                main_pid,
+                pty: pty.as_ref().map(|inner| inner.path.clone()),
+            },
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
                 ServiceStatus::Restarting {
                     main_pid,
@@ -271,6 +275,7 @@ pub async fn handle_api_command(
                 cmd,
                 args,
                 liveness,
+                pty,
             } = &service;
 
             service_manager.create_service(
@@ -279,6 +284,7 @@ pub async fn handle_api_command(
                     cmd: cmd.clone(),
                     args: args.clone(),
                     liveness: liveness.clone(),
+                    pty: *pty,
                 },
             )?;
             service_manager.start_service(&name, StartReason::User)?;
