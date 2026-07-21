@@ -374,6 +374,7 @@ fn main() {
 }
 
 /// Retrieve a file descriptor over the dedicated socket
+#[cfg(feature = "unstable-pty")]
 fn get_fd_from_store(fdstore_idx: u64) -> std::os::fd::OwnedFd {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
