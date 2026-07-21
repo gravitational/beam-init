@@ -5,11 +5,9 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use crate::unix_socket::cerr;
 
 pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
-    let mut app_r = File::from(pty.try_clone()?);
-    let mut app_w = File::from(pty);
+    let mut app = File::from(pty);
 
-    let mut source = std::io::stdin();
-    let mut sink = std::io::stdout();
+    let mut tty = File::options().read(true).write(true).open("/dev/tty")?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -17,16 +15,16 @@ pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
     const CAN_READ_FROM_PTY: mio::Token = mio::Token(0);
     const CAN_READ_FROM_CONTROLLER: mio::Token = mio::Token(1);
 
-    set_nonblocking(&source)?;
-    set_nonblocking(&app_r)?;
+    set_nonblocking(&tty)?;
+    set_nonblocking(&app)?;
 
     reg.register(
-        &mut mio::unix::SourceFd(&source.as_raw_fd()),
+        &mut mio::unix::SourceFd(&tty.as_raw_fd()),
         CAN_READ_FROM_CONTROLLER,
         mio::Interest::READABLE,
     )?;
     reg.register(
-        &mut mio::unix::SourceFd(&app_r.as_raw_fd()),
+        &mut mio::unix::SourceFd(&app.as_raw_fd()),
         CAN_READ_FROM_PTY,
         mio::Interest::READABLE,
     )?;
@@ -37,13 +35,13 @@ pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
         for event in &events {
             let res = match event.token() {
                 CAN_READ_FROM_PTY => {
-                    let res = std::io::copy(&mut app_r, &mut sink);
-                    let _ = sink.flush();
+                    let res = std::io::copy(&mut app, &mut tty);
+                    let _ = tty.flush();
                     res
                 }
                 CAN_READ_FROM_CONTROLLER => {
-                    let res = std::io::copy(&mut source, &mut app_w);
-                    let _ = app_w.flush();
+                    let res = std::io::copy(&mut tty, &mut app);
+                    let _ = app.flush();
                     res
                 }
                 _ => continue,
