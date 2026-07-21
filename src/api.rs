@@ -3,7 +3,8 @@ use std::{path::PathBuf, process::ExitStatus, time::Duration};
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
 
-pub const SOCKET_PATH: &str = "/run/beam-init";
+pub const API_SOCKET_PATH: &str = "/run/beam-init";
+pub const FD_SOCKET_PATH: &str = "/run/beam-init-fds";
 
 #[derive(Serialize, Deserialize)]
 pub struct CreateService {
@@ -39,13 +40,13 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
-        pty: Option<PathBuf>,
+        pty: Option<(u64, PathBuf)>,
     },
 
     /// The service is paused but can be continued.
     Frozen {
         main_pid: pid_t,
-        pty: Option<PathBuf>,
+        pty: Option<(u64, PathBuf)>,
     },
 
     /// The service has been requested to restart and is in the process of shutting down.
@@ -73,14 +74,14 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Stopped => f.write_str("stopped"),
             ServiceStatus::Running { main_pid, pty } => {
                 write!(f, "running PID={main_pid}")?;
-                if let Some(path) = pty {
+                if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
                 Ok(())
             }
             ServiceStatus::Frozen { main_pid, pty } => {
                 write!(f, "frozen PID={main_pid}")?;
-                if let Some(path) = pty {
+                if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
                 Ok(())

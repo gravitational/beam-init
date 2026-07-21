@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
+use crate::fdstore::FdStore;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::system::fork::unsafe_fork;
@@ -28,6 +29,7 @@ pub struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
+    fdstore: FdStore,
 }
 
 #[derive(Debug)]
@@ -139,11 +141,12 @@ pub(crate) enum StartReason {
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>) -> Self {
+    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>, fdstore: FdStore) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
+            fdstore,
         }
     }
 
@@ -279,7 +282,12 @@ impl ServiceManager {
         let old_sigmask = self.old_sigmask;
 
         let tx_event = self.tx_event.clone();
-        let service = self.get_service_mut(name)?;
+        let service = self
+            .services
+            .get_mut(name)
+            .ok_or_else(|| ServiceError::ServiceNotFound {
+                name: name.to_owned(),
+            })?;
 
         eprintln!("Starting service {name}");
 
@@ -297,7 +305,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(Pty::new)
+            .then(|| Pty::new(&self.fdstore))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();

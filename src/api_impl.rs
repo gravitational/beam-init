@@ -14,7 +14,7 @@ use tokio_stream::StreamExt;
 
 use crate::Event;
 use crate::services::{self, ServiceError, ServiceManager, StartReason};
-use beam_init::api::{CreateService, SOCKET_PATH, ServiceStatus};
+use beam_init::api::{API_SOCKET_PATH, CreateService, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
 pub enum Command {
@@ -46,7 +46,7 @@ pub enum Command {
 }
 
 pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
-    let socket = UnixListener::bind(SOCKET_PATH)?;
+    let socket = UnixListener::bind(API_SOCKET_PATH)?;
 
     let router = Router::new()
         .route("/services", get(list_services))
@@ -214,12 +214,16 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
             crate::services::ServiceStatus::Running { main_pid, ref pty } => {
                 ServiceStatus::Running {
                     main_pid,
-                    pty: pty.as_ref().map(|inner| inner.path.clone()),
+                    pty: pty
+                        .as_ref()
+                        .map(|inner| (inner.master.id(), inner.path.clone())),
                 }
             }
             crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
                 main_pid,
-                pty: pty.as_ref().map(|inner| inner.path.clone()),
+                pty: pty
+                    .as_ref()
+                    .map(|inner| (inner.master.id(), inner.path.clone())),
             },
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
                 ServiceStatus::Restarting {

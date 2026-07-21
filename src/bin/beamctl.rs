@@ -15,8 +15,8 @@ struct Client {
 
 impl Client {
     fn new_local() -> Self {
-        if !fs::exists(api::SOCKET_PATH).unwrap_or(false) {
-            eprintln!("error: {} doesn't exist.", api::SOCKET_PATH);
+        if !fs::exists(api::API_SOCKET_PATH).unwrap_or(false) {
+            eprintln!("error: {} doesn't exist.", api::API_SOCKET_PATH);
             eprintln!(
                 "hint: beamctl only works inside containers that use beam-init as init process",
             );
@@ -24,7 +24,7 @@ impl Client {
         }
 
         let client = reqwest::blocking::ClientBuilder::new()
-            .unix_socket(api::SOCKET_PATH)
+            .unix_socket(api::API_SOCKET_PATH)
             .build()
             .unwrap_or_else(|err| {
                 eprintln!("Failed to initialize HTTP client: {err}");
@@ -304,7 +304,7 @@ fn main() {
         }
         Command::Show { name } => {
             let name = prefix_match(&client, name);
-            let service: beam_init::api::Service = client
+            let service: api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap_or_else(show_error_and_exit);
 
