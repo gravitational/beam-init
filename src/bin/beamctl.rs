@@ -9,14 +9,17 @@ use serde::de::DeserializeOwned;
 
 use beam_init::api::{self, Probe};
 
+#[cfg(feature = "unstable-pty")]
+mod terminal;
+
 struct Client {
     client: reqwest::blocking::Client,
 }
 
 impl Client {
     fn new_local() -> Self {
-        if !fs::exists(api::SOCKET_PATH).unwrap_or(false) {
-            eprintln!("error: {} doesn't exist.", api::SOCKET_PATH);
+        if !fs::exists(api::API_SOCKET_PATH).unwrap_or(false) {
+            eprintln!("error: {} doesn't exist.", api::API_SOCKET_PATH);
             eprintln!(
                 "hint: beamctl only works inside containers that use beam-init as init process",
             );
@@ -24,7 +27,7 @@ impl Client {
         }
 
         let client = reqwest::blocking::ClientBuilder::new()
-            .unix_socket(api::SOCKET_PATH)
+            .unix_socket(api::API_SOCKET_PATH)
             .build()
             .unwrap_or_else(|err| {
                 eprintln!("Failed to initialize HTTP client: {err}");
@@ -174,6 +177,12 @@ enum Command {
         #[arg(long)]
         follow: bool,
     },
+    /// Attach to the PTY of a running service
+    #[cfg(feature = "unstable-pty")]
+    Attach {
+        #[arg(index = 1)]
+        name: String,
+    },
 }
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
@@ -304,7 +313,7 @@ fn main() {
         }
         Command::Show { name } => {
             let name = prefix_match(&client, name);
-            let service: beam_init::api::Service = client
+            let service: api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap_or_else(show_error_and_exit);
 
@@ -332,7 +341,48 @@ fn main() {
                 }
             }
         }
+        #[cfg(feature = "unstable-pty")]
+        Command::Attach { name } => {
+            let name = prefix_match(&client, name);
+            let service: api::Service = client
+                .post(&format!("/service/{}/show", name), &name)
+                .unwrap_or_else(show_error_and_exit);
+
+            let pty = match service.status {
+                api::ServiceStatus::Running { ref pty, .. }
+                | api::ServiceStatus::Frozen { ref pty, .. } => {
+                    if let Some((index, _)) = pty {
+                        get_fd_from_store(*index)
+                    } else {
+                        println!("task {name} does not have a pty attached");
+                        return;
+                    }
+                }
+                _ => {
+                    println!("could not attach to {name} ({})", service.status);
+                    return;
+                }
+            };
+
+            if let Err(err) = terminal::manage(pty) {
+                println!("pty error for process {name} ({})", err);
+            } else {
+                println!("detached from {name} ({})", service.status);
+            }
+        }
     }
+}
+
+/// Retrieve a file descriptor over the dedicated socket
+#[cfg(feature = "unstable-pty")]
+fn get_fd_from_store(fdstore_idx: u64) -> std::os::fd::OwnedFd {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let mut socket = UnixStream::connect(api::FD_SOCKET_PATH).unwrap();
+    socket.write_all(&u64::to_le_bytes(fdstore_idx)).unwrap();
+    let (_len, fd) = unix_socket::socket_recv_fd(&socket, &mut [0]).unwrap();
+    fd
 }
 
 /// As a userfriendliness feature, allow the user to match a service by only
@@ -361,6 +411,93 @@ fn gen_name() -> String {
     // SAFETY: We pass a valid mutable byte array of the given size.
     unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
     format!("{:016x}", u64::from_ne_bytes(buf))
+}
+
+#[cfg(feature = "unstable-pty")]
+mod unix_socket {
+    use std::ffi::{c_int, c_uint};
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+    use std::{io, mem, ptr};
+
+    use libc::{
+        CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_SPACE, MSG_NOSIGNAL, SCM_RIGHTS, SOL_SOCKET,
+        cmsghdr, iovec, msghdr, recvmsg, size_t,
+    };
+
+    union ControlMessage {
+        // SAFETY: This is always safe.
+        buf: [u8; unsafe { CMSG_SPACE(size_of::<c_int>() as c_uint) as usize }],
+        _align: cmsghdr,
+    }
+
+    pub fn cerr(retval: c_int) -> io::Result<c_int> {
+        if retval == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(retval)
+    }
+
+    pub fn socket_recv_fd(
+        socket: impl AsFd,
+        data: &mut [u8],
+    ) -> Result<(c_int, OwnedFd), io::Error> {
+        assert!(
+            !data.is_empty(),
+            "must send at least a single byte for fds to be sent"
+        );
+
+        let mut iobuf = iovec {
+            iov_base: data.as_mut_ptr().cast(),
+            iov_len: data.len(),
+        };
+
+        let mut control = ControlMessage { buf: [0; _] };
+        // SAFETY: This is the variant we initialized.
+        let control_buf = unsafe { &mut control.buf };
+
+        // SAFETY: Safe to zero-initialize
+        let mut header: msghdr = unsafe { mem::zeroed() };
+        header.msg_name = ptr::null_mut();
+        header.msg_namelen = 0;
+        header.msg_iov = &mut iobuf;
+        header.msg_iovlen = 1;
+        header.msg_control = control_buf.as_mut_ptr().cast();
+        header.msg_controllen = control_buf.len() as _;
+        header.msg_flags = 0;
+
+        // SAFETY: msghdr is correctly initialized and socket is a valid fd.
+        let res = unsafe {
+            cerr(recvmsg(socket.as_fd().as_raw_fd(), &mut header, MSG_NOSIGNAL) as c_int)?
+        };
+
+        // SAFETY: This only accesses the control message buffer.
+        let fd = unsafe {
+            let cmsg = CMSG_FIRSTHDR(&header);
+            if cmsg.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "no control message received",
+                ));
+            }
+            if (*cmsg).cmsg_level != SOL_SOCKET || (*cmsg).cmsg_type != SCM_RIGHTS {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "no SCM_RIGHTS control message received",
+                ));
+            }
+            // This should always hold. While SCM_RIGHTS can contain multiple fds,
+            // the control buffer is only large enough to fit a single fd.
+            assert_eq!(
+                (*cmsg).cmsg_len as size_t,
+                CMSG_LEN(size_of::<c_int>() as c_uint) as size_t,
+            );
+
+            // SAFETY: This is a uniquely owned valid fd.
+            OwnedFd::from_raw_fd(*CMSG_DATA(cmsg).cast::<c_int>())
+        };
+
+        Ok((res, fd))
+    }
 }
 
 #[cfg(test)]

@@ -4,11 +4,12 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::fdstore::{FdStore, StoredFd};
 use crate::system::cerr;
 
 #[derive(Debug)]
 pub struct Pty {
-    master: OwnedFd,
+    pub master: StoredFd,
     pub path: PathBuf,
 }
 
@@ -18,7 +19,7 @@ pub struct PtyClient<'a> {
 }
 
 impl Pty {
-    pub fn new() -> io::Result<Pty> {
+    pub fn new(fd_store: &FdStore) -> io::Result<Pty> {
         let flags = libc::O_RDWR | libc::O_NOCTTY;
 
         // SAFETY:
@@ -47,7 +48,7 @@ impl Pty {
         };
 
         Ok(Pty {
-            master,
+            master: fd_store.add(master),
             path: pts_name.to_owned(),
         })
     }
@@ -60,10 +61,12 @@ impl Pty {
 impl<'a> PtyClient<'a> {
     /// Associate the client side of the PTY to the current process
     pub fn make_tty(self) -> io::Result<OwnedFd> {
+        let master = self.parent.master.get();
+
         // SAFETY: these functions are safe to call (and are being fed the correct file descriptor)
         unsafe {
-            cerr(libc::grantpt(self.parent.master.as_raw_fd()))?;
-            cerr(libc::unlockpt(self.parent.master.as_raw_fd()))?;
+            cerr(libc::grantpt(master.as_raw_fd()))?;
+            cerr(libc::unlockpt(master.as_raw_fd()))?;
         }
 
         let path = CString::new(self.parent.path.as_os_str().as_bytes())
