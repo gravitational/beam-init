@@ -23,6 +23,7 @@ async-stream = "0.3.6"
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query"] }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
 tokio-stream = "0.1.18"
+mio = "1.2.0"
 
 [dev-dependencies]
 docker_harness = { path = "crates/docker_harness" }
