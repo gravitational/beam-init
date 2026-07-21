@@ -21,7 +21,7 @@ libc = "0.2.185"
 # tokio
 async-stream = "0.3.6"
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query"] }
-tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
+tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync", "fs", "io-util", "io-std"] }
 tokio-stream = "0.1.18"
 
 [dev-dependencies]
