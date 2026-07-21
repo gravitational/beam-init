@@ -348,11 +348,11 @@ fn main() {
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap_or_else(show_error_and_exit);
 
-            let pty = match service.status {
-                api::ServiceStatus::Running { ref pty, .. }
-                | api::ServiceStatus::Frozen { ref pty, .. } => {
+            let (pid, pty) = match service.status {
+                api::ServiceStatus::Running { ref pty, main_pid }
+                | api::ServiceStatus::Frozen { ref pty, main_pid } => {
                     if let Some((index, _)) = pty {
-                        get_fd_from_store(*index)
+                        (main_pid, get_fd_from_store(*index))
                     } else {
                         println!("task {name} does not have a pty attached");
                         return;
@@ -364,7 +364,11 @@ fn main() {
                 }
             };
 
-            if let Err(err) = terminal::manage(pty) {
+            // we must get rid of the client before entering the terminal, because
+            // it interferes with signal handling
+            drop(client);
+
+            if let Err(err) = terminal::manage(pid, pty) {
                 println!("pty error for process {name} ({})", err);
             } else {
                 println!("detached from {name} ({})", service.status);
