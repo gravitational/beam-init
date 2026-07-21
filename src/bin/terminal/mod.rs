@@ -1,33 +1,86 @@
-use std::io;
-use std::os::fd::OwnedFd;
-use tokio::fs::File;
+use std::fs::File;
+use std::io::{self, Write};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
-use tokio::runtime::LocalRuntime as Runtime;
+use crate::unix_socket::cerr;
 
 pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
-    Runtime::new()
-        .expect("to make a tokio runtime")
-        .block_on(attach(pty))
-}
-
-async fn attach(pty: OwnedFd) -> io::Result<()> {
-    let mut app_r = File::from(pty.try_clone().expect("to dup a file descriptor"));
+    let mut app_r = File::from(pty.try_clone()?);
     let mut app_w = File::from(pty);
 
-    let mut source = tokio::io::stdin();
-    let mut sink = tokio::io::stdout();
+    let mut source = std::io::stdin();
+    let mut sink = std::io::stdout();
 
-    let left_to_right = tokio::io::copy(&mut app_r, &mut sink);
-    let right_to_left = tokio::io::copy(&mut source, &mut app_w);
+    let mut poller = mio::Poll::new()?;
+    let reg = poller.registry();
 
-    tokio::select! {
-        _ = right_to_left => {
-            ()
-        },
-        _ = left_to_right => {
-            ()
-        },
+    const CAN_READ_FROM_PTY: mio::Token = mio::Token(0);
+    const CAN_READ_FROM_CONTROLLER: mio::Token = mio::Token(1);
+
+    set_nonblocking(&source)?;
+    set_nonblocking(&app_r)?;
+
+    reg.register(
+        &mut mio::unix::SourceFd(&source.as_raw_fd()),
+        CAN_READ_FROM_CONTROLLER,
+        mio::Interest::READABLE,
+    )?;
+    reg.register(
+        &mut mio::unix::SourceFd(&app_r.as_raw_fd()),
+        CAN_READ_FROM_PTY,
+        mio::Interest::READABLE,
+    )?;
+
+    let mut events = mio::Events::with_capacity(1024);
+    loop {
+        poller.poll(&mut events, None)?;
+        for event in &events {
+            let res = match event.token() {
+                CAN_READ_FROM_PTY => {
+                    let res = std::io::copy(&mut app_r, &mut sink);
+                    let _ = sink.flush();
+                    res
+                }
+                CAN_READ_FROM_CONTROLLER => {
+                    let res = std::io::copy(&mut source, &mut app_w);
+                    let _ = app_w.flush();
+                    res
+                }
+                _ => continue,
+            };
+
+            if terminated(res)? {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn set_nonblocking(fd: &impl AsFd) -> io::Result<()> {
+    let raw_fd = fd.as_fd().as_raw_fd();
+
+    //SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
+    //guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
+    //follow the correct forms.
+    unsafe {
+        let flags = cerr(libc::fcntl(raw_fd, libc::F_GETFL))?;
+        cerr(libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK))?;
     }
 
     Ok(())
+}
+
+fn terminated<T>(result: io::Result<T>) -> io::Result<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            if err.raw_os_error() == Some(libc::EIO) {
+                Ok(true)
+            } else if err.kind() == io::ErrorKind::WouldBlock {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
