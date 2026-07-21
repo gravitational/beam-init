@@ -77,9 +77,16 @@ impl FdStore {
                                     return;
                                 }
                             };
-                            let fd = Arc::clone(
-                                &inner3.lock().expect("lock shouldn't be poisoned").fds[&id],
-                            );
+                            let fd = inner3
+                                .lock()
+                                .expect("lock shouldn't be poisoned")
+                                .fds
+                                .get(&id)
+                                .map(Arc::clone);
+                            let Some(fd) = fd else {
+                                eprintln!("Client requested non-existent fd");
+                                return;
+                            };
                             let res = stream
                                 .async_io(Interest::WRITABLE, || {
                                     socket_send_fd(&stream, &[0], fd.as_fd())
