@@ -343,8 +343,6 @@ fn main() {
         }
         #[cfg(feature = "unstable-pty")]
         Command::Attach { name } => {
-            use std::os::fd::AsFd;
-
             let name = prefix_match(&client, name);
             let service: api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
@@ -366,7 +364,7 @@ fn main() {
                 }
             };
 
-            if let Err(err) = terminal::manage(pty.as_fd()) {
+            if let Err(err) = terminal::manage(pty) {
                 println!("pty error for process {name} ({})", err);
             } else {
                 println!("detached from {name} ({})", service.status);
