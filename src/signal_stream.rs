@@ -20,7 +20,7 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
     }
 
     // -1 indicates creating a new signalfd receiving the given signals.
-    // SAFETY: `signalfd` is passed a valid signal set pointer and returns an owned fd.\
+    // SAFETY: `signalfd` is passed a valid signal set pointer and returns an owned fd.
     let rx = unsafe {
         OwnedFd::from_raw_fd(cerr(signalfd(
             -1,
