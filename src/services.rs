@@ -68,6 +68,8 @@ pub struct ServiceConfig {
     pub args: Vec<String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
+    pub uid: libc::uid_t,
+    pub gid: libc::gid_t,
 }
 
 /// The runtime state of a service.
@@ -647,6 +649,16 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     );
                 }
             }
+
+            // Set the supplementary group IDs for the child to the empty list.
+            expect_no_panic(
+                cerr(libc::setgroups(0, std::ptr::null())),
+                "failed to `setgroups`",
+            );
+
+            // Set the group and user ID (derived from socket).
+            expect_no_panic(cerr(libc::setgid(config.gid)), "failed to `setgid`");
+            expect_no_panic(cerr(libc::setuid(config.uid)), "failed to `setuid`");
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
 
