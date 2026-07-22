@@ -65,7 +65,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 
     // Allow all users to read from/write to this socket.
     let permissions = std::fs::Permissions::from_mode(0o666);
-    std::fs::set_permissions(SOCKET_PATH, permissions)?;
+    std::fs::set_permissions(API_SOCKET_PATH, permissions)?;
 
     let router = Router::new()
         .route("/services", get(list_services))
