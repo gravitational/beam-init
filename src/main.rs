@@ -1,6 +1,7 @@
 #![deny(clippy::unwrap_used)]
 
 use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::{env, process};
 
@@ -45,10 +46,19 @@ async fn main() {
     // FIXME what is a reasonable channel capacity?
     let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
 
-    // Queue a fake API command to start the first service
-    let mut args = std::env::args().skip(1);
+    // Parse --environment-file flags, then treat the rest as the command.
+    let mut env_files: Vec<PathBuf> = Vec::new();
+    let mut args = std::env::args().skip(1).peekable();
+    while let Some("--environment-file") = args.peek().map(|s| s.as_str()) {
+        args.next();
+        let path = args.next().unwrap_or_else(|| {
+            eprintln!("--environment-file requires a path argument");
+            process::exit(2);
+        });
+        env_files.push(PathBuf::from(path));
+    }
     let cmd = args.next().unwrap_or_else(|| {
-        eprintln!("Usage: beam-init <COMMAND>...");
+        eprintln!("Usage: beam-init [--environment-file <PATH>]... <COMMAND>...");
         process::exit(2);
     });
     let init_cmd = api_impl::Command::CreateService {
@@ -86,7 +96,7 @@ async fn main() {
         api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
     }
 
-    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, fdstore);
+    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, fdstore, env_files);
     loop {
         match rx_event
             .recv()

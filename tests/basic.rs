@@ -109,3 +109,13 @@ fn api_liveness_max_retries() {
         .run("./tests/api_liveness_max_retries.py")
         .wait();
 }
+
+#[test]
+fn environment_file() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run_with_init_args(
+            "./tests/environment_file.py",
+            &["--environment-file", "/etc/beam-env"],
+        )
+        .wait();
+}
