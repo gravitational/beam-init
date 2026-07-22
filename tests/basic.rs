@@ -34,6 +34,13 @@ fn api_stop_service() {
 }
 
 #[test]
+fn api_stop_service_wrong_user() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/api_stop_service_wrong_user.py")
+        .wait();
+}
+
+#[test]
 fn api_show_service() {
     docker_harness::Image::build("test.Dockerfile")
         .run("./tests/api_show_service.py")

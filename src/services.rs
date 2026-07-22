@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
+use crate::api_impl::Credentials;
 use crate::fdstore::FdStore;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
@@ -68,8 +69,7 @@ pub struct ServiceConfig {
     pub args: Vec<String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
-    pub uid: libc::uid_t,
-    pub gid: libc::gid_t,
+    pub credentials: Credentials,
 }
 
 /// The runtime state of a service.
@@ -110,6 +110,7 @@ pub enum ServiceError {
     ServiceNotFound { name: String },
     ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
+    InvalidCredentials,
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -129,6 +130,11 @@ impl IntoResponse for ServiceError {
             ServiceError::SpawnFailed { cmd, err } => (
                 StatusCode::BAD_REQUEST,
                 format!("Failed to spawn {cmd}: {err}"),
+            )
+                .into_response(),
+            ServiceError::InvalidCredentials => (
+                StatusCode::UNAUTHORIZED,
+                "Service owned by a different user",
             )
                 .into_response(),
         }
@@ -203,7 +209,8 @@ impl ServiceManager {
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
                             // There is nothing else we can do with an error here, so ignore it.
-                            let _ = self.start_service(&name, StartReason::Automatic);
+                            let credentials = service.config.credentials;
+                            let _ = self.start_service(credentials, &name, StartReason::Automatic);
                             break;
                         }
 
@@ -214,17 +221,22 @@ impl ServiceManager {
         }
     }
 
-    pub async fn copy_logs(&self, name: &str) -> Result<Vec<String>, ServiceError> {
-        let service = self.get_service(name)?;
+    pub async fn copy_logs(
+        &self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<Vec<String>, ServiceError> {
+        let service = self.get_service(credentials, name)?;
 
         Ok(service.state.logs.copy_logs().await)
     }
 
     pub fn log_reader(
         &self,
+        credentials: Credentials,
         name: &str,
     ) -> Result<impl Stream<Item = String> + 'static, ServiceError> {
-        let service = self.get_service(name)?;
+        let service = self.get_service(credentials, name)?;
 
         Ok(service.state.logs.new_reader())
     }
@@ -264,23 +276,48 @@ impl ServiceManager {
         }
     }
 
-    pub fn get_service(&self, name: &str) -> Result<&Service, ServiceError> {
-        self.services
-            .get(name)
-            .ok_or_else(|| ServiceError::ServiceNotFound {
+    pub fn get_service(
+        &self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<&Service, ServiceError> {
+        let Some(service) = self.services.get(name) else {
+            return Err(ServiceError::ServiceNotFound {
                 name: name.to_owned(),
-            })
+            });
+        };
+
+        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
+            return Err(ServiceError::InvalidCredentials);
+        }
+
+        Ok(service)
     }
 
-    fn get_service_mut(&mut self, name: &str) -> Result<&mut Service, ServiceError> {
-        self.services
-            .get_mut(name)
-            .ok_or_else(|| ServiceError::ServiceNotFound {
+    fn get_service_mut(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<&mut Service, ServiceError> {
+        let Some(service) = self.services.get_mut(name) else {
+            return Err(ServiceError::ServiceNotFound {
                 name: name.to_owned(),
-            })
+            });
+        };
+
+        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
+            return Err(ServiceError::InvalidCredentials);
+        }
+
+        Ok(service)
     }
 
-    pub fn start_service(&mut self, name: &str, reason: StartReason) -> Result<(), ServiceError> {
+    pub fn start_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+        reason: StartReason,
+    ) -> Result<(), ServiceError> {
         let old_sigmask = self.old_sigmask;
 
         let tx_event = self.tx_event.clone();
@@ -290,6 +327,9 @@ impl ServiceManager {
             .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
             })?;
+        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
+            return Err(ServiceError::InvalidCredentials);
+        }
 
         eprintln!("Starting service {name}");
 
@@ -348,8 +388,12 @@ impl ServiceManager {
         }
     }
 
-    pub fn freeze_service(&mut self, name: &str) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(name)?;
+    pub fn freeze_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped
@@ -376,9 +420,13 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn thaw_service(&mut self, name: &str) -> Result<(), ServiceError> {
+    pub fn thaw_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
         let tx_event = self.tx_event.clone();
-        let service = self.get_service_mut(name)?;
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped
@@ -406,8 +454,13 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn terminate_service(&mut self, name: &str, prune: bool) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(name)?;
+    pub fn terminate_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+        prune: bool,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped => {
@@ -437,8 +490,12 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn terminate_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(name)?;
+    pub fn terminate_restart_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped
@@ -462,8 +519,12 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn kill_service(&mut self, name: &str) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(name)?;
+    pub fn kill_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped => {
@@ -492,8 +553,12 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn kill_restart_service(&mut self, name: &str) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(name)?;
+    pub fn kill_restart_service(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
             ServiceStatus::Stopped => {
@@ -657,8 +722,9 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             );
 
             // Set the group and user ID (derived from socket).
-            expect_no_panic(cerr(libc::setgid(config.gid)), "failed to `setgid`");
-            expect_no_panic(cerr(libc::setuid(config.uid)), "failed to `setuid`");
+            let Credentials { uid, gid } = config.credentials;
+            expect_no_panic(cerr(libc::setgid(gid)), "failed to `setgid`");
+            expect_no_panic(cerr(libc::setuid(uid)), "failed to `setuid`");
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
 

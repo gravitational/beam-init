@@ -22,8 +22,6 @@ pub enum Command {
     CreateService {
         name: String,
         service: CreateService,
-        uid: libc::uid_t,
-        gid: libc::gid_t,
     },
     RestartService {
         name: String,
@@ -50,13 +48,25 @@ pub enum Command {
 
 use axum::serve::IncomingStream;
 
-#[derive(Clone)]
-struct UCred(tokio::net::unix::UCred);
+#[derive(Debug, Clone, Copy)]
+pub struct Credentials {
+    pub uid: libc::uid_t,
+    pub gid: libc::gid_t,
+}
 
-impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> for UCred {
+impl Credentials {
+    pub fn root() -> Self {
+        Self { uid: 0, gid: 0 }
+    }
+}
+
+impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> for Credentials {
     fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
         let cred = stream.io().peer_cred().expect("no Unix peer credentials");
-        UCred(cred)
+        Credentials {
+            uid: cred.uid(),
+            gid: cred.gid(),
+        }
     }
 }
 
@@ -65,7 +75,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 
     // Allow all users to read from/write to this socket.
     let permissions = std::fs::Permissions::from_mode(0o666);
-    std::fs::set_permissions(SOCKET_PATH, permissions)?;
+    std::fs::set_permissions(API_SOCKET_PATH, permissions)?;
 
     let router = Router::new()
         .route("/services", get(list_services))
@@ -84,7 +94,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
     tokio::spawn(async move {
         axum::serve(
             socket,
-            router.into_make_service_with_connect_info::<UCred>(),
+            router.into_make_service_with_connect_info::<Credentials>(),
         )
         .await
         .expect("axum::serve is documented as never returning an error");
@@ -96,20 +106,16 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
 async fn create_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
-    ConnectInfo(UCred(ucred)): ConnectInfo<UCred>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
     Json(service): Json<CreateService>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::CreateService {
-                name,
-                service,
-                uid: ucred.uid(),
-                gid: ucred.gid(),
-            },
+        .send(Event::Command {
+            command: Command::CreateService { name, service },
             tx,
-        ))
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -118,13 +124,15 @@ async fn create_service(
 async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::StopService { name, prune: false },
+        .send(Event::Command {
+            command: Command::StopService { name, prune: false },
             tx,
-        ))
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -133,13 +141,15 @@ async fn stop_service(
 async fn delete_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::StopService { name, prune: true },
+        .send(Event::Command {
+            command: Command::StopService { name, prune: true },
             tx,
-        ))
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -148,10 +158,15 @@ async fn delete_service(
 async fn restart_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::RestartService { name }, tx))
+        .send(Event::Command {
+            command: Command::RestartService { name },
+            tx,
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -160,10 +175,15 @@ async fn restart_service(
 async fn freeze_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::FreezeService { name }, tx))
+        .send(Event::Command {
+            command: Command::FreezeService { name },
+            tx,
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -172,10 +192,15 @@ async fn freeze_service(
 async fn thaw_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ThawService { name }, tx))
+        .send(Event::Command {
+            command: Command::ThawService { name },
+            tx,
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -184,19 +209,31 @@ async fn thaw_service(
 async fn show_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ShowService { name }, tx))
+        .send(Event::Command {
+            command: Command::ShowService { name },
+            tx,
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
 }
 
-async fn list_services(State(tx_events): State<mpsc::Sender<Event>>) -> Response {
+async fn list_services(
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(Command::ListServices, tx))
+        .send(Event::Command {
+            command: Command::ListServices,
+            tx,
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -211,17 +248,19 @@ struct ServiceLogsQuery {
 async fn service_logs(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
     query: Query<ServiceLogsQuery>,
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::Command(
-            Command::ServiceLogs {
+        .send(Event::Command {
+            command: Command::ServiceLogs {
                 name,
                 follow: query.follow,
             },
             tx,
-        ))
+            credentials,
+        })
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
@@ -275,42 +314,42 @@ impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
 
 async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
+    credentials: Credentials,
     name: &str,
     prune: bool,
 ) -> Result<(), ServiceError> {
-    service_manager.terminate_service(name, prune)?;
+    service_manager.terminate_service(credentials, name, prune)?;
 
     // FIXME: pick a more principled duration, and potentially perform the kill
     // below in an async way.
     tokio::time::sleep(Duration::from_millis(5)).await;
 
-    service_manager.kill_service(name)
+    service_manager.kill_service(credentials, name)
 }
 
 pub async fn automatic_restart(
     service_manager: &mut ServiceManager,
     name: &str,
 ) -> Result<(), ServiceError> {
-    service_manager.terminate_restart_service(name)?;
+    let service = service_manager.get_service(Credentials::root(), name)?;
+    let credentials = service.config.credentials;
+
+    service_manager.terminate_restart_service(credentials, name)?;
 
     // FIXME: pick a more principled duration, and potentially perform the kill
     // below in an async way.
     tokio::time::sleep(Duration::from_millis(5)).await;
 
-    service_manager.kill_restart_service(name)
+    service_manager.kill_restart_service(credentials, name)
 }
 
 pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
+    credentials: Credentials,
 ) -> Result<Response<Body>, ServiceError> {
     match cmd {
-        Command::CreateService {
-            name,
-            service,
-            uid,
-            gid,
-        } => {
+        Command::CreateService { name, service } => {
             let CreateService {
                 cmd,
                 args,
@@ -325,37 +364,36 @@ pub async fn handle_api_command(
                     args: args.clone(),
                     liveness: liveness.clone(),
                     pty: *pty,
-                    uid,
-                    gid,
+                    credentials,
                 },
             )?;
-            service_manager.start_service(&name, StartReason::User)?;
+            service_manager.start_service(credentials, &name, StartReason::User)?;
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
             let prune = false;
-            let () = stop_service_cmd(service_manager, &name, prune).await?;
-            service_manager.start_service(&name, StartReason::User)?;
+            let () = stop_service_cmd(service_manager, credentials, &name, prune).await?;
+            service_manager.start_service(credentials, &name, StartReason::User)?;
 
             Ok(Json(()).into_response())
         }
         Command::StopService { name, prune } => {
-            let () = stop_service_cmd(service_manager, &name, prune).await?;
+            let () = stop_service_cmd(service_manager, credentials, &name, prune).await?;
 
             Ok(Json(()).into_response())
         }
         Command::FreezeService { name } => {
-            service_manager.freeze_service(&name)?;
+            service_manager.freeze_service(credentials, &name)?;
 
             Ok(Json(()).into_response())
         }
         Command::ThawService { name } => {
-            service_manager.thaw_service(&name)?;
+            service_manager.thaw_service(credentials, &name)?;
 
             Ok(Json(()).into_response())
         }
         Command::ShowService { name } => {
-            let service = service_manager.get_service(&name)?;
+            let service = service_manager.get_service(credentials, &name)?;
 
             let api_service = crate::api::Service::from(service);
             Ok(Json(api_service).into_response())
@@ -370,7 +408,7 @@ pub async fn handle_api_command(
         }
         Command::ServiceLogs { name, follow } => {
             if follow {
-                let stream = service_manager.log_reader(&name)?;
+                let stream = service_manager.log_reader(credentials, &name)?;
                 Ok(Response::builder()
                     .header(axum::http::header::CONTENT_TYPE, "text/plain")
                     .body(Body::from_stream(stream.map(|mut line| {
@@ -379,7 +417,7 @@ pub async fn handle_api_command(
                     })))
                     .expect("valid headers should be set"))
             } else {
-                let logs = service_manager.copy_logs(&name).await?;
+                let logs = service_manager.copy_logs(credentials, &name).await?;
                 Ok(logs
                     .into_iter()
                     .map(|mut line| {

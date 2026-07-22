@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
+use crate::api_impl::Credentials;
 use crate::services::{ServiceManager, ServiceStatus};
 use crate::system::exit_with_signal;
 use beam_init::api;
@@ -26,9 +27,15 @@ static DEBUG_LOGS: LazyLock<bool> =
     LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
 
 enum Event {
-    Command(api_impl::Command, oneshot::Sender<Response>),
+    Command {
+        command: api_impl::Command,
+        tx: oneshot::Sender<Response>,
+        credentials: Credentials,
+    },
     Signal(signalfd_siginfo),
-    ProbeFailed { name: String },
+    ProbeFailed {
+        name: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,12 +59,14 @@ async fn main() {
             liveness: None,
             pty: false,
         },
-        uid: 0,
-        gid: 0,
     };
     // The channel is empty, so sending always succeeds.
     tx_event
-        .try_send(Event::Command(init_cmd, oneshot::channel().0))
+        .try_send(Event::Command {
+            command: init_cmd,
+            tx: oneshot::channel().0,
+            credentials: Credentials::root(),
+        })
         .expect("channel should be empty");
 
     // Listen for SIGCHLD signals
@@ -85,8 +94,13 @@ async fn main() {
             .expect("signal stream and api socket tasks failed")
         {
             Event::Signal(info) => service_manager.handle_signal(info),
-            Event::Command(cmd, tx) => {
-                let res = api_impl::handle_api_command(&mut service_manager, cmd).await;
+            Event::Command {
+                command: cmd,
+                tx,
+                credentials,
+            } => {
+                let res =
+                    api_impl::handle_api_command(&mut service_manager, cmd, credentials).await;
                 let _ = tx.send(res.into_response());
             }
             Event::ProbeFailed { name } => {
@@ -94,7 +108,7 @@ async fn main() {
                     if *DEBUG_LOGS {
                         eprintln!("failed to automatically restart {name}: {e:?}");
                     }
-                    if let Ok(service) = service_manager.get_service(&name) {
+                    if let Ok(service) = service_manager.get_service(Credentials::root(), &name) {
                         service
                             .state
                             .logs
@@ -106,7 +120,7 @@ async fn main() {
             }
         }
 
-        if let Ok(service) = service_manager.get_service("bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
             && let ServiceStatus::Exited(status) = service.state.status
         {
             if let Some(code) = status.code() {
@@ -117,7 +131,7 @@ async fn main() {
                 process::exit(1);
             }
         }
-        if let Ok(service) = service_manager.get_service("bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
             && let ServiceStatus::Stopped = service.state.status
         {
             process::exit(0);
