@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -31,6 +32,7 @@ pub struct ServiceManager {
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
     fdstore: FdStore,
+    env_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -149,12 +151,18 @@ pub(crate) enum StartReason {
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>, fdstore: FdStore) -> Self {
+    pub fn new(
+        old_sigmask: OldSigmask,
+        tx_event: mpsc::Sender<Event>,
+        fdstore: FdStore,
+        env_files: Vec<PathBuf>,
+    ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
             fdstore,
+            env_files,
         }
     }
 
@@ -365,7 +373,7 @@ impl ServiceManager {
             Sink::Log(log_writer)
         };
 
-        match spawn_service(old_sigmask, &service.config, sink) {
+        match spawn_service(old_sigmask, &service.config, sink, &self.env_files) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
@@ -638,13 +646,57 @@ async fn run_liveness_probe(
     }
 }
 
+/// Build an environment variable array by merging the inherited environment
+/// with variables from the given files (read fresh each call). Later files
+/// override earlier ones, and file definitions override inherited values.
+fn build_envp(env_files: &[PathBuf]) -> Vec<CString> {
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+
+    for path in env_files {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("warning: could not read environment file {}: {err}", path.display());
+                continue;
+            }
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            let mut value = value.trim();
+            // Strip matching surrounding quotes
+            if (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
+            {
+                value = &value[1..value.len() - 1];
+            }
+            env.insert(key.to_owned(), value.to_owned());
+        }
+    }
+
+    env.into_iter()
+        .filter_map(|(k, v)| CString::new(format!("{k}={v}")).ok())
+        .collect()
+}
+
 #[allow(clippy::upper_case_acronyms)]
 enum Sink<'a> {
     Log(OwnedFd),
     PTY(PtyClient<'a>),
 }
 
-fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
+fn spawn_service(
+    old_sigmask: OldSigmask,
+    config: &ServiceConfig,
+    sink: Sink,
+    env_files: &[PathBuf],
+) -> io::Result<pid_t> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -657,6 +709,13 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(args.iter().map(|arg| arg.as_ptr()))
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
+
+    let env = build_envp(env_files);
+    let envp: Vec<*const libc::c_char> = env
+        .iter()
+        .map(|s| s.as_ptr())
+        .chain(std::iter::once(ptr::null()))
+        .collect();
 
     let (mut err_rx, mut err_tx) = io::pipe()?;
     fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
@@ -726,7 +785,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             expect_no_panic(cerr(libc::setgid(gid)), "failed to `setgid`");
             expect_no_panic(cerr(libc::setuid(uid)), "failed to `setuid`");
 
-            libc::execvp(cmd.as_ptr(), args.as_ptr());
+            libc::execvpe(cmd.as_ptr(), args.as_ptr(), envp.as_ptr());
 
             // If we reach this point, the exec failed.
             let Some(err) = io::Error::last_os_error().raw_os_error() else {
