@@ -465,12 +465,17 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
         prune: bool,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<bool, ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped => {
-                // all good
+            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                if prune {
+                    self.services.remove(name);
+                }
+
+                // Stopped already.
+                return Ok(true);
             }
             ServiceStatus::Stopping {
                 main_pid,
@@ -488,12 +493,9 @@ impl ServiceManager {
                 service.state.status = ServiceStatus::Stopping { main_pid, prune };
                 kill_process_group(main_pid, SIGTERM).expect("process to exist");
             }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
-                // nothing to do
-            }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     pub fn terminate_restart_service(
