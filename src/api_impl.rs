@@ -318,17 +318,18 @@ async fn stop_service_cmd(
     name: &str,
     prune: bool,
 ) -> Result<(), ServiceError> {
-    service_manager.terminate_service(credentials, name, prune)?;
+    let stopped_already = service_manager.terminate_service(credentials, name, prune)?;
+
+    if stopped_already {
+        return Ok(());
+    }
 
     // FIXME: pick a more principled duration, and potentially perform the kill
     // below in an async way.
     tokio::time::sleep(Duration::from_millis(5)).await;
 
     // Don't error if the service was stopped and pruned.
-    match service_manager.kill_service(credentials, name) {
-        Err(ServiceError::ServiceNotFound { .. }) if prune => Ok(()),
-        result => result,
-    }
+    service_manager.kill_service(credentials, name)
 }
 
 pub async fn automatic_restart(

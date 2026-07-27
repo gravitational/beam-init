@@ -459,7 +459,7 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
         prune: bool,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<bool, ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
@@ -467,6 +467,9 @@ impl ServiceManager {
                 if prune {
                     self.services.remove(name);
                 }
+
+                // Stopped already.
+                return Ok(true);
             }
             ServiceStatus::Stopping {
                 main_pid,
@@ -486,7 +489,7 @@ impl ServiceManager {
             }
         }
 
-        Ok(())
+        Ok(false)
     }
 
     pub fn terminate_restart_service(
