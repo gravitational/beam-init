@@ -365,7 +365,7 @@ fn main() {
             };
 
             if let Err(err) = terminal::manage(pty) {
-                println!("pty error for process {name} ({})", err);
+                println!("pty error for service {name} ({})", err);
             } else {
                 println!("detached from {name} ({})", service.status);
             }
