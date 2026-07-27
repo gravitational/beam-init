@@ -38,6 +38,7 @@ impl SignalSet {
     }
 
     /// Get a reference to the inner sigset_t.
+    #[expect(clippy::should_implement_trait)]
     pub fn as_ref(&self) -> &libc::sigset_t {
         &self.raw
     }
