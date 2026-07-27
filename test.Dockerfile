@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/src/target \
   *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
   esac \
   && RUSTFLAGS="-Ctarget-feature=+crt-static" \
-  cargo build --locked --target "${rust_target}" \
+  cargo build --all-features --locked --target "${rust_target}" \
   && cp "target/${rust_target}/debug/beam-init" /beam-init \
   && cp "target/${rust_target}/debug/beamctl" /beamctl
 
