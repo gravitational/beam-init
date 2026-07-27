@@ -34,16 +34,8 @@ pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
         poller.poll(&mut events, None)?;
         for event in &events {
             let res = match event.token() {
-                CAN_READ_FROM_PTY => {
-                    let res = std::io::copy(&mut app, &mut tty);
-                    let _ = tty.flush();
-                    res
-                }
-                CAN_READ_FROM_CONTROLLER => {
-                    let res = std::io::copy(&mut tty, &mut app);
-                    let _ = app.flush();
-                    res
-                }
+                CAN_READ_FROM_PTY => std::io::copy(&mut app, &mut tty),
+                CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 _ => continue,
             };
 
