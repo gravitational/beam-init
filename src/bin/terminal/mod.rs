@@ -57,9 +57,9 @@ pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
 fn set_nonblocking(fd: &impl AsFd) -> io::Result<()> {
     let raw_fd = fd.as_fd().as_raw_fd();
 
-    //SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
-    //guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
-    //follow the correct forms.
+    // SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
+    // guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
+    // follow the correct forms.
     unsafe {
         let flags = cerr(libc::fcntl(raw_fd, libc::F_GETFL))?;
         cerr(libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK))?;
