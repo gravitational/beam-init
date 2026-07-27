@@ -354,7 +354,7 @@ fn main() {
                     if let Some((index, _)) = pty {
                         get_fd_from_store(*index)
                     } else {
-                        println!("task {name} does not have a pty attached");
+                        println!("service {name} does not have a pty attached");
                         return;
                     }
                 }
