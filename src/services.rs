@@ -20,11 +20,11 @@ use crate::api_impl::Credentials;
 use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
-use crate::system::fork::unsafe_fork;
-use crate::system::pty::{Pty, PtyClient};
-use crate::system::{_exit, cerr, kill_process_group, waitpid};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
+use beam_init::system::fork::unsafe_fork;
+use beam_init::system::pty::{Pty, PtyClient};
+use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,

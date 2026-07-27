@@ -3,11 +3,11 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
-use beam_init::api::FD_SOCKET_PATH;
 use tokio::io::{AsyncReadExt, Interest};
 use tokio::net::UnixListener;
 
-use crate::system::unix_socket::socket_send_fd;
+use beam_init::api::FD_SOCKET_PATH;
+use beam_init::system::unix_socket::socket_send_fd;
 
 pub struct StoredFd {
     id: u64,
