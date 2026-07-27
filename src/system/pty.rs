@@ -1,25 +1,24 @@
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::fdstore::{FdStore, StoredFd};
 use crate::system::cerr;
 
 #[derive(Debug)]
-pub struct Pty {
-    pub master: StoredFd,
+pub struct Pty<T> {
+    pub master: T,
     pub path: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct PtyClient<'a> {
-    parent: &'a mut Pty,
+pub struct PtyClient<'a, T> {
+    parent: &'a mut Pty<T>,
 }
 
-impl Pty {
-    pub fn new(fd_store: &FdStore) -> io::Result<Pty> {
+impl<T: AsFd> Pty<T> {
+    pub fn new(map_fd: impl FnOnce(OwnedFd) -> T) -> io::Result<Self> {
         let flags = libc::O_RDWR | libc::O_NOCTTY;
 
         // SAFETY:
@@ -48,20 +47,20 @@ impl Pty {
         };
 
         Ok(Pty {
-            master: fd_store.add(master),
+            master: map_fd(master),
             path: pts_name.to_owned(),
         })
     }
 
-    pub fn client(&mut self) -> PtyClient<'_> {
+    pub fn client(&mut self) -> PtyClient<'_, T> {
         PtyClient { parent: self }
     }
 }
 
-impl<'a> PtyClient<'a> {
+impl<'a, T: AsFd> PtyClient<'a, T> {
     /// Associate the client side of the PTY to the current process
     pub fn make_tty(self) -> io::Result<OwnedFd> {
-        let master = self.parent.master.get();
+        let master = self.parent.master.as_fd();
 
         // SAFETY: these functions are safe to call (and are being fed the correct file descriptor)
         unsafe {
