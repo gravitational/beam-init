@@ -324,7 +324,11 @@ async fn stop_service_cmd(
     // below in an async way.
     tokio::time::sleep(Duration::from_millis(5)).await;
 
-    service_manager.kill_service(credentials, name)
+    // Don't error if the service was stopped and pruned.
+    match service_manager.kill_service(credentials, name) {
+        Err(ServiceError::ServiceNotFound { .. }) if prune => Ok(()),
+        result => result,
+    }
 }
 
 pub async fn automatic_restart(

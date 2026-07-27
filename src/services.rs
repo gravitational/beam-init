@@ -463,8 +463,10 @@ impl ServiceManager {
         let service = self.get_service_mut(credentials, name)?;
 
         match service.state.status {
-            ServiceStatus::Stopped => {
-                // all good
+            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                if prune {
+                    self.services.remove(name);
+                }
             }
             ServiceStatus::Stopping {
                 main_pid,
@@ -481,9 +483,6 @@ impl ServiceManager {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Stopping { main_pid, prune };
                 kill_process_group(main_pid, SIGTERM).expect("process to exist");
-            }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
-                // nothing to do
             }
         }
 
