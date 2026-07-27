@@ -17,14 +17,14 @@ use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
 use crate::api_impl::Credentials;
-use crate::fdstore::FdStore;
+use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
-use crate::system::fork::unsafe_fork;
-use crate::system::pty::{Pty, PtyClient};
-use crate::system::{_exit, cerr, kill_process_group, waitpid};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::api::Probe;
+use beam_init::system::fork::unsafe_fork;
+use beam_init::system::pty::{Pty, PtyClient};
+use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -87,10 +87,16 @@ pub enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: pid_t, pty: Option<Pty> },
+    Running {
+        main_pid: pid_t,
+        pty: Option<Pty<StoredFd>>,
+    },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen { main_pid: pid_t, pty: Option<Pty> },
+    Frozen {
+        main_pid: pid_t,
+        pty: Option<Pty<StoredFd>>,
+    },
 
     /// The service was stopped, but will soon be started again as part of a restart.
     Restarting { main_pid: pid_t, name: String },
@@ -347,7 +353,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new(&self.fdstore))
+            .then(|| Pty::new(|fd| self.fdstore.add(fd)))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
@@ -641,7 +647,7 @@ async fn run_liveness_probe(
 #[allow(clippy::upper_case_acronyms)]
 enum Sink<'a> {
     Log(OwnedFd),
-    PTY(PtyClient<'a>),
+    PTY(PtyClient<'a, StoredFd>),
 }
 
 fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {

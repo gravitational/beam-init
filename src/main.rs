@@ -10,15 +10,14 @@ use tokio::sync::oneshot;
 
 use crate::api_impl::Credentials;
 use crate::services::{ServiceManager, ServiceStatus};
-use crate::system::exit_with_signal;
 use beam_init::api;
+use beam_init::system::exit_with_signal;
 
 mod api_impl;
 mod fdstore;
 mod logs;
 mod services;
 mod signal_stream;
-mod system;
 
 /// If true we will print log messages that may contain sensitive information.
 ///

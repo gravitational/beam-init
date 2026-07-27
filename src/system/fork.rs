@@ -1,4 +1,5 @@
-pub(crate) struct DropBomb;
+#[doc(hidden)] // Exported for use by macro
+pub struct DropBomb;
 
 impl Drop for DropBomb {
     fn drop(&mut self) {
@@ -16,6 +17,7 @@ impl Drop for DropBomb {
 ///
 /// Unless the process is single threaded, only async-signal-safe functions may
 /// be called inside the block.
+#[macro_export]
 macro_rules! unsafe_fork {
     ($f:block) => {
         match $crate::system::cerr(libc::fork()) {
@@ -31,4 +33,4 @@ macro_rules! unsafe_fork {
         }
     };
 }
-pub(crate) use unsafe_fork;
+pub use unsafe_fork;

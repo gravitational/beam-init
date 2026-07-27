@@ -1,22 +1,26 @@
 use std::collections::BTreeMap;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
-use beam_init::api::FD_SOCKET_PATH;
 use tokio::io::{AsyncReadExt, Interest};
 use tokio::net::UnixListener;
 
-use crate::system::unix_socket::socket_send_fd;
+use beam_init::api::FD_SOCKET_PATH;
+use beam_init::system::unix_socket::socket_send_fd;
 
 pub struct StoredFd {
     id: u64,
+    fd: Arc<OwnedFd>,
     store: Arc<Mutex<FdStoreInner>>,
 }
 
 impl fmt::Debug for StoredFd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredFd").field("id", &self.id).finish()
+        f.debug_struct("StoredFd")
+            .field("id", &self.id)
+            .field("fd", &self.fd)
+            .finish()
     }
 }
 
@@ -24,9 +28,11 @@ impl StoredFd {
     pub fn id(&self) -> u64 {
         self.id
     }
+}
 
-    pub fn get(&self) -> Arc<OwnedFd> {
-        Arc::clone(&self.store.lock().expect("lock shouldn't be poisoned").fds[&self.id])
+impl AsFd for StoredFd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 }
 
@@ -106,14 +112,17 @@ impl FdStore {
     }
 
     pub(crate) fn add(&self, fd: OwnedFd) -> StoredFd {
+        let fd = Arc::new(fd);
+
         let mut this = self.0.lock().expect("lock shouldn't be poisoned");
 
         let id = this.next_id;
-        assert!(this.fds.insert(id, Arc::new(fd)).is_none());
+        assert!(this.fds.insert(id, fd.clone()).is_none());
         this.next_id += 1;
 
         StoredFd {
             id,
+            fd,
             store: self.0.clone(),
         }
     }

@@ -13,13 +13,13 @@ use std::mem::MaybeUninit;
 // A signal set that can be used to mask signals.
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub(crate) struct SignalSet {
+pub struct SignalSet {
     raw: libc::sigset_t,
 }
 
 impl SignalSet {
     /// Create an empty set.
-    pub(crate) fn empty() -> io::Result<Self> {
+    pub fn empty() -> io::Result<Self> {
         let mut set = MaybeUninit::<Self>::zeroed();
 
         // SAFETY: we pass a valid mutable pointer to `sigemptyset`
@@ -30,7 +30,7 @@ impl SignalSet {
     }
 
     /// Add a signal to this set
-    pub(crate) fn add(&mut self, sig: c_int) -> io::Result<()> {
+    pub fn add(&mut self, sig: c_int) -> io::Result<()> {
         // SAFETY: we pass a valid mutable pointer to `sigaddset`
         cerr(unsafe { libc::sigaddset(&mut self.raw, sig) })?;
 
@@ -38,7 +38,8 @@ impl SignalSet {
     }
 
     /// Get a reference to the inner sigset_t.
-    pub(crate) fn as_ref(&self) -> &libc::sigset_t {
+    #[expect(clippy::should_implement_trait)]
+    pub fn as_ref(&self) -> &libc::sigset_t {
         &self.raw
     }
 
@@ -56,7 +57,7 @@ impl SignalSet {
     ///
     /// After calling this function successfully, the set of blocked signals will be the union of
     /// the previous set of blocked signals and this set.
-    pub(crate) fn block(&self) -> io::Result<Self> {
+    pub fn block(&self) -> io::Result<Self> {
         self.sigprocmask(libc::SIG_BLOCK)
     }
 
@@ -64,7 +65,7 @@ impl SignalSet {
     ///
     /// After calling this function successfully, the set of blocked signals will be the exactly
     /// this set.
-    pub(crate) fn set_mask(&self) -> io::Result<Self> {
+    pub fn set_mask(&self) -> io::Result<Self> {
         self.sigprocmask(libc::SIG_SETMASK)
     }
 }

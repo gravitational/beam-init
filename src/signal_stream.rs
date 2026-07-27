@@ -10,8 +10,8 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
 use crate::Event;
-use crate::system::cerr;
-use crate::system::signal_set::SignalSet;
+use beam_init::system::cerr;
+use beam_init::system::signal_set::SignalSet;
 
 pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
     let mut signal_set = SignalSet::empty()?;
