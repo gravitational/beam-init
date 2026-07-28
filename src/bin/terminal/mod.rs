@@ -1,8 +1,8 @@
 use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 
-use crate::unix_socket::cerr;
+use beam_init::system::cerr;
 
 pub(super) fn manage(pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
