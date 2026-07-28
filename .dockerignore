@@ -5,5 +5,5 @@
 !Cargo.lock
 !Cargo.toml
 !rust-toolchain.toml
-!src/**/*
-!crates/**/*
+!beam-init/**/*
+!tests/**/*
