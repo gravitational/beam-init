@@ -6,11 +6,13 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
 mod user_term;
+use user_term::UserTerm;
 
 pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
-    let mut tty = File::options().read(true).write(true).open("/dev/tty")?;
+    let mut tty = UserTerm::open()?;
+    tty.copy_from(&app)?;
 
     let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP])?;
 

@@ -1,5 +1,5 @@
-//! This module is taken from sudo-rs's term/user_term.rs, which is itself a port of Todd Miller's sudo
-//! lib/util/term.c with some minor changes to make it Rust-like. Copyright information:
+//! This module is modified from from sudo-rs's term/user_term.rs, which is itself a port of Todd Miller's sudo
+//! lib/util/term.c with some changes to make it Rust-like. Copyright information:
 //!
 //! Copyright (c) 1994-1996, 1998-2026 Todd C. Miller <Todd.Miller@sudo.ws>
 //! Copyright (c) 2025 Trifecta Tech Foundation and Contributors
@@ -11,7 +11,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     mem::MaybeUninit,
-    os::fd::{AsFd, AsRawFd, BorrowedFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd},
 };
 
 use libc::{
@@ -62,10 +62,13 @@ pub struct UserTerm {
 impl UserTerm {
     /// Open the user's terminal.
     pub fn open() -> io::Result<Self> {
-        Ok(Self {
+        let mut this = Self {
             tty: OpenOptions::new().read(true).write(true).open("/dev/tty")?,
             original_termios: None,
-        })
+        };
+        this.set_raw_mode(false, false)?;
+
+        Ok(this)
     }
 
     pub fn get_size(&self) -> io::Result<winsize> {
@@ -87,9 +90,9 @@ impl UserTerm {
     }
 
     /// Copy the settings of the user's terminal to the `dst` terminal.
-    pub fn copy_to<D: AsFd>(&self, dst: &D) -> io::Result<()> {
-        let src = self.tty.as_raw_fd();
-        let dst = dst.as_fd().as_raw_fd();
+    pub fn copy_from<D: AsFd>(&mut self, src: &D) -> io::Result<()> {
+        let dst = self.tty.as_raw_fd();
+        let src = src.as_fd().as_raw_fd();
 
         // SAFETY: tt_src and tt_dst will be initialized by `tcgetattr`.
         let (tt_src, mut tt_dst) = unsafe {
@@ -144,16 +147,16 @@ impl UserTerm {
         // SAFETY: wsize has been initialized by the TIOCGWINSZ ioctl
         cerr(unsafe { ioctl(dst, TIOCSWINSZ, wsize.as_ptr()) })?;
 
+        self.set_raw_mode(false, false)?;
+
         Ok(())
     }
 
-    /// Set the user's terminal to raw mode. Enable terminal signals if `with_signals` is set to
-    /// `true`.
-    pub fn set_raw_mode(&mut self, with_signals: bool, preserve_oflag: bool) -> io::Result<()> {
+    /// Retreive the current settings to be able to restore later
+    pub fn save(&mut self) -> io::Result<termios> {
         let fd = self.tty.as_raw_fd();
 
-        // Retrieve the original terminal (if we haven't done so already)
-        let mut term = if let Some(termios) = self.original_termios {
+        Ok(if let Some(termios) = self.original_termios {
             termios
         } else {
             // SAFETY: `termios` is a valid pointer to pass to tcgetattr; if that calls succeeds,
@@ -163,7 +166,12 @@ impl UserTerm {
                 cerr(tcgetattr(fd, termios.as_mut_ptr()))?;
                 termios.assume_init()
             })
-        };
+        })
+    }
+
+    /// Set the user's terminal to raw mode. Enable terminal signals if `with_signals` is set to `true`.
+    fn set_raw_mode(&mut self, with_signals: bool, preserve_oflag: bool) -> io::Result<()> {
+        let fd = self.tty.as_raw_fd();
 
         // Set terminal to raw mode.
         let oflag = term.c_oflag;
@@ -188,7 +196,7 @@ impl UserTerm {
     ///
     /// This change is done after waiting for all the queued output to be written. To discard the
     /// queued input `flush` must be set to `true`.
-    pub fn restore(&mut self, flush: bool) -> io::Result<()> {
+    fn restore(&mut self, flush: bool) -> io::Result<()> {
         if let Some(termios) = self.original_termios.take() {
             let fd = self.tty.as_raw_fd();
             let flags = if flush { TCSAFLUSH } else { TCSADRAIN };
@@ -220,5 +228,17 @@ impl Write for UserTerm {
 
     fn flush(&mut self) -> io::Result<()> {
         self.tty.flush()
+    }
+}
+
+impl AsRawFd for UserTerm {
+    fn as_raw_fd(&self) -> RawFd {
+        self.as_fd().as_raw_fd()
+    }
+}
+
+impl Drop for UserTerm {
+    fn drop(&mut self) {
+        self.restore(true).expect("to restore terminal settings");
     }
 }
