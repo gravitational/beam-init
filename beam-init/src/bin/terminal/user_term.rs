@@ -13,16 +13,14 @@ use std::{
     io::{self, Read, Write},
     mem::MaybeUninit,
     os::fd::{AsFd, AsRawFd, BorrowedFd},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use libc::{
     CS7, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR,
     IMAXBEL, INLCR, INPCK, ISIG, ISTRIP, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR,
-    ONLRET, ONOCR, OPOST, PARENB, PARMRK, PARODD, PENDIN, SIGTTOU, TCSADRAIN, TCSAFLUSH,
-    TIOCGWINSZ, TIOCSWINSZ, TOSTOP, cfgetispeed, cfgetospeed, cfmakeraw, cfsetispeed, cfsetospeed,
-    ioctl, sigaction, sigemptyset, sighandler_t, siginfo_t, sigset_t, tcflag_t, tcgetattr,
-    tcsetattr, termios, winsize,
+    ONLRET, ONOCR, OPOST, PARENB, PARMRK, PARODD, PENDIN, TCSADRAIN, TCSAFLUSH, TIOCGWINSZ,
+    TIOCSWINSZ, TOSTOP, cfgetispeed, cfgetospeed, cfmakeraw, cfsetispeed, cfsetospeed, ioctl,
+    tcflag_t, tcgetattr, tcsetattr, termios, winsize,
 };
 
 use beam_init::system::cerr;
@@ -55,88 +53,6 @@ const LOCAL_FLAGS: tcflag_t = ISIG
     | ECHOCTL
     | ECHOKE
     | PENDIN;
-
-static GOT_SIGTTOU: AtomicBool = AtomicBool::new(false);
-
-/// This is like `tcsetattr` but it only succeeds if we are in the foreground process group.
-/// # Safety
-///
-/// The arguments to this function have to be valid arguments to `tcsetattr`.
-unsafe fn tcsetattr_nobg(fd: c_int, flags: c_int, tp: *const termios) -> io::Result<()> {
-    // This function is based around the fact that we receive `SIGTTOU` if we call `tcsetattr` and
-    // we are not in the foreground process group.
-
-    // SAFETY: is the responsibility of the caller of `tcsetattr_nobg`
-    let setattr = || cerr(unsafe { tcsetattr(fd, flags, tp) }).map(|_| ());
-
-    catching_sigttou(setattr)
-}
-
-fn catching_sigttou(mut function: impl FnMut() -> io::Result<()>) -> io::Result<()> {
-    extern "C" fn on_sigttou(_signal: c_int, _info: *mut siginfo_t, _: *mut c_void) {
-        GOT_SIGTTOU.store(true, Ordering::SeqCst);
-    }
-
-    let action = {
-        // SAFETY: since sigaction is a C struct, all-zeroes is a valid representation
-        // We cannot use a "literal struct" initialization method since the exact representation
-        // of libc::sigaction is not fixed, see e.g. https://github.com/trifectatechfoundation/sudo-rs/issues/829
-        let mut raw: libc::sigaction = unsafe { std::mem::zeroed() };
-        // Call `on_sigttou` if `SIGTTOU` arrives.
-        raw.sa_sigaction = on_sigttou as *const () as sighandler_t;
-        // Exclude any other signals from the set
-        raw.sa_mask = {
-            let mut sa_mask = MaybeUninit::<sigset_t>::uninit();
-            // SAFETY: sa_mask is a valid and dereferenceble pointer; it will
-            // become initialized by `sigemptyset`
-            unsafe {
-                sigemptyset(sa_mask.as_mut_ptr());
-                sa_mask.assume_init()
-            }
-        };
-        raw.sa_flags = 0;
-        raw
-    };
-    // Reset `GOT_SIGTTOU`.
-    GOT_SIGTTOU.store(false, Ordering::SeqCst);
-
-    // Set `action` as the action for `SIGTTOU` and store the original action in `original_action`
-    // to restore it later.
-    //
-    // SAFETY: `original_action` is a valid pointer; second, the `action` installed (on_sigttou):
-    // - is itself a safe function
-    // - only updates an atomic variable, so cannot violate memory unsafety that way
-    // - doesn't call any async-unsafe functions (refer to signal-safety(7))
-    // Therefore it can safely be installed as a signal handler.
-    // Furthermore, `sigaction` will initialize `original_action`.
-    let original_action = unsafe {
-        let mut original_action = MaybeUninit::<sigaction>::uninit();
-        sigaction(SIGTTOU, &action, original_action.as_mut_ptr());
-        original_action.assume_init()
-    };
-
-    // Call `tcsetattr` until it suceeds and ignore interruptions if we did not receive `SIGTTOU`.
-    let result = loop {
-        match function() {
-            Ok(_) => break Ok(()),
-            Err(err) => {
-                let got_sigttou = GOT_SIGTTOU.load(Ordering::SeqCst);
-                if got_sigttou || err.kind() != io::ErrorKind::Interrupted {
-                    break Err(err);
-                }
-            }
-        }
-    };
-
-    // Restore the original action.
-    //
-    // SAFETY: `original_action` is a valid pointer, and was initialized by the preceding
-    // call to `sigaction` (and not subsequently altered, since it is not mut). The third parameter
-    // is allowed to be NULL (this means we ignore the previously-installed handler)
-    unsafe { sigaction(SIGTTOU, &original_action, std::ptr::null_mut()) };
-
-    result
-}
 
 /// Type to manipulate the settings of the user's terminal.
 pub struct UserTerm {
@@ -221,7 +137,7 @@ impl UserTerm {
         // SAFETY: dst is a valid file descriptor and `tt_dst` is an
         // initialized struct obtained through tcgetattr; so this is safe to
         // pass to `tcsetattr`.
-        unsafe { tcsetattr_nobg(dst, TCSAFLUSH, &tt_dst) }?;
+        cerr(unsafe { tcsetattr(dst, TCSAFLUSH, &tt_dst) })?;
 
         let mut wsize = MaybeUninit::<winsize>::uninit();
         // SAFETY: TIOCGWINSZ ioctl expects one argument of type *mut winsize
@@ -264,7 +180,7 @@ impl UserTerm {
         }
 
         // SAFETY: `fd` is a valid file descriptor for the tty; for `term`: same as above.
-        unsafe { tcsetattr_nobg(fd, TCSADRAIN, &term) }?;
+        cerr(unsafe { tcsetattr(fd, TCSADRAIN, &term) })?;
 
         Ok(())
     }
@@ -279,7 +195,7 @@ impl UserTerm {
             let flags = if flush { TCSAFLUSH } else { TCSADRAIN };
             // SAFETY: `fd` is a valid file descriptor for the tty; and `termios` is a valid pointer
             // that was obtained through `tcgetattr`.
-            unsafe { tcsetattr_nobg(fd, flags, &termios) }?;
+            cerr(unsafe { tcsetattr(fd, flags, &termios) })?;
         }
 
         Ok(())
@@ -289,14 +205,6 @@ impl UserTerm {
     fn tcsetpgrp(&self, pgrp: libc::pid_t) -> io::Result<()> {
         // SAFETY: tcsetpgrp cannot cause UB
         cerr(unsafe { libc::tcsetpgrp(self.as_fd().as_raw_fd(), pgrp) }).map(|_| ())
-    }
-
-    /// This is like `tcsetpgrp` but it only suceeds if we are in the foreground process group.
-    pub fn tcsetpgrp_nobg(&self, pgrp: libc::pid_t) -> io::Result<()> {
-        // This function is based around the fact that we receive `SIGTTOU` if we call `tcsetpgrp` and
-        // we are not in the foreground process group.
-
-        catching_sigttou(|| self.tcsetpgrp(pgrp))
     }
 }
 
