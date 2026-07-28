@@ -272,6 +272,11 @@ fn main() {
                 )
                 .unwrap_or_else(show_error_and_exit);
             eprintln!("Started service {name}");
+
+            #[cfg(feature = "unstable-pty")]
+            if pty {
+                attach(client, name);
+            }
         }
         Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
@@ -344,32 +349,42 @@ fn main() {
         #[cfg(feature = "unstable-pty")]
         Command::Attach { name } => {
             let name = prefix_match(&client, name);
-            let service: api::Service = client
-                .post(&format!("/service/{}/show", name), &name)
-                .unwrap_or_else(show_error_and_exit);
+            attach(client, name);
+        }
+    }
+}
 
-            let pty = match service.status {
-                api::ServiceStatus::Running { ref pty, .. }
-                | api::ServiceStatus::Frozen { ref pty, .. } => {
-                    if let Some((index, _)) = pty {
-                        get_fd_from_store(*index)
-                    } else {
-                        println!("service {name} does not have a pty attached");
-                        return;
-                    }
-                }
-                _ => {
-                    println!("could not attach to {name} ({})", service.status);
-                    return;
-                }
-            };
+/// Attach to the given service
+#[cfg(feature = "unstable-pty")]
+fn attach(client: Client, name: String) {
+    let service: api::Service = client
+        .post(&format!("/service/{}/show", name), &name)
+        .unwrap_or_else(show_error_and_exit);
 
-            if let Err(err) = terminal::manage(pty) {
-                println!("pty error for service {name} ({})", err);
+    // we must get rid of the client before entering the terminal, because
+    // it interferes with signal handling
+    drop(client);
+
+    let pty = match service.status {
+        api::ServiceStatus::Running { ref pty, .. }
+        | api::ServiceStatus::Frozen { ref pty, .. } => {
+            if let Some((index, _)) = pty {
+                get_fd_from_store(*index)
             } else {
-                println!("detached from {name} ({})", service.status);
+                println!("service {name} does not have a pty attached");
+                return;
             }
         }
+        _ => {
+            println!("could not attach to {name} ({})", service.status);
+            return;
+        }
+    };
+
+    if let Err(err) = terminal::manage(pty) {
+        println!("pty error for service {name} ({})", err);
+    } else {
+        println!("detached from {name} ({})", service.status);
     }
 }
 
