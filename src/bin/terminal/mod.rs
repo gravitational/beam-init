@@ -3,9 +3,7 @@ use std::io::{self, Read};
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use beam_init::system::{kill_process_group, signal_set::SignalSet};
-
-use crate::unix_socket::cerr;
+use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
 pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);

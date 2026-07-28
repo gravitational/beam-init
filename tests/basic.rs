@@ -109,3 +109,10 @@ fn api_liveness_max_retries() {
         .run("./tests/api_liveness_max_retries.py")
         .wait();
 }
+
+#[test]
+fn prefix_match() {
+    docker_harness::Image::build("test.Dockerfile")
+        .run("./tests/prefix_match.py")
+        .wait();
+}
