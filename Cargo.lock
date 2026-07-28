@@ -143,6 +143,7 @@ dependencies = [
  "async-stream",
  "axum",
  "beam-init-api",
+ "beam-init-client",
  "clap",
  "clap_complete",
  "futures-core",
