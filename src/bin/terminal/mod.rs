@@ -3,11 +3,9 @@ use std::io::{self, Read};
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use crate::unix_socket::cerr;
-use signal_set::SignalSet;
+use beam_init::system::signal_set::SignalSet;
 
-#[path = "../../system/signal_set.rs"]
-mod signal_set;
+use crate::unix_socket::cerr;
 
 pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
