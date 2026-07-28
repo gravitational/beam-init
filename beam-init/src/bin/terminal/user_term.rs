@@ -68,7 +68,7 @@ impl UserTerm {
         })
     }
 
-    pub(crate) fn get_size(&self) -> io::Result<winsize> {
+    pub fn get_size(&self) -> io::Result<winsize> {
         let mut term_size = MaybeUninit::<winsize>::uninit();
 
         // SAFETY: This passes a valid file descriptor and valid pointer (of
