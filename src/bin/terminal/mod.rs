@@ -54,6 +54,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                             continue;
                         }
                         libc::SIGTSTP => {
+                            // FIXME: send process to the background
                             // Suspend was received, detach
                             Ok(0)
                         }
