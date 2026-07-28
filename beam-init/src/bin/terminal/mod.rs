@@ -5,6 +5,8 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
+mod user_term;
+
 pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
