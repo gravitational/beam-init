@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use beam_init::system::signal_set::SignalSet;
+use beam_init::system::{kill_process_group, signal_set::SignalSet};
 
 use crate::unix_socket::cerr;
 
@@ -50,10 +50,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
                         sig @ (libc::SIGINT | libc::SIGQUIT) => {
-                            // SAFETY: kill is safe to call
-                            unsafe {
-                                libc::killpg(pid, sig);
-                            }
+                            kill_process_group(pid, sig)?;
                             continue;
                         }
                         libc::SIGTSTP => {
