@@ -8,7 +8,6 @@
 //! provided that the above copyright notice and this permission notice appear in all copies.
 
 use std::{
-    ffi::{c_int, c_void},
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     mem::MaybeUninit,
@@ -199,12 +198,6 @@ impl UserTerm {
         }
 
         Ok(())
-    }
-
-    /// Set the foreground process group ID associated with this terminal to `pgrp`.
-    fn tcsetpgrp(&self, pgrp: libc::pid_t) -> io::Result<()> {
-        // SAFETY: tcsetpgrp cannot cause UB
-        cerr(unsafe { libc::tcsetpgrp(self.as_fd().as_raw_fd(), pgrp) }).map(|_| ())
     }
 }
 
