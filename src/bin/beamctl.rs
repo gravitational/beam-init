@@ -371,7 +371,10 @@ fn main() {
             if let Err(err) = terminal::manage(pid, pty) {
                 println!("pty error for service {name} ({})", err);
             } else {
-                println!("detached from {name} ({})", service.status);
+                println!(
+                    "detached from {name} ({}), to reattach use `beamctl attach {name}`",
+                    service.status
+                );
             }
         }
     }
