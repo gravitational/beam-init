@@ -7,4 +7,5 @@
 !rust-toolchain.toml
 !beam-init/**/*
 !beam-init-api/**/*
+!beam-init-client/**/*
 !tests/**/*

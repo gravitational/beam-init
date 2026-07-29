@@ -1,0 +1,12 @@
+[package]
+name = "beam-init-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+beam-init-api = { path = "../beam-init-api"}
+
+reqwest.workspace = true
+serde.workspace = true
+
+

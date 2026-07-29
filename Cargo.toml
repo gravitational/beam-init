@@ -2,11 +2,13 @@
 members = [
   "beam-init",
   "beam-init-api",
+  "beam-init-client",
   "tests",
 ]
 default-members = [
   "beam-init",
   "beam-init-api",
+  "beam-init-client",
   "tests"
 ]
 resolver = "3"
