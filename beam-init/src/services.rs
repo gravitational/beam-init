@@ -21,10 +21,10 @@ use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
-use beam_init::api::Probe;
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
 use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init_api::Probe;
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,

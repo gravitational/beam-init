@@ -6,4 +6,5 @@
 !Cargo.toml
 !rust-toolchain.toml
 !beam-init/**/*
+!beam-init-api/**/*
 !tests/**/*

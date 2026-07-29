@@ -1,37 +1,74 @@
+//! Shared request and response types for the beam-init Unix-socket API.
+//!
+//! The types in this crate define the JSON exchanged between beam-init and its
+//! clients.
+
 use std::{path::PathBuf, process::ExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
 
+/// Default Unix socket path for the beam-init HTTP API.
 pub const API_SOCKET_PATH: &str = "/run/beam-init";
+
+/// Default Unix socket path used to retrieve file descriptors from beam-init.
 pub const FD_SOCKET_PATH: &str = "/run/beam-init-fds";
 
+/// Request body for creating and starting a service.
 #[derive(Serialize, Deserialize)]
 pub struct CreateService {
+    /// Executable to run.
     pub cmd: String,
+
+    /// Arguments passed to the executable.
     pub args: Vec<String>,
+
+    /// Optional HTTP liveness probe configuration.
     pub liveness: Option<Probe>,
+
+    /// Whether to run the service with a controlling pseudoterminal.
     pub pty: bool,
 }
 
+/// Configuration for an HTTP liveness probe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Probe {
+    /// HTTP request path used by the probe.
     pub path: String,
+
+    /// Local TCP port on which the service exposes its probe endpoint.
     pub port: u16,
+
+    /// Maximum number of retries after failed probes before probing stops.
     pub max_retries: usize,
+
+    /// Delay between starting the service and sending the first probe.
     pub initial_delay: Duration,
+
+    /// Timeout for each probe request and delay between attempts.
     pub period: Duration,
+
+    /// Consecutive failures required to restart the service.
     pub failure_threshold: usize,
 }
 
+/// Description and current state of a service.
 #[derive(Serialize, Deserialize)]
 pub struct Service {
+    /// Executable configured for the service.
     pub cmd: String,
+
+    /// Arguments passed to the executable.
     pub args: Vec<String>,
+
+    /// Current runtime status of the service.
     pub status: ServiceStatus,
+
+    /// Number of automatic restart attempts since start.
     pub automatic_restart_attempts: u32,
 }
 
+/// Current runtime state of a service.
 #[derive(Serialize, Deserialize)]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
@@ -39,21 +76,39 @@ pub enum ServiceStatus {
 
     /// The service is currently running.
     Running {
+        /// Process ID of the service's main process.
         main_pid: pid_t,
+
+        /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
     },
 
     /// The service is paused but can be continued.
     Frozen {
+        /// Process ID of the service's main process.
         main_pid: pid_t,
+
+        /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
     },
 
     /// The service has been requested to restart and is in the process of shutting down.
-    Restarting { main_pid: pid_t, name: String },
+    Restarting {
+        /// Process ID of the service instance being stopped.
+        main_pid: pid_t,
+
+        /// Name under which the replacement service will be started.
+        name: String,
+    },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: pid_t, prune: bool },
+    Stopping {
+        /// Process ID of the service's main process.
+        main_pid: pid_t,
+
+        /// Whether to remove the service after it stops.
+        prune: bool,
+    },
 
     /// The service exited with the given exit status.
     Exited(

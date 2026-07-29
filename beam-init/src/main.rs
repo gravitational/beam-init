@@ -10,7 +10,6 @@ use tokio::sync::oneshot;
 
 use crate::api_impl::Credentials;
 use crate::services::{ServiceManager, ServiceStatus};
-use beam_init::api;
 use beam_init::system::exit_with_signal;
 
 mod api_impl;
@@ -52,7 +51,7 @@ async fn main() {
     });
     let init_cmd = api_impl::Command::CreateService {
         name: "bootstrap".to_owned(),
-        service: api::CreateService {
+        service: beam_init_api::CreateService {
             cmd,
             args: args.collect(),
             liveness: None,
