@@ -384,10 +384,16 @@ fn attach(client: Client, name: String) {
     if let Err(err) = terminal::manage(pid, pty) {
         println!("pty error for service {name} ({})", err);
     } else {
-        println!(
-            "detached from {name} ({}), to reattach use `beamctl attach {name}`",
-            service.status
-        );
+        // Retrieve the new status, which can have changed.
+        let client = Client::new_local();
+        let service: api::Service = client
+            .post(&format!("/service/{}/show", name), &name)
+            .unwrap_or_else(show_error_and_exit);
+
+        println!("detached from {name} ({})", service.status);
+        if matches!(service.status, api::ServiceStatus::Running { .. }) {
+            println!("to reattach use `beamctl attach {name}`");
+        }
     }
 }
 
