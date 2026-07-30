@@ -74,6 +74,7 @@ impl<'a, T: AsFd> PtyClient<'a, T> {
         // SAFETY:
         // - libc::open is passed a correct null-terminated C string
         // - only if the fd is opened correctly is it passed to from_raw_fd
+        // - cfmakeraw() is passed a correct file descriptor
         let client = unsafe {
             // NOTE: Opening terminal device makes that the controlling terminal for this session;
             // so by not passing O_NOCTTY we can avoid the TIOCSCTTY ioctl

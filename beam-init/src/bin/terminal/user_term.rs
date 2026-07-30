@@ -15,11 +15,10 @@ use std::{
 };
 
 use libc::{
-    CS7, CS8, ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR,
-    IMAXBEL, INLCR, INPCK, ISIG, ISTRIP, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR,
-    ONLRET, ONOCR, OPOST, PARENB, PARMRK, PARODD, PENDIN, TCSADRAIN, TCSAFLUSH, TIOCGWINSZ,
-    TIOCSWINSZ, TOSTOP, cfgetispeed, cfgetospeed, cfmakeraw, cfsetispeed, cfsetospeed, ioctl,
-    tcflag_t, tcgetattr, tcsetattr, termios, winsize,
+    ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR, IMAXBEL,
+    INLCR, INPCK, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR, ONLRET,
+    ONOCR, OPOST, PARMRK, PENDIN, TCSADRAIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE,
+    ioctl, tcflag_t, tcgetattr, tcsetattr, termios, winsize,
 };
 
 use beam_init::system::cerr;
@@ -31,17 +30,15 @@ const INPUT_FLAGS: tcflag_t = IGNPAR
     | INLCR
     | IGNCR
     | ICRNL
-    // | IUCLC /* FIXME: not in libc */
+    | IUCLC
     | IXON
     | IXANY
     | IXOFF
     | IMAXBEL
     | IUTF8;
 const OUTPUT_FLAGS: tcflag_t = OPOST | OLCUC | ONLCR | OCRNL | ONOCR | ONLRET;
-const CONTROL_FLAGS: tcflag_t = CS7 | CS8 | PARENB | PARODD;
-const LOCAL_FLAGS: tcflag_t = ISIG
-    | ICANON
-    // | XCASE /* FIXME: not in libc */
+const LOCAL_FLAGS: tcflag_t = ICANON
+    | XCASE
     | ECHO
     | ECHOE
     | ECHOK
@@ -61,99 +58,63 @@ pub struct UserTerm {
 
 impl UserTerm {
     /// Open the user's terminal.
-    pub fn open() -> io::Result<Self> {
-        let mut this = Self {
-            tty: OpenOptions::new().read(true).write(true).open("/dev/tty")?,
+    pub(crate) fn open() -> io::Result<Self> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .map(Self::from)
+    }
+
+    pub(crate) fn from(tty: File) -> Self {
+        Self {
+            tty,
             original_termios: None,
-        };
-        this.set_raw_mode(false, false)?;
-
-        Ok(this)
+        }
     }
 
-    pub fn get_size(&self) -> io::Result<winsize> {
-        let mut term_size = MaybeUninit::<winsize>::uninit();
+    /// Synchronize settings of the provided fd to this terminal.
+    /// - This will copy most settings of 'client' to self
+    /// - But it will inform 'client' of the current window size
+    pub(crate) fn sync<D: AsFd>(&mut self, client: &D) -> io::Result<()> {
+        let client = client.as_fd().as_raw_fd();
 
-        // SAFETY: This passes a valid file descriptor and valid pointer (of
-        // the correct type) to the TIOCGWINSZ ioctl; see:
-        // https://man7.org/linux/man-pages/man2/TIOCGWINSZ.2const.html
-        cerr(unsafe {
-            ioctl(
-                self.tty.as_raw_fd(),
-                TIOCGWINSZ,
-                term_size.as_mut_ptr().cast::<winsize>(),
-            )
-        })?;
+        let mut tt_dst = self.save()?;
 
-        // SAFETY: if we arrived at this point, `term_size` was initialized.
-        Ok(unsafe { term_size.assume_init() })
-    }
-
-    /// Copy the settings of the user's terminal to the `dst` terminal.
-    pub fn copy_from<D: AsFd>(&mut self, src: &D) -> io::Result<()> {
-        let dst = self.tty.as_raw_fd();
-        let src = src.as_fd().as_raw_fd();
-
-        // SAFETY: tt_src and tt_dst will be initialized by `tcgetattr`.
-        let (tt_src, mut tt_dst) = unsafe {
+        // SAFETY: tt_src will be initialized by `tcgetattr`.
+        let tt_src = unsafe {
             let mut tt_src = MaybeUninit::<termios>::uninit();
-            let mut tt_dst = MaybeUninit::<termios>::uninit();
-
-            cerr(tcgetattr(src, tt_src.as_mut_ptr()))?;
-            cerr(tcgetattr(dst, tt_dst.as_mut_ptr()))?;
-
-            (tt_src.assume_init(), tt_dst.assume_init())
+            cerr(tcgetattr(client, tt_src.as_mut_ptr()))?;
+            tt_src.assume_init()
         };
 
-        // Clear select input, output, control and local flags.
+        // Clear selected input, output, and local flags.
         tt_dst.c_iflag &= !INPUT_FLAGS;
         tt_dst.c_oflag &= !OUTPUT_FLAGS;
-        tt_dst.c_cflag &= !CONTROL_FLAGS;
         tt_dst.c_lflag &= !LOCAL_FLAGS;
 
-        // Copy select input, output, control and local flags.
+        // Copy selected input, output, and local flags.
         tt_dst.c_iflag |= tt_src.c_iflag & INPUT_FLAGS;
         tt_dst.c_oflag |= tt_src.c_oflag & OUTPUT_FLAGS;
-        tt_dst.c_cflag |= tt_src.c_cflag & CONTROL_FLAGS;
         tt_dst.c_lflag |= tt_src.c_lflag & LOCAL_FLAGS;
-
-        // Copy special chars from src verbatim.
-        tt_dst.c_cc.copy_from_slice(&tt_src.c_cc);
-
-        // Copy speed from `src`.
-        //
-        // SAFETY: the cfXXXXspeed calls are passed valid pointers and
-        // cannot cause UB even if the speed would be incorrect.
-        unsafe {
-            let mut speed = cfgetospeed(&tt_src);
-            // Zero output speed closes the connection.
-            if speed == libc::B0 {
-                speed = libc::B38400;
-            }
-            cfsetospeed(&mut tt_dst, speed);
-
-            speed = cfgetispeed(&tt_src);
-            cfsetispeed(&mut tt_dst, speed);
-        }
 
         // SAFETY: dst is a valid file descriptor and `tt_dst` is an
         // initialized struct obtained through tcgetattr; so this is safe to
         // pass to `tcsetattr`.
-        cerr(unsafe { tcsetattr(dst, TCSAFLUSH, &tt_dst) })?;
+        cerr(unsafe { tcsetattr(self.as_raw_fd(), TCSAFLUSH, &tt_dst) })?;
 
+        // Transfer the window size from self.tty to client
         let mut wsize = MaybeUninit::<winsize>::uninit();
         // SAFETY: TIOCGWINSZ ioctl expects one argument of type *mut winsize
-        cerr(unsafe { ioctl(src, TIOCGWINSZ, wsize.as_mut_ptr()) })?;
+        cerr(unsafe { ioctl(self.as_raw_fd(), TIOCGWINSZ, wsize.as_mut_ptr()) })?;
         // SAFETY: wsize has been initialized by the TIOCGWINSZ ioctl
-        cerr(unsafe { ioctl(dst, TIOCSWINSZ, wsize.as_ptr()) })?;
-
-        self.set_raw_mode(false, false)?;
+        cerr(unsafe { ioctl(client, TIOCSWINSZ, wsize.as_ptr()) })?;
 
         Ok(())
     }
 
     /// Retreive the current settings to be able to restore later
-    pub fn save(&mut self) -> io::Result<termios> {
+    fn save(&mut self) -> io::Result<termios> {
         let fd = self.tty.as_raw_fd();
 
         Ok(if let Some(termios) = self.original_termios {
@@ -167,29 +128,6 @@ impl UserTerm {
                 termios.assume_init()
             })
         })
-    }
-
-    /// Set the user's terminal to raw mode. Enable terminal signals if `with_signals` is set to `true`.
-    fn set_raw_mode(&mut self, with_signals: bool, preserve_oflag: bool) -> io::Result<()> {
-        let fd = self.tty.as_raw_fd();
-
-        // Set terminal to raw mode.
-        let oflag = term.c_oflag;
-        // SAFETY: `term` is a valid, initialized struct of type `termios`, which
-        // was previously obtained through `tcgetattr`.
-        unsafe { cfmakeraw(&mut term) };
-        if preserve_oflag {
-            term.c_oflag = oflag;
-        }
-        // Enable terminal signals.
-        if with_signals {
-            term.c_cflag |= ISIG;
-        }
-
-        // SAFETY: `fd` is a valid file descriptor for the tty; for `term`: same as above.
-        cerr(unsafe { tcsetattr(fd, TCSADRAIN, &term) })?;
-
-        Ok(())
     }
 
     /// Restore the saved terminal settings if we are in the foreground process group.

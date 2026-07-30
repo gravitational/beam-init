@@ -12,7 +12,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
     let mut tty = UserTerm::open()?;
-    tty.copy_from(&app)?;
+    tty.sync(&app)?;
 
     let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP])?;
 
@@ -44,6 +44,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
 
     let mut events = mio::Events::with_capacity(1024);
     loop {
+        tty.sync(&app)?;
         poller.poll(&mut events, None)?;
         for event in &events {
             let res = match event.token() {
