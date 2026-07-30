@@ -14,7 +14,10 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut tty = UserTerm::open()?;
     tty.sync(&app)?;
 
-    let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP])?;
+    // send SIGWINCH to the application to stimulate it to redraw
+    kill_process_group(pid, libc::SIGWINCH)?;
+
+    let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -52,7 +55,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                 CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
-                        sig @ (libc::SIGINT | libc::SIGQUIT) => {
+                        sig @ (libc::SIGINT | libc::SIGQUIT | libc::SIGWINCH) => {
                             kill_process_group(pid, sig)?;
                             continue;
                         }
