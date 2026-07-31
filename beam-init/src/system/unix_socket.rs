@@ -57,7 +57,10 @@ pub fn socket_send_fd(
     unsafe { cerr(sendmsg(socket.as_fd().as_raw_fd(), &header, MSG_NOSIGNAL) as c_int) }
 }
 
-pub fn socket_recv_fd(socket: impl AsFd, data: &mut [u8]) -> Result<(c_int, OwnedFd), io::Error> {
+pub fn socket_recv_fd(
+    socket: impl AsFd,
+    data: &mut [u8],
+) -> Result<(usize, Option<OwnedFd>), io::Error> {
     assert!(
         !data.is_empty(),
         "must send at least a single byte for fds to be sent"
@@ -83,34 +86,34 @@ pub fn socket_recv_fd(socket: impl AsFd, data: &mut [u8]) -> Result<(c_int, Owne
     header.msg_flags = 0;
 
     // SAFETY: msghdr is correctly initialized and socket is a valid fd.
-    let res =
-        unsafe { cerr(recvmsg(socket.as_fd().as_raw_fd(), &mut header, MSG_NOSIGNAL) as c_int)? };
-
-    // SAFETY: This only accesses the control message buffer.
-    let fd = unsafe {
-        let cmsg = CMSG_FIRSTHDR(&header);
-        if cmsg.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "no control message received",
-            ));
-        }
-        if (*cmsg).cmsg_level != SOL_SOCKET || (*cmsg).cmsg_type != SCM_RIGHTS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "no SCM_RIGHTS control message received",
-            ));
-        }
-        // This should always hold. While SCM_RIGHTS can contain multiple fds,
-        // the control buffer is only large enough to fit a single fd.
-        assert_eq!(
-            (*cmsg).cmsg_len as size_t,
-            CMSG_LEN(size_of::<c_int>() as c_uint) as size_t,
-        );
-
-        // SAFETY: This is a uniquely owned valid fd.
-        OwnedFd::from_raw_fd(*CMSG_DATA(cmsg).cast::<c_int>())
+    let res = unsafe {
+        cerr(recvmsg(socket.as_fd().as_raw_fd(), &mut header, MSG_NOSIGNAL) as c_int)? as usize
     };
+
+    let fd = (|| {
+        // SAFETY: This only accesses the control message buffer.
+        unsafe {
+            let cmsg = CMSG_FIRSTHDR(&header);
+            if cmsg.is_null() {
+                return Ok(None);
+            }
+            if (*cmsg).cmsg_level != SOL_SOCKET || (*cmsg).cmsg_type != SCM_RIGHTS {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "no SCM_RIGHTS control message received",
+                ));
+            }
+            // This should always hold. While SCM_RIGHTS can contain multiple fds,
+            // the control buffer is only large enough to fit a single fd.
+            assert_eq!(
+                (*cmsg).cmsg_len as size_t,
+                CMSG_LEN(size_of::<c_int>() as c_uint) as size_t,
+            );
+
+            // SAFETY: This is a uniquely owned valid fd.
+            Ok(Some(OwnedFd::from_raw_fd(*CMSG_DATA(cmsg).cast::<c_int>())))
+        }
+    })()?;
 
     Ok((res, fd))
 }
