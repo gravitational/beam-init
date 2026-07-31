@@ -26,8 +26,10 @@ for prefix in ["z", "ze", "zeb", "zebra"]:
     output = run("show", prefix).stdout
     assert b"zebra (running PID" in output, output
 
-output = run("show", "b").stdout
-assert b"bootstrap (running PID" in output, output
+# But do not match 'bootstrap'
+result = run("show", "b")
+assert result.returncode == 1, result
+assert result.stderr == b"Service b was not found\n", result.stderr
 
 # An ambiguous prefix fails.
 result = run("show", "slee")
