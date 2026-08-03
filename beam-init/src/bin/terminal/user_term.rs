@@ -53,7 +53,7 @@ const LOCAL_FLAGS: tcflag_t = ICANON
 /// Type to manipulate the settings of the user's terminal.
 pub struct UserTerm {
     tty: File,
-    original_termios: Option<termios>,
+    original_termios: termios,
 }
 
 impl UserTerm {
@@ -67,13 +67,12 @@ impl UserTerm {
     }
 
     pub(crate) fn from(tty: File) -> io::Result<Self> {
-        let mut this = Self {
-            tty,
-            original_termios: None,
-        };
+        let original_termios = get_termios(tty.as_raw_fd())?;
 
-        this.save()?;
-        Ok(this)
+        Ok(Self {
+            tty,
+            original_termios,
+        })
     }
 
     /// Synchronize settings of the provided fd to this terminal.
@@ -82,7 +81,7 @@ impl UserTerm {
     pub(crate) fn sync<D: AsFd>(&mut self, client: &D) -> io::Result<()> {
         let client = client.as_fd().as_raw_fd();
 
-        let mut tt_dst = self.save()?;
+        let mut tt_dst = self.original_termios;
 
         // SAFETY: tt_src will be initialized by `tcgetattr`.
         let tt_src = unsafe {
@@ -116,38 +115,30 @@ impl UserTerm {
         Ok(())
     }
 
-    /// Retrieve the current settings to be able to restore later
-    fn save(&mut self) -> io::Result<termios> {
-        let fd = self.tty.as_raw_fd();
-
-        Ok(if let Some(termios) = self.original_termios {
-            termios
-        } else {
-            // SAFETY: `termios` is a valid pointer to pass to tcgetattr; if that calls succeeds,
-            // it will have initialized the `termios` structure
-            *self.original_termios.insert(unsafe {
-                let mut termios = MaybeUninit::uninit();
-                cerr(tcgetattr(fd, termios.as_mut_ptr()))?;
-                termios.assume_init()
-            })
-        })
-    }
-
     /// Restore the saved terminal settings if we are in the foreground process group.
     ///
     /// This change is done after waiting for all the queued output to be written. To discard the
     /// queued input `flush` must be set to `true`.
     fn restore(&mut self, flush: bool) -> io::Result<()> {
-        if let Some(termios) = self.original_termios.take() {
-            let fd = self.tty.as_raw_fd();
-            let flags = if flush { TCSAFLUSH } else { TCSADRAIN };
-            // SAFETY: `fd` is a valid file descriptor for the tty; and `termios` is a valid pointer
-            // that was obtained through `tcgetattr`.
-            cerr(unsafe { tcsetattr(fd, flags, &termios) })?;
-        }
+        let fd = self.tty.as_raw_fd();
+        let flags = if flush { TCSAFLUSH } else { TCSADRAIN };
+        // SAFETY: `fd` is a valid file descriptor for the tty; and `termios` is a valid pointer
+        // that was obtained through `tcgetattr`.
+        cerr(unsafe { tcsetattr(fd, flags, &self.original_termios) })?;
 
         Ok(())
     }
+}
+
+/// Retrieve the current settings to be able to restore later
+fn get_termios(fd: RawFd) -> io::Result<termios> {
+    // SAFETY: `termios` is a valid pointer to pass to tcgetattr; if that calls succeeds,
+    // it will have initialized the `termios` structure
+    Ok(unsafe {
+        let mut termios = MaybeUninit::uninit();
+        cerr(tcgetattr(fd, termios.as_mut_ptr()))?;
+        termios.assume_init()
+    })
 }
 
 impl AsFd for UserTerm {
