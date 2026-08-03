@@ -113,7 +113,7 @@ impl UserTerm {
         Ok(())
     }
 
-    /// Retreive the current settings to be able to restore later
+    /// Retrieve the current settings to be able to restore later
     fn save(&mut self) -> io::Result<termios> {
         let fd = self.tty.as_raw_fd();
 
