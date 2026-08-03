@@ -138,3 +138,10 @@ fn prefix_match() {
         .run(test_path("prefix_match.py").to_str().unwrap())
         .wait();
 }
+
+#[test]
+fn completion() {
+    docker::Image::build(dockerfile(), workspace_root())
+        .run(test_path("completion.py").to_str().unwrap())
+        .wait();
+}

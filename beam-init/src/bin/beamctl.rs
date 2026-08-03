@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use std::{fs, process};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate};
 use reqwest::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -183,6 +184,11 @@ enum Command {
         #[arg(index = 1)]
         name: String,
     },
+    /// Generate command-line completions for the given shell.
+    Completions {
+        /// Shell to generate completions for.
+        shell: Shell,
+    },
 }
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
@@ -350,6 +356,11 @@ fn main() {
         Command::Attach { name } => {
             let name = prefix_match(&client, name);
             attach(client, name);
+        }
+        Command::Completions { shell } => {
+            let mut command = Cli::command();
+
+            generate(shell, &mut command, "beamctl", &mut std::io::stdout());
         }
     }
 }
