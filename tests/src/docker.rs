@@ -14,7 +14,7 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn build(dockerfile: impl AsRef<Path>) -> Self {
+    pub fn build(dockerfile: impl AsRef<Path>, context: impl AsRef<Path>) -> Self {
         let dockerfile = dockerfile.as_ref();
         let mut image_map = IMAGE_MAP.lock().unwrap();
 
@@ -33,7 +33,7 @@ impl Image {
             .arg(&tag)
             .arg("-f")
             .arg(dockerfile)
-            .arg(".")
+            .arg(context.as_ref())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .output()
