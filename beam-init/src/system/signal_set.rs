@@ -4,7 +4,7 @@
 // this has been changed to add as_ptr, use pthread_sigmask instead of
 // sigprocmask and to remove full and unblock.
 
-use crate::system::cerr;
+use super::cerr;
 
 use std::ffi::c_int;
 use std::io;

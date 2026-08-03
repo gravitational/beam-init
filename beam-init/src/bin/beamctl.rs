@@ -376,11 +376,11 @@ fn attach(client: Client, name: String) {
     // it interferes with signal handling
     drop(client);
 
-    let pty = match service.status {
-        api::ServiceStatus::Running { ref pty, .. }
-        | api::ServiceStatus::Frozen { ref pty, .. } => {
+    let (pid, pty) = match service.status {
+        api::ServiceStatus::Running { ref pty, main_pid }
+        | api::ServiceStatus::Frozen { ref pty, main_pid } => {
             if let Some((index, _)) = pty {
-                get_fd_from_store(*index)
+                (main_pid, get_fd_from_store(*index))
             } else {
                 println!("service {name} does not have a pty attached");
                 return;
@@ -392,10 +392,19 @@ fn attach(client: Client, name: String) {
         }
     };
 
-    if let Err(err) = terminal::manage(pty) {
+    if let Err(err) = terminal::manage(pid, pty) {
         println!("pty error for service {name} ({})", err);
     } else {
+        // Retrieve the new status, which could have changed.
+        let client = Client::new_local();
+        let service: api::Service = client
+            .post(&format!("/service/{}/show", name), &name)
+            .unwrap_or_else(show_error_and_exit);
+
         println!("detached from {name} ({})", service.status);
+        if matches!(service.status, api::ServiceStatus::Running { .. }) {
+            println!("to reattach use `beamctl attach {name}`");
+        }
     }
 }
 
