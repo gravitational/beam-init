@@ -52,7 +52,7 @@ There are two risks classified as High, that we'll look at as one:
 
 * Creating/Updating a service that one is not permitted to do
   - Mitigation: for unprivileged users, this should be prevented in its entirety
-  - Mitigtion: for low privileged users, this should be *thwarted* (by having simple access controls)
+  - Mitigation: for low privileged users, this should be *thwarted* (by having simple access controls)
  
 Most risks are medium:
 
