@@ -72,9 +72,7 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    let fdstore = if cfg!(feature = "unstable-pty")
-        && env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1")
-    {
+    let fdstore = if env::var("BEAM_INIT_ENABLE_API").as_deref() == Ok("1") {
         fdstore::FdStore::bind_socket().expect("failed to bind fdstore socket")
     } else {
         fdstore::FdStore::no_socket()
