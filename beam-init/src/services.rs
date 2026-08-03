@@ -339,12 +339,6 @@ impl ServiceManager {
 
         eprintln!("Starting service {name}");
 
-        let log_writer = service
-            .state
-            .logs
-            .new_writer()
-            .expect("failed to create log writer");
-
         service.state.automatic_restart_attempts = match reason {
             StartReason::User => 0,
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
@@ -366,8 +360,19 @@ impl ServiceManager {
             })?;
 
         let sink = if let Some(terminal) = &mut pty {
+            add_single_log_message(
+                &service.state.logs,
+                format!("[process connected to pty: {}]", terminal.path.display()),
+            );
+
             Sink::PTY(terminal.client())
         } else {
+            let log_writer = service
+                .state
+                .logs
+                .new_writer()
+                .expect("failed to create log writer");
+
             Sink::Log(log_writer)
         };
 
@@ -644,6 +649,13 @@ async fn run_liveness_probe(
 
         tokio::time::sleep(probe.period).await;
     }
+}
+
+fn add_single_log_message(logs: &Logs, msg: String) {
+    let queue = Arc::clone(&logs.queue);
+    tokio::spawn(async move {
+        queue.push(msg).await;
+    });
 }
 
 #[allow(clippy::upper_case_acronyms)]
