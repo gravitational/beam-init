@@ -424,6 +424,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
     if let Some(found_name) = service_names.next()
         && let None = service_names.next()
+        && found_name != "bootstrap"
     {
         // the prefix uniquely defines exactly one service
         found_name

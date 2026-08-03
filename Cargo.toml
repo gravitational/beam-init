@@ -1,12 +1,16 @@
 [workspace]
-members = ["crates/docker_harness"]
+members = [
+  "beam-init",
+  "tests",
+]
+default-members = ["beam-init", "tests"]
+resolver = "3"
 
-[package]
-name = "beam-init"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
 
@@ -25,12 +29,7 @@ tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "syn
 tokio-stream = "0.1.18"
 mio = "1.2.0"
 
-[dev-dependencies]
-docker_harness = { path = "crates/docker_harness" }
 
-[lints.clippy]
+[workspace.lints.clippy]
 missing_safety_doc = "warn"
 undocumented_unsafe_blocks = "warn"
-
-[features]
-unstable-pty = []

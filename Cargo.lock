@@ -143,7 +143,6 @@ dependencies = [
  "async-stream",
  "axum",
  "clap",
- "docker_harness",
  "futures-core",
  "libc",
  "mio",
@@ -234,10 +233,6 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[package]]
-name = "docker_harness"
-version = "0.1.0"
 
 [[package]]
 name = "form_urlencoded"
@@ -809,6 +804,10 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "tests"
+version = "0.1.0"
 
 [[package]]
 name = "tinystr"
