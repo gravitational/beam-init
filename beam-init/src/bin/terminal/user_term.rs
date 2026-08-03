@@ -81,7 +81,7 @@ impl UserTerm {
     pub(crate) fn sync<D: AsFd>(&mut self, client: &D) -> io::Result<()> {
         let client = client.as_fd().as_raw_fd();
 
-        let mut tt_dst = self.original_termios;
+        let mut tt_dst = get_termios(self.tty.as_raw_fd())?;
 
         // SAFETY: tt_src will be initialized by `tcgetattr`.
         let tt_src = unsafe {
