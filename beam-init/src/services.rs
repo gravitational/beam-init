@@ -339,12 +339,6 @@ impl ServiceManager {
 
         eprintln!("Starting service {name}");
 
-        let log_writer = service
-            .state
-            .logs
-            .new_writer()
-            .expect("failed to create log writer");
-
         service.state.automatic_restart_attempts = match reason {
             StartReason::User => 0,
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
@@ -368,6 +362,12 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             Sink::PTY(terminal.client())
         } else {
+            let log_writer = service
+                .state
+                .logs
+                .new_writer()
+                .expect("failed to create log writer");
+
             Sink::Log(log_writer)
         };
 
