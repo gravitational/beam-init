@@ -63,14 +63,17 @@ impl UserTerm {
             .read(true)
             .write(true)
             .open("/dev/tty")
-            .map(Self::from)
+            .and_then(Self::from)
     }
 
-    pub(crate) fn from(tty: File) -> Self {
-        Self {
+    pub(crate) fn from(tty: File) -> io::Result<Self> {
+        let mut this = Self {
             tty,
             original_termios: None,
-        }
+        };
+
+        this.save()?;
+        Ok(this)
     }
 
     /// Synchronize settings of the provided fd to this terminal.
