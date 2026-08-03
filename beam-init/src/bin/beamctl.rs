@@ -384,7 +384,7 @@ fn attach(client: Client, name: String) {
     if let Err(err) = terminal::manage(pid, pty) {
         println!("pty error for service {name} ({})", err);
     } else {
-        // Retrieve the new status, which can have changed.
+        // Retrieve the new status, which could have changed.
         let client = Client::new_local();
         let service: api::Service = client
             .post(&format!("/service/{}/show", name), &name)
