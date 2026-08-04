@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, getpid, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -685,9 +685,12 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
+    let has_ctty = matches!(sink, Sink::PTY(_));
+
     let (mut err_rx, err_tx) = io::pipe()?;
+    let (mut pid_rx, mut pid_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
-    let child_pid = unsafe {
+    unsafe {
         unsafe_fork!({
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -699,29 +702,51 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
             sink.set_stdioe();
 
-            let pid = expect_no_panic(
+            let child_pid = expect_no_panic(
                 unsafe_fork!({
+                    // Create a new process group led by this process.
+                    // Uses the current PID as the PGID of the new process group.
+                    //
+                    // SAFETY: setpgid is safe to call.
+                    // FIXME make beam-init kill the forked child rather than the session leader for pty case
+                    expect_no_panic(cerr(libc::setpgid(0, 0)), "failed to `setpgid`");
+
                     // SAFETY: args is a NULL terminated list of C strings.
                     exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
                 }),
                 "failed to fork",
             );
             drop(err_tx);
-            let (_pid, status) = expect_no_panic(waitpid(pid, 0), "failed to `waitpid");
-            if let Some(code) = status.code() {
-                _exit(code);
-            } else if let Some(signal) = status.signal() {
-                exit_with_signal(signal)
+
+            let service_pid = if has_ctty { getpid() } else { child_pid };
+            expect_no_panic(
+                pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                "failed to write pid",
+            );
+
+            if has_ctty {
+                let (_pid, status) = expect_no_panic(waitpid(child_pid, 0), "failed to `waitpid");
+                if let Some(code) = status.code() {
+                    _exit(code);
+                } else if let Some(signal) = status.signal() {
+                    exit_with_signal(signal)
+                } else {
+                    _exit(1);
+                }
             } else {
-                _exit(1);
+                _exit(0);
             }
-        })
-    }?;
+        })?
+    };
     drop(err_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            let mut child_pid = [0; size_of::<pid_t>()];
+            pid_rx.read_exact(&mut child_pid)?;
+            Ok(pid_t::from_ne_bytes(child_pid))
+        }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }
