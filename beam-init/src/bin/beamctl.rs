@@ -372,15 +372,20 @@ fn attach(client: Client, name: String) {
         .post(&format!("/service/{}/show", name), &name)
         .unwrap_or_else(show_error_and_exit);
 
-    // we must get rid of the client before entering the terminal, because
-    // it interferes with signal handling
-    drop(client);
-
     let (pid, pty) = match service.status {
         api::ServiceStatus::Running { ref pty, main_pid }
         | api::ServiceStatus::Frozen { ref pty, main_pid } => {
             if let Some((index, _)) = pty {
-                (main_pid, get_fd_from_store(*index))
+                if let Some(fd) = get_fd_from_store(*index) {
+                    (main_pid, fd)
+                } else {
+                    // We raced with the process exiting
+                    let service: api::Service = client
+                        .post(&format!("/service/{}/show", name), &name)
+                        .unwrap_or_else(show_error_and_exit);
+                    println!("could not attach to {name} ({})", service.status);
+                    return;
+                }
             } else {
                 println!("service {name} does not have a pty attached");
                 return;
@@ -391,6 +396,10 @@ fn attach(client: Client, name: String) {
             return;
         }
     };
+
+    // we must get rid of the client before entering the terminal, because
+    // it interferes with signal handling
+    drop(client);
 
     if let Err(err) = terminal::manage(pid, pty) {
         println!("pty error for service {name} ({})", err);
@@ -410,7 +419,7 @@ fn attach(client: Client, name: String) {
 
 /// Retrieve a file descriptor over the dedicated socket
 #[cfg(feature = "unstable-pty")]
-fn get_fd_from_store(fdstore_idx: u64) -> std::os::fd::OwnedFd {
+fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 

@@ -145,3 +145,10 @@ fn completion() {
         .run(test_path("completion.py").to_str().unwrap())
         .wait();
 }
+
+#[test]
+fn pty_attach_race() {
+    docker::Image::build(dockerfile(), workspace_root())
+        .run(test_path("pty_attach_race.py").to_str().unwrap())
+        .wait();
+}

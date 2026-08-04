@@ -6,6 +6,7 @@ COPY . .
 
 RUN --mount=type=cache,target=/src/target \
   --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/rustup \
   case "${TARGETARCH}" in \
   amd64) rust_target="x86_64-unknown-linux-musl" ;; \
   arm64) rust_target="aarch64-unknown-linux-musl" ;; \
