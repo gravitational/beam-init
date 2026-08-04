@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CString, NulError};
+use std::ffi::{CString, NulError, c_int, c_uint};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
@@ -188,16 +188,12 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid, .. }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Running { main_pid, .. } if main_pid == pid => {
                             service.state.status = ServiceStatus::Exited(status);
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { main_pid, prune }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Stopping { main_pid, prune } if main_pid == pid => {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
@@ -208,9 +204,7 @@ impl ServiceManager {
 
                             break;
                         }
-                        ServiceStatus::Restarting { main_pid, ref name }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Restarting { main_pid, ref name } if main_pid == pid => {
                             let name = name.clone();
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
@@ -734,6 +728,18 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     );
                 }
             }
+
+            // Using raw syscall as musl doesn't have a close_range() wrapper.
+            // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
+            expect_no_panic(
+                cerr(libc::syscall(
+                    libc::SYS_close_range,
+                    3,
+                    c_uint::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
+                ) as c_int),
+                "failed to `close_range",
+            );
 
             // Set the supplementary group IDs for the child to the empty list.
             expect_no_panic(
