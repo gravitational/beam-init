@@ -744,6 +744,13 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
             let pid = expect_no_panic(
                 unsafe_fork!({
+                    // Create a new process group led by this process.
+                    // Uses the current PID as the PGID of the new process group.
+                    //
+                    // SAFETY: setpgid is safe to call.
+                    // FIXME make beam-init kill the forked child rather than the session leader
+                    expect_no_panic(cerr(libc::setpgid(0, 0)), "failed to `setpgid`");
+
                     // Set the group and user ID (derived from socket) as well as an empty supplementary
                     // group list.
                     expect_no_panic(
