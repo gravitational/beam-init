@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CStr, CString, NulError, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -24,7 +25,7 @@ use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
 use beam_init::system::{
-    _exit, cerr, close_range, getpid, kill_process_group, setpgid, setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, kill_process_group, setsid, waitpid,
 };
 use beam_init_api::Probe;
 
@@ -685,9 +686,8 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .collect::<Vec<_>>();
 
     let (mut err_rx, err_tx) = io::pipe()?;
-    let (mut pid_rx, mut pid_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
-    unsafe {
+    let child_pid = unsafe {
         unsafe_fork!({
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -697,59 +697,31 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // hang if the container has a tty attached.
             expect_no_panic(setsid(), "failed to setsid");
 
-            let has_ctty = matches!(sink, Sink::PTY(_));
             sink.set_stdioe();
 
-            if !has_ctty {
-                // Double fork to ensure the service can't accidentally attach a
-                // controlling tty to the session when opening a file that happens
-                // to be a tty.
-
-                let service_pid = expect_no_panic(
-                    unsafe_fork!({
-                        // Create a new process group led by this process.
-                        // Uses the current PID as the PGID of the new process group.
-                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
-
-                        // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
-                    }),
-                    "failed to fork",
-                );
-                drop(err_tx);
-
-                expect_no_panic(
-                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
-                    "failed to write pid",
-                );
-
-                _exit(0);
+            let pid = expect_no_panic(
+                unsafe_fork!({
+                    // SAFETY: args is a NULL terminated list of C strings.
+                    exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                }),
+                "failed to fork",
+            );
+            drop(err_tx);
+            let (_pid, status) = expect_no_panic(waitpid(pid, 0), "failed to `waitpid");
+            if let Some(code) = status.code() {
+                _exit(code);
+            } else if let Some(signal) = status.signal() {
+                exit_with_signal(signal)
             } else {
-                // Avoid a double fork for now when a pty is attached as the
-                // session leader exiting causes a SIGHUP which will kill the
-                // child if it happened after the exec.
-                // FIXME add a persistent monitor process
-
-                let service_pid = getpid();
-                expect_no_panic(
-                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
-                    "failed to write pid",
-                );
-
-                // SAFETY: args is a NULL terminated list of C strings.
-                exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                _exit(1);
             }
-        })?
-    };
+        })
+    }?;
     drop(err_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-            let mut child_pid = [0; size_of::<pid_t>()];
-            pid_rx.read_exact(&mut child_pid)?;
-            Ok(pid_t::from_ne_bytes(child_pid))
-        }
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }
