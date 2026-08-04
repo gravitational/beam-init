@@ -18,6 +18,7 @@ use crate::services::{self, ServiceError, ServiceManager, StartReason};
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
+#[derive(Debug)]
 pub enum Command {
     CreateService {
         name: String,

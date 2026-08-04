@@ -15,7 +15,7 @@ pub const API_SOCKET_PATH: &str = "/run/beam-init";
 pub const FD_SOCKET_PATH: &str = "/run/beam-init-fds";
 
 /// Request body for creating and starting a service.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateService {
     /// Executable to run.
     pub cmd: String,
