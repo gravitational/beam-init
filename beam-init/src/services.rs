@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, getpid, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -683,8 +683,9 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .collect::<Vec<_>>();
 
     let (mut err_rx, err_tx) = io::pipe()?;
+    let (mut pid_rx, mut pid_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
-    let child_pid = unsafe {
+    unsafe {
         unsafe_fork!({
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -696,17 +697,62 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
+            let has_ctty = matches!(sink, Sink::PTY(_));
             sink.set_stdioe();
 
-            // SAFETY: args is a NULL terminated list of C strings.
-            exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
-        })
-    }?;
+            if !has_ctty {
+                // Double fork to ensure the service can't accidentally attach a
+                // controlling tty to the session when opening a file that happens
+                // to be a tty.
+
+                let service_pid = expect_no_panic(
+                    unsafe_fork!({
+                        // Create a new process group led by this process.
+                        // Uses the current PID as the PGID of the new process group.
+                        //
+                        // SAFETY: setpgid is safe to call.
+                        expect_no_panic(cerr(libc::setpgid(0, 0)), "failed to `setpgid`");
+
+                        // SAFETY: args is a NULL terminated list of C strings.
+                        exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                    }),
+                    "failed to fork",
+                );
+                drop(err_tx);
+
+                expect_no_panic(
+                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                    "failed to write pid",
+                );
+
+                _exit(0);
+            } else {
+                // Avoid a double fork for now when a pty is attached as the
+                // session leader exiting causes a SIGHUP which will kill the
+                // child if it happened after the exec.
+                // FIXME add a persistent monitor process
+
+                // SAFETY: getpid is safe to call.
+                let service_pid = getpid();
+                expect_no_panic(
+                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                    "failed to write pid",
+                );
+
+                // SAFETY: args is a NULL terminated list of C strings.
+                exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+            }
+        })?
+    };
     drop(err_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            let mut child_pid = [0; size_of::<pid_t>()];
+            pid_rx.read_exact(&mut child_pid)?;
+            Ok(pid_t::from_ne_bytes(child_pid))
+        }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }
