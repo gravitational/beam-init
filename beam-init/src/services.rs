@@ -188,16 +188,12 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid, .. }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Running { main_pid, .. } if main_pid == pid => {
                             service.state.status = ServiceStatus::Exited(status);
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { main_pid, prune }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Stopping { main_pid, prune } if main_pid == pid => {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
@@ -208,9 +204,7 @@ impl ServiceManager {
 
                             break;
                         }
-                        ServiceStatus::Restarting { main_pid, ref name }
-                            if main_pid == info.ssi_pid as pid_t =>
-                        {
+                        ServiceStatus::Restarting { main_pid, ref name } if main_pid == pid => {
                             let name = name.clone();
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
