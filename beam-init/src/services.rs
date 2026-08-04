@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError, c_int, c_uint};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -23,7 +24,7 @@ use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
-use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::system::{_exit, cerr, exit_with_signal, kill_process_group, waitpid};
 use beam_init_api::Probe;
 
 pub struct ServiceManager {
@@ -741,26 +742,40 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 "failed to `close_range",
             );
 
-            // Set the group and user ID (derived from socket) as well as an empty supplementary
-            // group list.
-            expect_no_panic(
-                config.credentials.set_creds(),
-                "failed to set process credentials",
+            let pid = expect_no_panic(
+                unsafe_fork!({
+                    // Set the group and user ID (derived from socket) as well as an empty supplementary
+                    // group list.
+                    expect_no_panic(
+                        config.credentials.set_creds(),
+                        "failed to set process credentials",
+                    );
+
+                    libc::execvp(cmd.as_ptr(), args.as_ptr());
+
+                    // If we reach this point, the exec failed.
+                    let Some(err) = io::Error::last_os_error().raw_os_error() else {
+                        eprintln!("last_os_error didn't return OS error");
+                        _exit(101);
+                    };
+
+                    expect_no_panic(
+                        err_tx.write_all(&i32::to_ne_bytes(err)),
+                        "failed to write error code",
+                    );
+                    _exit(1);
+                }),
+                "failed to fork",
             );
-
-            libc::execvp(cmd.as_ptr(), args.as_ptr());
-
-            // If we reach this point, the exec failed.
-            let Some(err) = io::Error::last_os_error().raw_os_error() else {
-                eprintln!("last_os_error didn't return OS error");
-                _exit(101);
-            };
-
-            expect_no_panic(
-                err_tx.write_all(&i32::to_ne_bytes(err)),
-                "failed to write error code",
-            );
-            _exit(1);
+            drop(err_tx);
+            let (_pid, status) = expect_no_panic(waitpid(pid, 0), "failed to `waitpid");
+            if let Some(code) = status.code() {
+                _exit(code);
+            } else if let Some(signal) = status.signal() {
+                exit_with_signal(signal)
+            } else {
+                _exit(1);
+            }
         })
     }?;
     drop(err_tx);
