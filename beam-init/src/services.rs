@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CString, NulError};
+use std::ffi::{CString, NulError, c_int, c_uint};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
@@ -734,6 +734,18 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     );
                 }
             }
+
+            // Using raw syscall as musl doesn't have a close_range() wrapper.
+            // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
+            expect_no_panic(
+                cerr(libc::syscall(
+                    libc::SYS_close_range,
+                    3,
+                    c_uint::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
+                ) as c_int),
+                "failed to `close_range",
+            );
 
             // Set the supplementary group IDs for the child to the empty list.
             expect_no_panic(
