@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -23,7 +24,7 @@ use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
-use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::system::{_exit, cerr, exit_with_signal, kill_process_group, waitpid};
 use beam_init_api::Probe;
 
 pub struct ServiceManager {
@@ -698,8 +699,22 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
             sink.set_stdioe();
 
-            // SAFETY: args is a NULL terminated list of C strings.
-            exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+            let pid = expect_no_panic(
+                unsafe_fork!({
+                    // SAFETY: args is a NULL terminated list of C strings.
+                    exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                }),
+                "failed to fork",
+            );
+            drop(err_tx);
+            let (_pid, status) = expect_no_panic(waitpid(pid, 0), "failed to `waitpid");
+            if let Some(code) = status.code() {
+                _exit(code);
+            } else if let Some(signal) = status.signal() {
+                exit_with_signal(signal)
+            } else {
+                _exit(1);
+            }
         })
     }?;
     drop(err_tx);
