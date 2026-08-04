@@ -66,10 +66,10 @@ Most risks are medium:
 
 * A user not being able to update/delete a service
   - I.e. if a service is spending a lot of AI tokens and cannot be stopped by a user; or an agent is running out of control, that could incur a financial or societal risk.
-  - This can be prevented by *rate limiting* the requests that can be put to `beamctl`
+  - This can be prevented by *rate limiting* the requests that can be put to `beamctl`, or letting it enforce resource limits.
   - However, there are various other ways a service could max out the resources of a beam instance, so it can also be seen as *acceptable risk*, especially since the beam instances are short-lived
   - Also, this risk can be *transferred* to the "still be able to stop a container in its entirety* risk; which will still give an emergency brake.
-  - Most likely *rate limiting* is more effectively implemented on the **Container level** and not inside `beam-init` (since `beam-init` itself shares computing resources with the services it spawns)
+  - Most likely *resource limiting* is more effectively implemented on the **Container level** and not inside `beam-init` (since `beam-init` itself shares computing resources with the services it spawns)
  
 * A user not being able to delete (i.e. stop) a container.
   - This should be *prevented*, i.e. nothing `beam-init` or `beamctl` can do should impact the ability of a container to be stopped.
@@ -107,5 +107,5 @@ flowchart TB
 - Use UNIX Socket and Access control to make sure non-`root` users only have access to their own privileges
 - This access control must rigidly enforced
 - The REST API must be parsed in a solid and safe manner to avoid exposing any loopholes (e.g. by using bad authentication mechanisms or being able to crash `beam-init` by using malformed requests)
-- Rate limiting can be considered, but should probably happen at the **container** level.
+- Resource limiting can be considered, but should probably happen at the **container** level.
 - Containers should have an "emergency teardown" option in an outside interface (which it probably already has, but is out of scope for this project)
