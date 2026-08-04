@@ -17,8 +17,8 @@ use std::{
 use libc::{
     ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR, IMAXBEL,
     INLCR, INPCK, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR, ONLRET,
-    ONOCR, OPOST, PARMRK, PENDIN, TCSADRAIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE,
-    ioctl, tcflag_t, tcgetattr, tcsetattr, termios, winsize,
+    ONOCR, OPOST, PARMRK, PENDIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE, ioctl,
+    tcflag_t, tcgetattr, tcsetattr, termios, winsize,
 };
 
 use beam_init::system::cerr;
@@ -82,13 +82,7 @@ impl UserTerm {
         let client = client.as_fd().as_raw_fd();
 
         let mut tt_dst = get_termios(self.tty.as_raw_fd())?;
-
-        // SAFETY: tt_src will be initialized by `tcgetattr`.
-        let tt_src = unsafe {
-            let mut tt_src = MaybeUninit::<termios>::uninit();
-            cerr(tcgetattr(client, tt_src.as_mut_ptr()))?;
-            tt_src.assume_init()
-        };
+        let tt_src = get_termios(client)?;
 
         // Clear selected input, output, and local flags.
         tt_dst.c_iflag &= !INPUT_FLAGS;
@@ -116,15 +110,11 @@ impl UserTerm {
     }
 
     /// Restore the saved terminal settings if we are in the foreground process group.
-    ///
-    /// This change is done after waiting for all the queued output to be written. To discard the
-    /// queued input `flush` must be set to `true`.
-    fn restore(&mut self, flush: bool) -> io::Result<()> {
+    fn restore(&mut self) -> io::Result<()> {
         let fd = self.tty.as_raw_fd();
-        let flags = if flush { TCSAFLUSH } else { TCSADRAIN };
         // SAFETY: `fd` is a valid file descriptor for the tty; and `termios` is a valid pointer
         // that was obtained through `tcgetattr`.
-        cerr(unsafe { tcsetattr(fd, flags, &self.original_termios) })?;
+        cerr(unsafe { tcsetattr(fd, TCSAFLUSH, &self.original_termios) })?;
 
         Ok(())
     }
@@ -171,6 +161,6 @@ impl AsRawFd for UserTerm {
 
 impl Drop for UserTerm {
     fn drop(&mut self) {
-        self.restore(true).expect("to restore terminal settings");
+        self.restore().expect("to restore terminal settings");
     }
 }
