@@ -9,10 +9,10 @@ The following assets are identified:
 ## Actors
 The following actors are identified; we are deliberately ambiguous whether these are "users" or "processes".
 
-* Highly priviledged processes
+* Highly privileged processes
   - I.e. the users that can configure and start beam instances and will have `root` privileges on them, and that "owns" the container it runs on; or the services that they delegate that power to.
     Typically these would be "customers of Teleport".
-* Lesser priviledged processes
+* Lesser privileged processes
   - I.e. services initiated by that client on a beam instance, that will most likely not run as `root`. Typically these would be "third parties", i.e. clients of the customers of teleports.
 * Unprivileged processes
   - I.e. outside users/services that can influence the beam instance but have *no rights* on them (e.g. because the beam instance runs as server, or as a client consults an external resource).
