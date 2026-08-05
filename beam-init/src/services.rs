@@ -3,7 +3,6 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError, c_int, c_uint};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -24,7 +23,7 @@ use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
-use beam_init::system::{_exit, cerr, exit_with_signal, kill_process_group, waitpid};
+use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
 use beam_init_api::Probe;
 
 pub struct ServiceManager {
@@ -674,6 +673,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .collect::<Vec<_>>();
 
     let (mut err_rx, mut err_tx) = io::pipe()?;
+    let (mut pid_rx, mut pid_tx) = io::pipe()?;
     fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
         match res {
             Ok(x) => x,
@@ -684,7 +684,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         }
     }
     // SAFETY: We only run async-signal-safe functions inside the child process.
-    let child_pid = unsafe {
+    unsafe {
         unsafe_fork!({
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -774,22 +774,22 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 }),
                 "failed to fork",
             );
-            drop(err_tx);
-            let (_pid, status) = expect_no_panic(waitpid(pid, 0), "failed to `waitpid");
-            if let Some(code) = status.code() {
-                _exit(code);
-            } else if let Some(signal) = status.signal() {
-                exit_with_signal(signal)
-            } else {
-                _exit(1);
-            }
-        })
-    }?;
+            expect_no_panic(
+                pid_tx.write_all(&pid_t::to_ne_bytes(pid)),
+                "failed to write pid",
+            );
+            _exit(0);
+        })?
+    };
     drop(err_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            let mut child_pid = [0; size_of::<pid_t>()];
+            pid_rx.read_exact(&mut child_pid)?;
+            Ok(pid_t::from_ne_bytes(child_pid))
+        }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }
