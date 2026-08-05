@@ -711,6 +711,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 }),
                 "failed to fork",
             );
+            // FIXME race condition causing the forked child to get SIGHUP
             expect_no_panic(
                 pid_tx.write_all(&pid_t::to_ne_bytes(pid)),
                 "failed to write pid",
