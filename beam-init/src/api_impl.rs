@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 
 use crate::Event;
 use crate::services::{self, ServiceError, ServiceManager, StartReason};
+use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
@@ -58,6 +59,24 @@ pub struct Credentials {
 impl Credentials {
     pub fn root() -> Self {
         Self { uid: 0, gid: 0 }
+    }
+
+    /// Set the process credentials from `self``.
+    pub fn set_creds(self) -> io::Result<()> {
+        let Credentials { uid, gid } = self;
+
+        // Set the supplementary group IDs for the child to the empty list.
+        // SAFETY: a valid empty list is passed to setgroups
+        unsafe { cerr(libc::setgroups(0, std::ptr::null())) }?;
+
+        // Set the group and user ID.
+        // SAFETY: setgid and setsid are safe to call
+        unsafe {
+            cerr(libc::setgid(gid))?;
+            cerr(libc::setuid(uid))?;
+        }
+
+        Ok(())
     }
 }
 
