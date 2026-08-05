@@ -5,12 +5,19 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
+mod user_term;
+use user_term::UserTerm;
+
 pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
-    let mut tty = File::options().read(true).write(true).open("/dev/tty")?;
+    let mut tty = UserTerm::open()?;
+    tty.sync(&app)?;
 
-    let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP])?;
+    // send SIGWINCH to the application to stimulate it to redraw
+    kill_process_group(pid, libc::SIGWINCH)?;
+
+    let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -40,6 +47,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
 
     let mut events = mio::Events::with_capacity(1024);
     loop {
+        tty.sync(&app)?;
         poller.poll(&mut events, None)?;
         for event in &events {
             let res = match event.token() {
@@ -47,7 +55,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                 CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
-                        sig @ (libc::SIGINT | libc::SIGQUIT) => {
+                        sig @ (libc::SIGINT | libc::SIGQUIT | libc::SIGWINCH) => {
                             kill_process_group(pid, sig)?;
                             continue;
                         }
