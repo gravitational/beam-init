@@ -7,6 +7,15 @@ use clap_complete::{Shell, generate};
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
+const VERSION: &str = match option_env!("BEAM_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+const GIT_SHA: &str = match option_env!("GIT_SHA") {
+    Some(sha) => sha,
+    None => "unknown",
+};
+
 #[cfg(feature = "unstable-pty")]
 mod terminal;
 
@@ -99,6 +108,8 @@ enum Command {
         /// Shell to generate completions for.
         shell: Shell,
     },
+    /// Show the version of beamctl and beam-init
+    Version,
 }
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
@@ -269,6 +280,11 @@ fn main() {
             let mut command = Cli::command();
 
             generate(shell, &mut command, "beamctl", &mut std::io::stdout());
+        }
+        Command::Version => {
+            println!("beamctl: Version: {} - SHA: {}", VERSION, GIT_SHA);
+            let resp = client.version().unwrap_or_else(show_error_and_exit);
+            println!("beam-init: Version: {} - SHA: {}", resp.version, resp.sha);
         }
     }
 }
