@@ -18,6 +18,14 @@ mod logs;
 mod services;
 mod signal_stream;
 
+pub(crate) const VERSION: &str = match option_env!("VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+pub(crate) const GIT_SHA: &str = match option_env!("GIT_SHA") {
+    Some(sha) => sha,
+    None => "unknown",
+};
 /// If true we will print log messages that may contain sensitive information.
 ///
 /// Set to true using the `BEAM_INIT_ENABLE_DEBUG_LOGS=1` env var.

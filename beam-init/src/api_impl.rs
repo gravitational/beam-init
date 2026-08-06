@@ -17,6 +17,7 @@ use crate::Event;
 use crate::services::{self, ServiceError, ServiceManager, StartReason};
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus};
+use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
@@ -109,6 +110,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         .route("/service/{name}/thaw", post(thaw_service))
         .route("/service/{name}/show", post(show_service))
         .route("/service/{name}/logs", get(service_logs))
+        .route("/version", get(version))
         .with_state(tx_event);
 
     tokio::spawn(async move {
@@ -284,6 +286,14 @@ async fn service_logs(
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
+}
+
+async fn version() -> Response {
+    Json(VersionResponse {
+        version: crate::VERSION.to_string(),
+        sha: crate::GIT_SHA.to_string(),
+    })
+    .into_response()
 }
 
 impl From<&crate::services::Service> for beam_init_api::Service {

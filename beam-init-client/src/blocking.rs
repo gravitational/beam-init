@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
-use beam_init_api::{CreateService, Service, ServiceStatus};
+use beam_init_api::{CreateService, Service, ServiceStatus, VersionResponse};
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -114,6 +114,10 @@ impl Client {
     pub fn follow_logs(&self, name: &str) -> Result<impl Read, Error> {
         let path = format!("{}?follow=true", service_action_path(name, "logs"));
         self.get_raw(&path)
+    }
+
+    pub fn version(&self) -> Result<VersionResponse, Error> {
+        self.get("/version")
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::blocking::RequestBuilder {

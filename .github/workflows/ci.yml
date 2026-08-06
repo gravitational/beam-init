@@ -28,6 +28,8 @@ jobs:
   test:
     name: Build and test ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
+    env:
+      GIT_SHA: ${{ github.sha }}
 
     strategy:
       fail-fast: false
