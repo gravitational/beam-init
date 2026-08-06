@@ -8,7 +8,7 @@ use reqwest::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use beam_init::api::{self, Probe};
+use beam_init_api::Probe;
 
 #[cfg(feature = "unstable-pty")]
 mod terminal;
@@ -19,8 +19,8 @@ struct Client {
 
 impl Client {
     fn new_local() -> Self {
-        if !fs::exists(api::API_SOCKET_PATH).unwrap_or(false) {
-            eprintln!("error: {} doesn't exist.", api::API_SOCKET_PATH);
+        if !fs::exists(beam_init_api::API_SOCKET_PATH).unwrap_or(false) {
+            eprintln!("error: {} doesn't exist.", beam_init_api::API_SOCKET_PATH);
             eprintln!(
                 "hint: beamctl only works inside containers that use beam-init as init process",
             );
@@ -28,7 +28,7 @@ impl Client {
         }
 
         let client = reqwest::blocking::ClientBuilder::new()
-            .unix_socket(api::API_SOCKET_PATH)
+            .unix_socket(beam_init_api::API_SOCKET_PATH)
             .build()
             .unwrap_or_else(|err| {
                 eprintln!("Failed to initialize HTTP client: {err}");
@@ -266,10 +266,10 @@ fn main() {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
-            let _resp: api::CreateService = client
+            let _resp: beam_init_api::CreateService = client
                 .post(
                     &format!("/service/{}", name),
-                    api::CreateService {
+                    beam_init_api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
                         liveness: liveness.map(Into::into),
@@ -324,7 +324,7 @@ fn main() {
         }
         Command::Show { name } => {
             let name = prefix_match(&client, name);
-            let service: api::Service = client
+            let service: beam_init_api::Service = client
                 .post(&format!("/service/{}/show", name), &name)
                 .unwrap_or_else(show_error_and_exit);
 
@@ -340,7 +340,7 @@ fn main() {
             }
         }
         Command::List => {
-            let services: BTreeMap<String, beam_init::api::ServiceStatus> =
+            let services: BTreeMap<String, beam_init_api::ServiceStatus> =
                 client.get("/services").unwrap_or_else(show_error_and_exit);
 
             if args.json {
@@ -368,19 +368,19 @@ fn main() {
 /// Attach to the given service
 #[cfg(feature = "unstable-pty")]
 fn attach(client: Client, name: String) {
-    let service: api::Service = client
+    let service: beam_init_api::Service = client
         .post(&format!("/service/{}/show", name), &name)
         .unwrap_or_else(show_error_and_exit);
 
     let (pid, pty) = match service.status {
-        api::ServiceStatus::Running { ref pty, main_pid }
-        | api::ServiceStatus::Frozen { ref pty, main_pid } => {
+        beam_init_api::ServiceStatus::Running { ref pty, main_pid }
+        | beam_init_api::ServiceStatus::Frozen { ref pty, main_pid } => {
             if let Some((index, _)) = pty {
                 if let Some(fd) = get_fd_from_store(*index) {
                     (main_pid, fd)
                 } else {
                     // We raced with the process exiting
-                    let service: api::Service = client
+                    let service: beam_init_api::Service = client
                         .post(&format!("/service/{}/show", name), &name)
                         .unwrap_or_else(show_error_and_exit);
                     println!("could not attach to {name} ({})", service.status);
@@ -406,12 +406,12 @@ fn attach(client: Client, name: String) {
     } else {
         // Retrieve the new status, which could have changed.
         let client = Client::new_local();
-        let service: api::Service = client
+        let service: beam_init_api::Service = client
             .post(&format!("/service/{}/show", name), &name)
             .unwrap_or_else(show_error_and_exit);
 
         println!("detached from {name} ({})", service.status);
-        if matches!(service.status, api::ServiceStatus::Running { .. }) {
+        if matches!(service.status, beam_init_api::ServiceStatus::Running { .. }) {
             println!("to reattach use `beamctl attach {name}`");
         }
     }
@@ -425,7 +425,7 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
 
     use beam_init::system::unix_socket::socket_recv_fd;
 
-    let mut socket = UnixStream::connect(api::FD_SOCKET_PATH).unwrap();
+    let mut socket = UnixStream::connect(beam_init_api::FD_SOCKET_PATH).unwrap();
     socket.write_all(&u64::to_le_bytes(fdstore_idx)).unwrap();
     let (_len, fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
     fd
@@ -434,7 +434,7 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
 /// As a userfriendliness feature, allow the user to match a service by only
 /// matching a prefix instead of the full service name.
 fn prefix_match(client: &Client, name: String) -> String {
-    let mut services: BTreeMap<String, beam_init::api::ServiceStatus> =
+    let mut services: BTreeMap<String, beam_init_api::ServiceStatus> =
         client.get("/services").unwrap_or_else(show_error_and_exit);
 
     let mut service_names = services

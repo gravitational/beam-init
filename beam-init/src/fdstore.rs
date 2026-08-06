@@ -6,8 +6,8 @@ use std::{fmt, io};
 use tokio::io::{AsyncReadExt, Interest};
 use tokio::net::UnixListener;
 
-use beam_init::api::FD_SOCKET_PATH;
 use beam_init::system::unix_socket::socket_send_fd;
+use beam_init_api::FD_SOCKET_PATH;
 
 pub struct StoredFd {
     id: u64,

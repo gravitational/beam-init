@@ -15,7 +15,7 @@ use tokio_stream::StreamExt;
 
 use crate::Event;
 use crate::services::{self, ServiceError, ServiceManager, StartReason};
-use beam_init::api::{API_SOCKET_PATH, CreateService, ServiceStatus};
+use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus};
 
 #[allow(clippy::enum_variant_names)]
 pub enum Command {
@@ -266,7 +266,7 @@ async fn service_logs(
     rx.await.expect("main task crashed")
 }
 
-impl From<&crate::services::Service> for crate::api::Service {
+impl From<&crate::services::Service> for beam_init_api::Service {
     fn from(value: &crate::services::Service) -> Self {
         Self {
             cmd: value.config.cmd.clone(),
@@ -277,7 +277,7 @@ impl From<&crate::services::Service> for crate::api::Service {
     }
 }
 
-impl From<&crate::services::ServiceStatus> for crate::api::ServiceStatus {
+impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
@@ -400,11 +400,11 @@ pub async fn handle_api_command(
         Command::ShowService { name } => {
             let service = service_manager.get_service(credentials, &name)?;
 
-            let api_service = crate::api::Service::from(service);
+            let api_service = beam_init_api::Service::from(service);
             Ok(Json(api_service).into_response())
         }
         Command::ListServices => {
-            let services: BTreeMap<String, crate::api::ServiceStatus> = service_manager
+            let services: BTreeMap<String, beam_init_api::ServiceStatus> = service_manager
                 .list_services()
                 .map(|(name, status)| (name.to_string(), status.into()))
                 .collect();
