@@ -15,10 +15,11 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     tty.sync(&app)?;
 
     // send SIGWINCH to the application to stimulate it to redraw
-    match kill_process_group(pid, libc::SIGWINCH) {
-        Ok(_) => {}
-        Err(err) if err.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
-        Err(err) => return Err(err),
+    if let Err(err) = kill_process_group(pid, libc::SIGWINCH) {
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(err);
     }
 
     let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
