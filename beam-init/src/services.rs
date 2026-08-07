@@ -5,12 +5,16 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
 use std::process::ExitStatus;
-use std::ptr;
 use std::sync::Arc;
+use std::{mem, ptr};
 
 use axum::response::{IntoResponse, Response};
+use beam_init::system::signal_set::SignalSet;
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{
+    SIG_DFL, SIGCHLD, SIGCONT, SIGHUP, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, sigaction,
+    signalfd_siginfo,
+};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -672,8 +676,11 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
+    let has_ctty = matches!(sink, Sink::PTY(_));
+
     let (mut err_rx, mut err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
+    let (mut sync_rx, mut sync_tx) = io::pipe()?;
     fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
         match res {
             Ok(x) => x,
@@ -758,6 +765,29 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                         "failed to set process credentials",
                     );
 
+                    // FIXME keep session leader active when there is a ctty instead
+                    if has_ctty {
+                        let mut set =
+                            expect_no_panic(SignalSet::empty(), "failed to create sigset");
+                        expect_no_panic(set.add(SIGHUP), "failed to add SIGHUP to sigset");
+                        let prev = expect_no_panic(set.block(), "failed to block SIGHUP");
+
+                        let mut action: sigaction = mem::zeroed();
+                        action.sa_sigaction = SIG_DFL;
+                        libc::sigaction(SIGHUP, &action, ptr::null_mut());
+
+                        drop(sync_tx);
+                        drop(sync_rx);
+                        expect_no_panic(
+                            cerr(libc::sigwait(set.as_ref(), &mut 0)),
+                            "sigwait failed",
+                        );
+                        expect_no_panic(prev.set_mask(), "failed to unblock SIGHUP");
+                    } else {
+                        drop(sync_tx);
+                        drop(sync_rx);
+                    }
+
                     libc::execvp(cmd.as_ptr(), args.as_ptr());
 
                     // If we reach this point, the exec failed.
@@ -774,6 +804,10 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 }),
                 "failed to fork",
             );
+
+            drop(sync_tx);
+            let _ = sync_rx.read(&mut [0]);
+
             // FIXME race condition causing the forked child to get SIGHUP
             expect_no_panic(
                 pid_tx.write_all(&pid_t::to_ne_bytes(pid)),
@@ -783,6 +817,8 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         })?
     };
     drop(err_tx);
+    drop(sync_tx);
+    drop(sync_rx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
