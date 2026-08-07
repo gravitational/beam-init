@@ -21,6 +21,3 @@ clap_complete.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-unstable-pty = []
