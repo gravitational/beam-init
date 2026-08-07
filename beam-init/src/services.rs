@@ -741,16 +741,12 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 "failed to `close_range",
             );
 
-            // Set the supplementary group IDs for the child to the empty list.
+            // Set the group and user ID (derived from socket) as well as an empty supplementary
+            // group list.
             expect_no_panic(
-                cerr(libc::setgroups(0, std::ptr::null())),
-                "failed to `setgroups`",
+                config.credentials.set_creds(),
+                "failed to set process credentials",
             );
-
-            // Set the group and user ID (derived from socket).
-            let Credentials { uid, gid } = config.credentials;
-            expect_no_panic(cerr(libc::setgid(gid)), "failed to `setgid`");
-            expect_no_panic(cerr(libc::setuid(uid)), "failed to `setuid`");
 
             libc::execvp(cmd.as_ptr(), args.as_ptr());
 
