@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 beam-init-api = { path = "../beam-init-api" }
+beam-init-client = { path = "../beam-init-client" }
 
 clap.workspace = true
 reqwest.workspace = true

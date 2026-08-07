@@ -18,6 +18,7 @@ jobs:
       contents: read
     env:
       VERSION: ${{ github.ref_name }}
+      GIT_SHA: ${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:
