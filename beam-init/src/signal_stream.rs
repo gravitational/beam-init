@@ -1,15 +1,18 @@
 use std::ffi::c_int;
 use std::io;
+use std::ops::ControlFlow;
 
 use beam_init::system::signalfd::SignalFd;
+use libc::signalfd_siginfo;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::mpsc;
 
-use crate::Event;
 use beam_init::system::signal_set::SignalSet;
 
-pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
+pub fn init<Fut: Future<Output = ControlFlow<()>> + Send>(
+    signals: &[c_int],
+    mut callback: impl FnMut(signalfd_siginfo) -> Fut + Send + 'static,
+) -> io::Result<OldSigmask> {
     let signal_set = SignalSet::new(signals)?;
     let mut rx = AsyncFd::new(SignalFd::new(&signal_set)?)?;
     let old_sigmask = signal_set.block()?;
@@ -20,8 +23,9 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
                 .async_io_mut(Interest::READABLE, |inner| inner.read())
                 .await
                 .expect("failed to read signal from signalfd");
-            if tx_event.send(Event::Signal(siginfo)).await.is_err() {
-                return; // Main event loop has finished
+            match callback(siginfo).await {
+                ControlFlow::Continue(()) => {}
+                ControlFlow::Break(()) => return,
             }
         }
     });
