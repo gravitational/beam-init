@@ -9,7 +9,7 @@ use libc::pid_t;
 use serde::{Deserialize, Serialize};
 
 /// Default Unix socket path for the beam-init HTTP API.
-pub const API_SOCKET_PATH: &str = "/run/beam-init";
+pub const API_SOCKET_PATH: &str = "/run/user/1000/beam-init";
 
 /// Default Unix socket path used to retrieve file descriptors from beam-init.
 pub const FD_SOCKET_PATH: &str = "/run/beam-init-fds";
