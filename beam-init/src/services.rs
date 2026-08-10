@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CString, NulError, c_int, c_uint};
-use std::io::{self, Read, Write};
+use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
+use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
 use std::process::ExitStatus;
@@ -658,6 +658,16 @@ enum Sink<'a> {
     PTY(PtyClient<'a, StoredFd>),
 }
 
+fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
+    match res {
+        Ok(x) => x,
+        Err(err) => {
+            eprintln!("{msg}: {err}");
+            _exit(101);
+        }
+    }
+}
+
 fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
     let cmd = CString::new(config.cmd.clone())?;
 
@@ -672,16 +682,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
-    let (mut err_rx, mut err_tx) = io::pipe()?;
-    fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
-        match res {
-            Ok(x) => x,
-            Err(err) => {
-                eprintln!("{msg}: {err}");
-                _exit(101);
-            }
-        }
-    }
+    let (mut err_rx, err_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     let child_pid = unsafe {
         unsafe_fork!({
@@ -695,72 +696,10 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // SAFETY: setsid is safe to call.
             expect_no_panic(cerr(libc::setsid()), "failed to setsid");
 
-            match sink {
-                Sink::PTY(pty) => {
-                    let pty_fd = expect_no_panic(
-                        pty.make_tty(),
-                        "could not make the pty the controlling terminal",
-                    );
+            sink.set_stdioe();
 
-                    // Set the pseudoterminal as stdin, stdout and stderr
-                    // SAFETY: dup2 is memory safe to call. This technically violates IO-safety, but nothing
-                    // accessed after this point depends on stdout/stderr pointing to a particular fd.
-                    expect_no_panic(
-                        [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                            .into_iter()
-                            .try_for_each(|fd| {
-                                cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
-                                Ok(())
-                            }),
-                        "failed to attach pty",
-                    );
-                }
-                Sink::Log(log_writer) => {
-                    // Set the log pipe as stdout and stderr
-                    // SAFETY: as above
-                    expect_no_panic(
-                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
-                        "failed to set stdout",
-                    );
-                    expect_no_panic(
-                        cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
-                        "failed to set stderr",
-                    );
-                }
-            }
-
-            // Using raw syscall as musl doesn't have a close_range() wrapper.
-            // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
-            expect_no_panic(
-                cerr(libc::syscall(
-                    libc::SYS_close_range,
-                    3,
-                    c_uint::MAX,
-                    libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
-                ) as c_int),
-                "failed to `close_range",
-            );
-
-            // Set the group and user ID (derived from socket) as well as an empty supplementary
-            // group list.
-            expect_no_panic(
-                config.credentials.set_creds(),
-                "failed to set process credentials",
-            );
-
-            libc::execvp(cmd.as_ptr(), args.as_ptr());
-
-            // If we reach this point, the exec failed.
-            let Some(err) = io::Error::last_os_error().raw_os_error() else {
-                eprintln!("last_os_error didn't return OS error");
-                _exit(101);
-            };
-
-            expect_no_panic(
-                err_tx.write_all(&i32::to_ne_bytes(err)),
-                "failed to write error code",
-            );
-            _exit(1);
+            // SAFETY: args is a NULL terminated list of C strings.
+            exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
         })
     }?;
     drop(err_tx);
@@ -771,4 +710,88 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
     }
+}
+
+impl Sink<'_> {
+    fn set_stdioe(self) {
+        match self {
+            Sink::PTY(pty) => {
+                let pty_fd = expect_no_panic(
+                    pty.make_tty(),
+                    "could not make the pty the controlling terminal",
+                );
+
+                // Set the pseudoterminal as stdin, stdout and stderr
+                expect_no_panic(
+                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                        .into_iter()
+                        .try_for_each(|fd| {
+                            // SAFETY: dup2 is memory safe to call. This technically violates
+                            // IO-safety, but nothing accessed after this point depends on
+                            // stdout/stderr pointing to a particular fd.
+                            cerr(unsafe { libc::dup2(pty_fd.as_raw_fd(), fd) })?;
+                            Ok(())
+                        }),
+                    "failed to attach pty",
+                );
+            }
+            Sink::Log(log_writer) => {
+                // Set the log pipe as stdout and stderr
+                expect_no_panic(
+                    // SAFETY: as above
+                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
+                    "failed to set stdout",
+                );
+                expect_no_panic(
+                    // SAFETY: as above
+                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
+                    "failed to set stderr",
+                );
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// `args` must be a NULL terminated list of C strings.
+unsafe fn exec_with_creds_and_err_pipe(
+    cmd: &CStr,
+    args: &[*const c_char],
+    credentials: &Credentials,
+    mut err_tx: PipeWriter,
+) -> ! {
+    // Using raw syscall as musl doesn't have a close_range() wrapper.
+    // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
+    expect_no_panic(
+        cerr(unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3,
+                c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
+            ) as c_int
+        }),
+        "failed to `close_range",
+    );
+
+    // Set the group and user ID (derived from socket) as well as an empty
+    // supplementary group list.
+    expect_no_panic(credentials.set_creds(), "failed to set process credentials");
+
+    // SAFETY: Per the safety requirements of this function, args is a NULL
+    // terminated list of C strings.
+    unsafe { libc::execvp(cmd.as_ptr(), args.as_ptr()) };
+
+    // If we reach this point, the exec failed.
+    let Some(err) = io::Error::last_os_error().raw_os_error() else {
+        eprintln!("last_os_error didn't return OS error");
+        _exit(101);
+    };
+
+    expect_no_panic(
+        err_tx.write_all(&i32::to_ne_bytes(err)),
+        "failed to write error code",
+    );
+    _exit(1);
 }
