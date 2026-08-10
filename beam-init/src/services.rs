@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{CStr, CString, NulError, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
+use std::ops::ControlFlow;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
@@ -11,7 +12,9 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, getpid, pid_t, signalfd_siginfo};
+use libc::{
+    SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, SIGTSTP, WNOHANG, getpid, pid_t, signalfd_siginfo,
+};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -20,7 +23,7 @@ use tokio_stream::StreamExt;
 use crate::api_impl::Credentials;
 use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
-use crate::signal_stream::OldSigmask;
+use crate::signal_stream::{self, OldSigmask};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
@@ -92,20 +95,30 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
+        monitor_pid: pid_t,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
+        monitor_pid: pid_t,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service was stopped, but will soon be started again as part of a restart.
-    Restarting { main_pid: pid_t, name: String },
+    Restarting {
+        main_pid: pid_t,
+        monitor_pid: pid_t,
+        name: String,
+    },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: pid_t, prune: bool },
+    Stopping {
+        main_pid: pid_t,
+        monitor_pid: pid_t,
+        prune: bool,
+    },
 
     /// The service exited with the given exit status.
     Exited(ExitStatus),
@@ -189,14 +202,18 @@ impl ServiceManager {
                     return;
                 }
 
+                dbg!(pid, &self.services);
+
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid, .. } if main_pid == pid => {
+                        ServiceStatus::Running { monitor_pid, .. } if monitor_pid == pid => {
                             service.state.status = ServiceStatus::Exited(status);
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { main_pid, prune } if main_pid == pid => {
+                        ServiceStatus::Stopping {
+                            monitor_pid, prune, ..
+                        } if monitor_pid == pid => {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
@@ -207,7 +224,11 @@ impl ServiceManager {
 
                             break;
                         }
-                        ServiceStatus::Restarting { main_pid, ref name } if main_pid == pid => {
+                        ServiceStatus::Restarting {
+                            monitor_pid,
+                            ref name,
+                            ..
+                        } if monitor_pid == pid => {
                             let name = name.clone();
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
@@ -341,9 +362,7 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let mut pty = service
-            .config
-            .pty
+        let mut pty = (true || service.config.pty)
             .then(|| Pty::new(|fd| self.fdstore.add(fd)))
             .transpose()
             .map_err(|err| {
@@ -374,9 +393,10 @@ impl ServiceManager {
         };
 
         match spawn_service(old_sigmask, &service.config, sink) {
-            Ok(child_pid) => {
+            Ok((main_pid, monitor_pid)) => {
                 service.state.status = ServiceStatus::Running {
-                    main_pid: child_pid,
+                    main_pid,
+                    monitor_pid,
                     pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
@@ -416,12 +436,17 @@ impl ServiceManager {
             }
             ServiceStatus::Running {
                 main_pid,
+                monitor_pid,
                 ref mut pty,
             } => {
                 let pty = pty.take();
                 service.abort_liveness_probe();
                 kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid, pty };
+                service.state.status = ServiceStatus::Frozen {
+                    main_pid,
+                    monitor_pid,
+                    pty,
+                };
             }
         }
 
@@ -449,11 +474,16 @@ impl ServiceManager {
             }
             ServiceStatus::Frozen {
                 main_pid,
+                monitor_pid,
                 ref mut pty,
             } => {
                 let pty = pty.take();
                 kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid, pty };
+                service.state.status = ServiceStatus::Running {
+                    main_pid,
+                    monitor_pid,
+                    pty,
+                };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -481,18 +511,36 @@ impl ServiceManager {
             }
             ServiceStatus::Stopping {
                 main_pid,
+                monitor_pid,
                 prune: old_prune,
             } => {
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
+                    monitor_pid,
                     prune: prune || old_prune,
                 };
             }
-            ServiceStatus::Running { main_pid, .. }
-            | ServiceStatus::Frozen { main_pid, .. }
-            | ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Running {
+                main_pid,
+                monitor_pid,
+                ..
+            }
+            | ServiceStatus::Frozen {
+                main_pid,
+                monitor_pid,
+                ..
+            }
+            | ServiceStatus::Restarting {
+                main_pid,
+                monitor_pid,
+                ..
+            } => {
                 service.abort_liveness_probe();
-                service.state.status = ServiceStatus::Stopping { main_pid, prune };
+                service.state.status = ServiceStatus::Stopping {
+                    main_pid,
+                    monitor_pid,
+                    prune,
+                };
                 kill_process_group(main_pid, SIGTERM).expect("process to exist");
             }
         }
@@ -513,10 +561,20 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid, .. } | ServiceStatus::Frozen { main_pid, .. } => {
+            ServiceStatus::Running {
+                main_pid,
+                monitor_pid,
+                ..
+            }
+            | ServiceStatus::Frozen {
+                main_pid,
+                monitor_pid,
+                ..
+            } => {
                 service.abort_liveness_probe();
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,
+                    monitor_pid,
                     name: name.to_owned(),
                 };
                 kill_process_group(main_pid, SIGTERM).expect("process to exist");
@@ -543,13 +601,24 @@ impl ServiceManager {
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid, prune: _ } => {
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
+            ServiceStatus::Stopping {
+                main_pid,
+                monitor_pid,
+                prune: _,
+            } => {
+                dbg!(main_pid, monitor_pid);
+                dbg!(kill_process_group(main_pid, SIGKILL));
+                std::thread::sleep_ms(1000000);
             }
-            ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Restarting {
+                main_pid,
+                monitor_pid,
+                ..
+            } => {
                 // Prevent the restart, only stop this service.
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
+                    monitor_pid,
                     prune: false,
                 };
 
@@ -671,7 +740,11 @@ fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
     }
 }
 
-fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
+fn spawn_service(
+    old_sigmask: OldSigmask,
+    config: &ServiceConfig,
+    sink: Sink,
+) -> io::Result<(pid_t, pid_t)> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -702,7 +775,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
             sink.set_stdioe();
 
-            let child_pid = expect_no_panic(
+            let main_pid = expect_no_panic(
                 unsafe_fork!({
                     // Create a new process group led by this process.
                     // Uses the current PID as the PGID of the new process group.
@@ -718,14 +791,22 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             );
             drop(err_tx);
 
-            let service_pid = if has_ctty { getpid() } else { child_pid };
+            let monitor_pid = if has_ctty { getpid() } else { main_pid };
             expect_no_panic(
-                pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
-                "failed to write pid",
+                pid_tx.write_all(&pid_t::to_ne_bytes(main_pid)),
+                "failed to write main pid",
+            );
+            expect_no_panic(
+                pid_tx.write_all(&pid_t::to_ne_bytes(monitor_pid)),
+                "failed to write monitor pid",
             );
 
             if has_ctty {
-                let (_pid, status) = expect_no_panic(waitpid(child_pid, 0), "failed to `waitpid");
+                // let _a = signal_stream::init(&[SIGTERM, SIGTSTP, SIGCONT], |siginfo| async {
+                //     ControlFlow::Continue(())
+                // });
+
+                let (_pid, status) = expect_no_panic(waitpid(main_pid, 0), "failed to `waitpid");
                 if let Some(code) = status.code() {
                     _exit(code);
                 } else if let Some(signal) = status.signal() {
@@ -743,9 +824,14 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-            let mut child_pid = [0; size_of::<pid_t>()];
-            pid_rx.read_exact(&mut child_pid)?;
-            Ok(pid_t::from_ne_bytes(child_pid))
+            let mut main_pid = [0; size_of::<pid_t>()];
+            pid_rx.read_exact(&mut main_pid)?;
+            let mut monitor_pid = [0; size_of::<pid_t>()];
+            pid_rx.read_exact(&mut monitor_pid)?;
+            Ok((
+                pid_t::from_ne_bytes(main_pid),
+                pid_t::from_ne_bytes(monitor_pid),
+            ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
