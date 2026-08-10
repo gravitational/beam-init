@@ -1,5 +1,6 @@
 #![deny(clippy::unwrap_used)]
 
+use std::ops::ControlFlow;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::LazyLock;
 use std::{env, process};
@@ -83,8 +84,18 @@ async fn main() {
         .expect("channel should be empty");
 
     // Listen for SIGCHLD signals
-    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
-        .expect("failed to initialize the signal stream");
+    let tx_event2 = tx_event.clone();
+    let old_sigmask = signal_stream::init(&[SIGCHLD], move |siginfo| {
+        let tx_event3 = tx_event2.clone();
+        async move {
+            if tx_event3.send(Event::Signal(siginfo)).await.is_err() {
+                ControlFlow::Break(()) // Main event loop has finished
+            } else {
+                ControlFlow::Continue(())
+            }
+        }
+    })
+    .expect("failed to initialize the signal stream");
 
     let fdstore = if cfg!(feature = "unstable-pty") {
         fdstore::FdStore::bind_socket().expect("failed to bind fdstore socket")

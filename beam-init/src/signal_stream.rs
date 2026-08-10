@@ -2,18 +2,20 @@ use std::ffi::c_int;
 use std::fs::File;
 use std::io::{self, Read};
 use std::mem;
+use std::ops::ControlFlow;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use libc::{SFD_CLOEXEC, SFD_NONBLOCK, signalfd, signalfd_siginfo};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
-use tokio::sync::mpsc;
 
-use crate::Event;
 use beam_init::system::cerr;
 use beam_init::system::signal_set::SignalSet;
 
-pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
+pub fn init<Fut: Future<Output = ControlFlow<()>> + Send>(
+    signals: &[c_int],
+    mut callback: impl FnMut(signalfd_siginfo) -> Fut + Send + 'static,
+) -> io::Result<OldSigmask> {
     let mut signal_set = SignalSet::empty()?;
     for &signum in signals {
         signal_set.add(signum)?;
@@ -42,8 +44,9 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
             // pointers, nor does `[u8; _]`. And `signalfd_siginfo` doesn't
             // have any private fields with invariants.
             let siginfo = unsafe { mem::transmute::<[u8; _], signalfd_siginfo>(siginfo) };
-            if tx_event.send(Event::Signal(siginfo)).await.is_err() {
-                return; // Main event loop has finished
+            match callback(siginfo).await {
+                ControlFlow::Continue(()) => {}
+                ControlFlow::Break(()) => return,
             }
         }
     });
