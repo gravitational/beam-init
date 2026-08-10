@@ -91,6 +91,7 @@ impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> fo
 }
 
 pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+    let _ = std::fs::remove_file(API_SOCKET_PATH);
     let socket = UnixListener::bind(API_SOCKET_PATH)?;
 
     // Allow all users to read from/write to this socket.

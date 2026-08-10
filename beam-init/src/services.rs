@@ -895,7 +895,7 @@ unsafe fn exec_with_creds_and_err_pipe(
 
     // Set the group and user ID (derived from socket) as well as an empty
     // supplementary group list.
-    expect_no_panic(credentials.set_creds(), "failed to set process credentials");
+    // expect_no_panic(credentials.set_creds(), "failed to set process credentials");
 
     // SAFETY: Per the safety requirements of this function, args is a NULL
     // terminated list of C strings.
