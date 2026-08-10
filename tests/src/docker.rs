@@ -8,17 +8,20 @@ use std::sync::{LazyLock, Mutex};
 static IMAGE_MAP: LazyLock<Mutex<HashMap<PathBuf, Image>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
 #[derive(Clone, Debug)]
 pub struct Image {
     tag: String,
 }
 
 impl Image {
-    pub fn build(dockerfile: impl AsRef<Path>, context: impl AsRef<Path>) -> Self {
-        let dockerfile = dockerfile.as_ref();
+    pub fn build(dockerfile: impl AsRef<Path>) -> Self {
+        let workspace_root = PathBuf::from(MANIFEST_DIR).join("..");
+        let dockerfile = workspace_root.join(dockerfile);
         let mut image_map = IMAGE_MAP.lock().unwrap();
 
-        if let Some(image) = image_map.get(dockerfile) {
+        if let Some(image) = image_map.get(&dockerfile) {
             return image.clone();
         }
 
@@ -32,8 +35,8 @@ impl Image {
             .arg("-t")
             .arg(&tag)
             .arg("-f")
-            .arg(dockerfile)
-            .arg(context.as_ref())
+            .arg(&dockerfile)
+            .arg(workspace_root)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .output()
@@ -42,11 +45,14 @@ impl Image {
         assert!(output.status.success());
 
         let image = Image { tag };
-        image_map.insert(dockerfile.to_owned(), image.clone());
+        image_map.insert(dockerfile, image.clone());
         image
     }
 
-    pub fn run(&self, script_path: &str) -> Container {
+    pub fn run(&self, script: &str) -> Container {
+        let script_path = PathBuf::from(MANIFEST_DIR).join("tests").join(script);
+        let script_path = script_path.to_str().unwrap();
+
         let mut cmd = Command::new("docker");
 
         cmd.arg("run").arg("-i").arg("--rm");
