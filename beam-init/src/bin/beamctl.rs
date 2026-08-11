@@ -1,114 +1,24 @@
-use std::collections::BTreeMap;
+use std::process;
 use std::time::Duration;
-use std::{fs, process};
 
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
-use reqwest::Method;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use beam_init_api::Probe;
+use beam_init_client::blocking::Client;
 
 #[cfg(feature = "unstable-pty")]
 mod terminal;
 
-struct Client {
-    client: reqwest::blocking::Client,
-}
-
-impl Client {
-    fn new_local() -> Self {
-        if !fs::exists(beam_init_api::API_SOCKET_PATH).unwrap_or(false) {
-            eprintln!("error: {} doesn't exist.", beam_init_api::API_SOCKET_PATH);
-            eprintln!(
-                "hint: beamctl only works inside containers that use beam-init as init process",
-            );
-            process::exit(1);
-        }
-
-        let client = reqwest::blocking::ClientBuilder::new()
-            .unix_socket(beam_init_api::API_SOCKET_PATH)
-            .build()
-            .unwrap_or_else(|err| {
-                eprintln!("Failed to initialize HTTP client: {err}");
-                process::exit(1);
-            });
-
-        Client { client }
-    }
-
-    fn request(&self, method: Method, path: &str) -> reqwest::blocking::RequestBuilder {
-        debug_assert!(path.starts_with('/'));
-        self.client
-            .request(method, format!("http://beam-init{path}"))
-    }
-
-    fn send(req: reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response, Error> {
-        let resp = req
-            .send()
-            .map_err(|error| Error::Internal { error, body: None })?;
-
-        if let Err(error) = resp.error_for_status_ref() {
-            let body = resp.text().unwrap_or_else(|err| err.to_string());
-
-            if let Some(status) = error.status()
-                && status.is_client_error()
-            {
-                return Err(Error::User(body));
-            }
-
-            return Err(Error::Internal {
-                error,
-                body: Some(body),
-            });
-        }
-
-        Ok(resp)
-    }
-
-    fn get_raw(&self, path: &str) -> Result<reqwest::blocking::Response, Error> {
-        Self::send(self.request(Method::GET, path))
-    }
-
-    fn get<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
-        self.get_raw(path)?
-            .json()
-            .map_err(|error| Error::Internal { error, body: None })
-    }
-
-    fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> Result<U, Error> {
-        Self::send(self.request(Method::POST, path).json(&body))?
-            .json()
-            .map_err(|error| Error::Internal { error, body: None })
-    }
-
-    fn delete<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
-        Self::send(self.request(Method::DELETE, path))?
-            .json()
-            .map_err(|error| Error::Internal { error, body: None })
-    }
-}
-
-enum Error {
-    User(String),
-    Internal {
-        error: reqwest::Error,
-        body: Option<String>,
-    },
-}
-
-fn show_error_and_exit<T>(err: Error) -> T {
+fn show_error_and_exit<T>(err: beam_init_client::Error) -> T {
     match err {
-        Error::User(err) => eprintln!("{err}"),
-        Error::Internal { error, body } => {
-            let path = error.url().map_or_else(|| "", |url| url.path()).to_owned();
-            if let Some(body) = body {
-                eprintln!("{} for {path} with body:\n{body}", error.without_url())
-            } else {
-                eprintln!("{} for {path}", error.without_url())
-            }
+        beam_init_client::Error::Response { status, body } if status.is_client_error() => {
+            eprintln!("{body}")
         }
+        beam_init_client::Error::SocketNotFound => eprintln!(
+            "{err}\nhint: beamctl only works inside containers that use beam-init as init process"
+        ),
+        _ => eprintln!("{err}"),
     }
 
     process::exit(1);
@@ -253,7 +163,7 @@ fn parse_duration_seconds(s: &str) -> Result<Duration, std::num::ParseIntError> 
 fn main() {
     let args = Cli::parse();
 
-    let client = Client::new_local();
+    let client = Client::new().unwrap_or_else(show_error_and_exit);
 
     match args.command {
         Command::Start {
@@ -266,9 +176,9 @@ fn main() {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
-            let _resp: beam_init_api::CreateService = client
-                .post(
-                    &format!("/service/{}", name),
+            let _resp = client
+                .create_service(
+                    &name,
                     beam_init_api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
@@ -287,45 +197,44 @@ fn main() {
         Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
 
-            let _resp: () = if prune {
-                client
-                    .delete(&format!("/service/{}", name))
-                    .unwrap_or_else(show_error_and_exit)
-            } else {
-                client
-                    .post(&format!("/service/{}/stop", name), name)
-                    .unwrap_or_else(show_error_and_exit)
-            };
+            client
+                .stop_service(&name, prune)
+                .unwrap_or_else(show_error_and_exit)
         }
         Command::Restart { name } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
-                .post(&format!("/service/{}/restart", name), name)
+                .restart_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Freeze { name } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
-                .post(&format!("/service/{}/freeze", name), name)
+                .freeze_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Thaw { name } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
-                .post(&format!("/service/{}/thaw", name), name)
+                .thaw_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Logs { name, follow } => {
             let name = prefix_match(&client, name);
-            let mut resp = client
-                .get_raw(&format!("/service/{name}/logs?follow={follow}"))
-                .unwrap_or_else(show_error_and_exit);
-            std::io::copy(&mut resp, &mut std::io::stdout()).unwrap();
+            if follow {
+                let mut resp = client
+                    .follow_logs(&name)
+                    .unwrap_or_else(show_error_and_exit);
+                std::io::copy(&mut resp, &mut std::io::stdout()).unwrap();
+            } else {
+                let logs = client.logs(&name).unwrap_or_else(show_error_and_exit);
+                print!("{logs}");
+            }
         }
         Command::Show { name } => {
             let name = prefix_match(&client, name);
-            let service: beam_init_api::Service = client
-                .post(&format!("/service/{}/show", name), &name)
+            let service = client
+                .show_service(&name)
                 .unwrap_or_else(show_error_and_exit);
 
             if args.json {
@@ -340,8 +249,7 @@ fn main() {
             }
         }
         Command::List => {
-            let services: BTreeMap<String, beam_init_api::ServiceStatus> =
-                client.get("/services").unwrap_or_else(show_error_and_exit);
+            let services = client.list_services().unwrap_or_else(show_error_and_exit);
 
             if args.json {
                 serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
@@ -368,8 +276,8 @@ fn main() {
 /// Attach to the given service
 #[cfg(feature = "unstable-pty")]
 fn attach(client: Client, name: String) {
-    let service: beam_init_api::Service = client
-        .post(&format!("/service/{}/show", name), &name)
+    let service = client
+        .show_service(&name)
         .unwrap_or_else(show_error_and_exit);
 
     let (pid, pty) = match service.status {
@@ -380,8 +288,8 @@ fn attach(client: Client, name: String) {
                     (main_pid, fd)
                 } else {
                     // We raced with the process exiting
-                    let service: beam_init_api::Service = client
-                        .post(&format!("/service/{}/show", name), &name)
+                    let service = client
+                        .show_service(&name)
                         .unwrap_or_else(show_error_and_exit);
                     println!("could not attach to {name} ({})", service.status);
                     return;
@@ -405,9 +313,9 @@ fn attach(client: Client, name: String) {
         println!("pty error for service {name} ({})", err);
     } else {
         // Retrieve the new status, which could have changed.
-        let client = Client::new_local();
-        let service: beam_init_api::Service = client
-            .post(&format!("/service/{}/show", name), &name)
+        let client = Client::new().unwrap_or_else(show_error_and_exit);
+        let service = client
+            .show_service(&name)
             .unwrap_or_else(show_error_and_exit);
 
         println!("detached from {name} ({})", service.status);
@@ -434,8 +342,7 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
 /// As a userfriendliness feature, allow the user to match a service by only
 /// matching a prefix instead of the full service name.
 fn prefix_match(client: &Client, name: String) -> String {
-    let mut services: BTreeMap<String, beam_init_api::ServiceStatus> =
-        client.get("/services").unwrap_or_else(show_error_and_exit);
+    let mut services = client.list_services().unwrap_or_else(show_error_and_exit);
 
     let mut service_names = services
         .split_off(&name)
