@@ -49,7 +49,7 @@ impl Image {
         image
     }
 
-    pub fn run(&self, script: &str) -> Container {
+    pub fn run_with_mounts(&self, script: &str, mounts: &[(&str, &str)]) -> Container {
         let script_path = PathBuf::from(MANIFEST_DIR).join("tests").join(script);
         let script_path = script_path.to_str().unwrap();
 
@@ -58,12 +58,20 @@ impl Image {
         cmd.arg("run").arg("-i").arg("--rm");
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
+        for (src, dst) in mounts {
+            let src = PathBuf::from(MANIFEST_DIR).join(src);
+            cmd.arg("-v").arg(format!("{}:{dst}:ro", src.display()));
+        }
         cmd.arg(&self.tag).arg("python3").arg("/mnt/script.py");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         Container {
             child: cmd.spawn().unwrap(),
         }
+    }
+
+    pub fn run(&self, script: &str) -> Container {
+        self.run_with_mounts(script, &[])
     }
 }
 

@@ -130,3 +130,13 @@ fn pty_attach_race() {
         .run("pty_attach_race.py")
         .wait();
 }
+
+#[test]
+fn autostart_service() {
+    Image::build("test.Dockerfile")
+        .run_with_mounts(
+            "autostart_service.py",
+            &[("fixtures/autostart", "/etc/beam-init/svc/autostart")],
+        )
+        .wait();
+}
