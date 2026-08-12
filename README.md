@@ -53,6 +53,10 @@ beamctl start \
   -- /usr/local/bin/my-app --listen "0.0.0.0:8080"
 ```
 
+### Autostart
+
+Services can also be autostarted by placing the executable at `/etc/beam-init/svc/<service-name>/run`
+
 ## Testing
 
 > [!NOTE]

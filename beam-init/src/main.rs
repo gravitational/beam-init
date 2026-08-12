@@ -24,6 +24,8 @@ mod signal_stream;
 static DEBUG_LOGS: LazyLock<bool> =
     LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
 
+const AUTOSTART_DIR: &str = "/etc/beam-init/svc";
+
 enum Event {
     Command {
         command: api_impl::Command,
@@ -71,6 +73,14 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
+    let autostart_svcs = match services::get_autostart_events(AUTOSTART_DIR) {
+        Ok(svcs) => svcs,
+        Err(e) => {
+            eprintln!("failed to get autostart services: {e}");
+            Vec::new()
+        }
+    };
+
     let fdstore = if cfg!(feature = "unstable-pty") {
         fdstore::FdStore::bind_socket().expect("failed to bind fdstore socket")
     } else {
@@ -80,6 +90,10 @@ async fn main() {
     // Listen for API commands
     api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
 
+    tokio::task::spawn(services::autostart_services(
+        tx_event.clone(),
+        autostart_svcs,
+    ));
     let mut service_manager = ServiceManager::new(old_sigmask, tx_event, fdstore);
     loop {
         match rx_event

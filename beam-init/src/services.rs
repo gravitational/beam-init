@@ -3,6 +3,7 @@ use std::collections::btree_map::Entry;
 use std::ffi::{CString, NulError, c_int, c_uint};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::Path;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -16,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
-use crate::api_impl::Credentials;
+use crate::api_impl::{Command, Credentials};
 use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
@@ -24,7 +25,7 @@ use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
 use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
-use beam_init_api::Probe;
+use beam_init_api::{CreateService, Probe};
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -770,5 +771,158 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(child_pid),
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
+    }
+}
+
+pub(crate) async fn autostart_services(tx: mpsc::Sender<Event>, services: Vec<Event>) {
+    for svc in services {
+        if tx.send(svc).await.is_err() {
+            return;
+        }
+    }
+}
+
+pub(crate) fn get_autostart_events(dir: impl AsRef<Path>) -> Result<Vec<Event>, io::Error> {
+    let dir = std::fs::read_dir(dir)?;
+    Ok(dir
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let svc_dir = entry.path();
+            let run = svc_dir.join("run");
+
+            if !run.is_file() {
+                eprintln!("run not found in {}", svc_dir.display());
+                return None;
+            }
+
+            let name = svc_dir.file_name()?.to_str()?.to_string();
+            let run = run.to_str()?.to_string();
+            Some((name, run))
+        })
+        .map(|(name, cmd)| Event::Command {
+            command: Command::CreateService {
+                name,
+                service: CreateService {
+                    cmd,
+                    args: Vec::new(),
+                    liveness: None,
+                    pty: false,
+                },
+            },
+            tx: tokio::sync::oneshot::channel().0,
+            credentials: Credentials::root(),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> io::Result<Self> {
+            let path = std::env::temp_dir().join(format!("beam-init-test-{name}"));
+            let _ = fs::remove_dir_all(&path);
+
+            fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn create_file(&self, relative_path: &str) -> io::Result<PathBuf> {
+            let path = self.0.join(relative_path);
+            let parent = path
+                .parent()
+                .expect("relative file path should have a parent");
+
+            fs::create_dir_all(parent)?;
+            fs::File::create_new(&path)?;
+            Ok(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn discovers_service_run_files() -> io::Result<()> {
+        let temp = TestDir::new("discovers-service-run-files")?;
+
+        let regular_run = temp.create_file("regular/run")?;
+        let symlink_run = temp.path().join("symlink/run");
+
+        let target = temp.create_file("actual-run")?;
+        fs::create_dir(temp.path().join("symlink"))?;
+        std::os::unix::fs::symlink(target, &symlink_run)?;
+
+        temp.create_file("ignored/not-run")?;
+
+        let mut actual: Vec<CreateServiceEventParts> = get_autostart_events(temp.path())?
+            .into_iter()
+            .map(CreateServiceEventParts::try_from)
+            .collect::<Result<_, _>>()?;
+
+        let mut expected = vec![
+            CreateServiceEventParts {
+                name: "regular".to_owned(),
+                cmd: regular_run.to_string_lossy().into_owned(),
+            },
+            CreateServiceEventParts {
+                name: "symlink".to_owned(),
+                cmd: symlink_run.to_string_lossy().into_owned(),
+            },
+        ];
+
+        actual.sort();
+        expected.sort();
+
+        assert_eq!(actual, expected);
+
+        Ok(())
+    }
+
+    #[derive(Debug, PartialOrd, Ord, PartialEq, Eq)]
+    struct CreateServiceEventParts {
+        name: String,
+        cmd: String,
+    }
+    impl TryFrom<Event> for CreateServiceEventParts {
+        type Error = io::Error;
+
+        fn try_from(value: Event) -> Result<Self, Self::Error> {
+            let Event::Command {
+                command:
+                    Command::CreateService {
+                        name,
+                        service:
+                            CreateService {
+                                cmd,
+                                args: _,
+                                liveness: _,
+                                pty: _,
+                            },
+                    },
+                tx: _,
+                credentials: _,
+            } = value
+            else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "only create service events supported",
+                ));
+            };
+            Ok(Self { name, cmd })
+        }
     }
 }
