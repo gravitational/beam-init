@@ -7,7 +7,6 @@ use clap_complete::{Shell, generate};
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
-#[cfg(feature = "unstable-pty")]
 mod terminal;
 
 fn show_error_and_exit<T>(err: beam_init_client::Error) -> T {
@@ -42,7 +41,6 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
-        #[cfg(feature = "unstable-pty")]
         pty: bool,
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
@@ -89,7 +87,6 @@ enum Command {
         follow: bool,
     },
     /// Attach to the PTY of a running service
-    #[cfg(feature = "unstable-pty")]
     Attach {
         #[arg(index = 1)]
         name: String,
@@ -170,11 +167,8 @@ fn main() {
             name,
             command,
             liveness,
-            #[cfg(feature = "unstable-pty")]
             pty,
         } => {
-            #[cfg(not(feature = "unstable-pty"))]
-            let pty = false;
             let name = name.unwrap_or_else(gen_name);
             let _resp = client
                 .create_service(
@@ -189,7 +183,6 @@ fn main() {
                 .unwrap_or_else(show_error_and_exit);
             eprintln!("Started service {name}");
 
-            #[cfg(feature = "unstable-pty")]
             if pty {
                 attach(client, name);
             }
@@ -260,7 +253,6 @@ fn main() {
                 }
             }
         }
-        #[cfg(feature = "unstable-pty")]
         Command::Attach { name } => {
             let name = prefix_match(&client, name);
             attach(client, name);
@@ -274,7 +266,6 @@ fn main() {
 }
 
 /// Attach to the given service
-#[cfg(feature = "unstable-pty")]
 fn attach(client: Client, name: String) {
     let service = client
         .show_service(&name)
@@ -326,7 +317,6 @@ fn attach(client: Client, name: String) {
 }
 
 /// Retrieve a file descriptor over the dedicated socket
-#[cfg(feature = "unstable-pty")]
 fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
