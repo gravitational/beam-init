@@ -11,12 +11,9 @@ and the container exits with the same status when that service exits.
 ```dockerfile
 COPY beam-init beamctl /usr/local/bin/
 
-ENV BEAM_INIT_ENABLE_API=1
 ENTRYPOINT ["/usr/local/bin/beam-init"]
 CMD ["/usr/local/bin/my-app", "--listen", "0.0.0.0:8080"]
 ```
-
-`BEAM_INIT_ENABLE_API=1` enables the local Unix socket used by `beamctl` to interact with `beam-init`.
 
 ```shell
 # Start and inspect an additional service.
