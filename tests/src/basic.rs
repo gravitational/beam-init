@@ -29,6 +29,13 @@ fn api_start_service() {
 }
 
 #[test]
+fn api_service_environment() {
+    Image::build("test.Dockerfile")
+        .run("api_service_environment.py")
+        .wait();
+}
+
+#[test]
 fn api_stop_service() {
     Image::build("test.Dockerfile")
         .run("api_stop_service.py")
