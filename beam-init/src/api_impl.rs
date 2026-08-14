@@ -387,6 +387,7 @@ pub async fn handle_api_command(
             let CreateService {
                 cmd,
                 args,
+                env,
                 liveness,
                 pty,
             } = &service;
@@ -396,6 +397,7 @@ pub async fn handle_api_command(
                 services::ServiceConfig {
                     cmd: cmd.clone(),
                     args: args.clone(),
+                    env: env.clone(),
                     liveness: liveness.clone(),
                     pty: *pty,
                     credentials,
