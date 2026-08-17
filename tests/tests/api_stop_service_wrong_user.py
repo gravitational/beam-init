@@ -4,7 +4,7 @@ import time
 
 import psutil
 
-# Two distinct non-root users. 
+# Two distinct non-root users.
 UID_A, GID_A = 1001, 1002
 UID_B, GID_B = 1003, 1004
 
