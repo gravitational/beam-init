@@ -67,7 +67,9 @@ impl Client {
     }
 
     /// Returns the current status of every registered service, keyed by name.
-    pub fn list_services(&self) -> Result<BTreeMap<String, ServiceStatus>, Error> {
+    pub fn list_services(
+        &self,
+    ) -> Result<BTreeMap<String, (Option<String>, ServiceStatus)>, Error> {
         self.get("/services")
     }
 

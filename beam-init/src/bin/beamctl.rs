@@ -289,8 +289,15 @@ fn main() {
                 serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
                 println!();
             } else {
-                for (name, status) in services {
-                    println!("{name} ({status})")
+                for (name, (tag, status)) in services {
+                    println!(
+                        "{name} ({status}){}",
+                        if let Some(tag) = tag {
+                            format!(" [{tag}]")
+                        } else {
+                            String::new()
+                        }
+                    )
                 }
             }
         }

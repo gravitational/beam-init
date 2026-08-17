@@ -587,10 +587,12 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn list_services(&self) -> impl Iterator<Item = (&String, &ServiceStatus)> {
+    pub fn list_services(
+        &self,
+    ) -> impl Iterator<Item = (&String, Option<&String>, &ServiceStatus)> {
         self.services
             .iter()
-            .map(|(name, service)| (name, &service.state.status))
+            .map(|(name, service)| (name, service.config.tag.as_ref(), &service.state.status))
     }
 }
 

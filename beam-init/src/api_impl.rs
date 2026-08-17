@@ -435,10 +435,11 @@ pub async fn handle_api_command(
             Ok(Json(api_service).into_response())
         }
         Command::ListServices => {
-            let services: BTreeMap<String, beam_init_api::ServiceStatus> = service_manager
-                .list_services()
-                .map(|(name, status)| (name.to_string(), status.into()))
-                .collect();
+            let services: BTreeMap<String, (Option<String>, beam_init_api::ServiceStatus)> =
+                service_manager
+                    .list_services()
+                    .map(|(name, tag, status)| (name.to_string(), (tag.cloned(), status.into())))
+                    .collect();
 
             Ok(Json(services).into_response())
         }
