@@ -225,29 +225,32 @@ fn main() {
             }
         }
         Command::Stop { name, tag, prune } => {
-            let name = prefix_match(&client, name);
-
-            client
-                .stop_service(&name, prune)
-                .unwrap_or_else(show_error_and_exit)
+            for name in service_match(&client, name, tag) {
+                client
+                    .stop_service(&name, prune)
+                    .unwrap_or_else(show_error_and_exit)
+            }
         }
         Command::Restart { name, tag } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .restart_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+            for name in service_match(&client, name, tag) {
+                let _resp: () = client
+                    .restart_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
         Command::Freeze { name, tag } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .freeze_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+            for name in service_match(&client, name, tag) {
+                let _resp: () = client
+                    .freeze_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
         Command::Thaw { name, tag } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .thaw_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+            for name in service_match(&client, name, tag) {
+                let _resp: () = client
+                    .thaw_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
         Command::Logs { name, follow } => {
             let name = prefix_match(&client, name);
@@ -262,20 +265,21 @@ fn main() {
             }
         }
         Command::Show { name, tag } => {
-            let name = prefix_match(&client, name);
-            let service = client
-                .show_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+            for name in service_match(&client, name, tag) {
+                let service = client
+                    .show_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
 
-            if args.json {
-                serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
-                println!();
-            } else {
-                // Handle formatting if there are no arguments.
-                let mut args = service.args;
-                args.insert(0, service.cmd);
+                if args.json {
+                    serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
+                    println!();
+                } else {
+                    // Handle formatting if there are no arguments.
+                    let mut args = service.args;
+                    args.insert(0, service.cmd);
 
-                println!("{name} ({}): {}", service.status, args.join(" "));
+                    println!("{name} ({}): {}", service.status, args.join(" "));
+                }
             }
         }
         Command::List => {
@@ -376,6 +380,19 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
 
 /// As a userfriendliness feature, allow the user to match a service by only
 /// matching a prefix instead of the full service name.
+fn service_match(
+    client: &Client,
+    name: String,
+    match_on_tag: bool,
+) -> Box<dyn Iterator<Item = String>> {
+    if match_on_tag {
+        todo!()
+    } else {
+        let name = prefix_match(client, name);
+        Box::new(std::iter::once(name))
+    }
+}
+
 fn prefix_match(client: &Client, name: String) -> String {
     let mut services = client.list_services().unwrap_or_else(show_error_and_exit);
 
