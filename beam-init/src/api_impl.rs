@@ -310,16 +310,24 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
-                ServiceStatus::Running {
-                    main_pid,
-                    pty: pty
-                        .as_ref()
-                        .map(|inner| (inner.master.id(), inner.path.clone())),
-                }
-            }
-            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
+            crate::services::ServiceStatus::Running {
                 main_pid,
+                ref tag,
+                ref pty,
+            } => ServiceStatus::Running {
+                main_pid,
+                tag: tag.clone(),
+                pty: pty
+                    .as_ref()
+                    .map(|inner| (inner.master.id(), inner.path.clone())),
+            },
+            crate::services::ServiceStatus::Frozen {
+                main_pid,
+                ref tag,
+                ref pty,
+            } => ServiceStatus::Frozen {
+                main_pid,
+                tag: tag.clone(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
@@ -435,11 +443,10 @@ pub async fn handle_api_command(
             Ok(Json(api_service).into_response())
         }
         Command::ListServices => {
-            let services: BTreeMap<String, (Option<String>, beam_init_api::ServiceStatus)> =
-                service_manager
-                    .list_services()
-                    .map(|(name, tag, status)| (name.to_string(), (tag.cloned(), status.into())))
-                    .collect();
+            let services: BTreeMap<String, beam_init_api::ServiceStatus> = service_manager
+                .list_services()
+                .map(|(name, status)| (name.to_string(), status.into()))
+                .collect();
 
             Ok(Json(services).into_response())
         }

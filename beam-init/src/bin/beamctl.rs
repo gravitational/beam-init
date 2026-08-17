@@ -289,15 +289,8 @@ fn main() {
                 serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
                 println!();
             } else {
-                for (name, (tag, status)) in services {
-                    println!(
-                        "{name} ({status}){}",
-                        if let Some(tag) = tag {
-                            format!(" [{tag}]")
-                        } else {
-                            String::new()
-                        }
-                    )
+                for (name, status) in services {
+                    println!("{name} ({status})");
                 }
             }
         }
@@ -327,8 +320,12 @@ fn attach(client: Client, name: String) {
         .unwrap_or_else(show_error_and_exit);
 
     let (pid, pty) = match service.status {
-        beam_init_api::ServiceStatus::Running { ref pty, main_pid }
-        | beam_init_api::ServiceStatus::Frozen { ref pty, main_pid } => {
+        beam_init_api::ServiceStatus::Running {
+            ref pty, main_pid, ..
+        }
+        | beam_init_api::ServiceStatus::Frozen {
+            ref pty, main_pid, ..
+        } => {
             if let Some((index, _)) = pty {
                 if let Some(fd) = get_fd_from_store(*index) {
                     (main_pid, fd)

@@ -82,6 +82,9 @@ pub enum ServiceStatus {
         /// Process ID of the service's main process.
         main_pid: pid_t,
 
+        /// Tag of the service
+        tag: Option<String>,
+
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
     },
@@ -90,6 +93,9 @@ pub enum ServiceStatus {
     Frozen {
         /// Process ID of the service's main process.
         main_pid: pid_t,
+
+        /// Tag of the service
+        tag: Option<String>,
 
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
@@ -139,15 +145,21 @@ impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServiceStatus::Stopped => f.write_str("stopped"),
-            ServiceStatus::Running { main_pid, pty } => {
+            ServiceStatus::Running { main_pid, tag, pty } => {
                 write!(f, "running PID={main_pid}")?;
+                if let Some(tag) = tag {
+                    write!(f, ", tag=[{tag}]")?;
+                }
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
                 Ok(())
             }
-            ServiceStatus::Frozen { main_pid, pty } => {
+            ServiceStatus::Frozen { main_pid, tag, pty } => {
                 write!(f, "frozen PID={main_pid}")?;
+                if let Some(tag) = tag {
+                    write!(f, ", tag=[{tag}]")?;
+                }
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }

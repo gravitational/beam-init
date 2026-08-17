@@ -24,6 +24,7 @@ use crate::Error;
 ///     CreateService {
 ///         cmd: "/usr/bin/sleep".to_owned(),
 ///         args: vec!["infinity".to_owned()],
+///         tag: Some("examples".to_owned()),
 ///         liveness: None,
 ///         pty: false,
 ///     },
@@ -67,9 +68,7 @@ impl Client {
     }
 
     /// Returns the current status of every registered service, keyed by name.
-    pub fn list_services(
-        &self,
-    ) -> Result<BTreeMap<String, (Option<String>, ServiceStatus)>, Error> {
+    pub fn list_services(&self) -> Result<BTreeMap<String, ServiceStatus>, Error> {
         self.get("/services")
     }
 
