@@ -123,6 +123,15 @@ pub enum ServiceStatus {
     Error(String),
 }
 
+/// Version information for beam-init
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionResponse {
+    /// The version reported by beam-init
+    pub version: String,
+    /// The commit sha beam-init was compiled from
+    pub sha: String,
+}
+
 impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
