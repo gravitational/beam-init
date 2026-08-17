@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
+use std::ffi::{CStr, CString, NulError, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::pin;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, getpid, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -23,7 +23,9 @@ use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
-use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::system::{
+    _exit, cerr, close_range, getpid, kill_process_group, setpgid, setsid, waitpid,
+};
 use beam_init_api::Probe;
 
 pub struct ServiceManager {
@@ -693,9 +695,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // Uses the current PID as the PGID of the new process group.
             // Using only a new process group won't work as then bash will
             // hang if the container has a tty attached.
-            //
-            // SAFETY: setsid is safe to call.
-            expect_no_panic(cerr(libc::setsid()), "failed to setsid");
+            expect_no_panic(setsid(), "failed to setsid");
 
             let has_ctty = matches!(sink, Sink::PTY(_));
             sink.set_stdioe();
@@ -709,9 +709,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     unsafe_fork!({
                         // Create a new process group led by this process.
                         // Uses the current PID as the PGID of the new process group.
-                        //
-                        // SAFETY: setpgid is safe to call.
-                        expect_no_panic(cerr(libc::setpgid(0, 0)), "failed to `setpgid`");
+                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
                         // SAFETY: args is a NULL terminated list of C strings.
                         exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
@@ -732,7 +730,6 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 // child if it happened after the exec.
                 // FIXME add a persistent monitor process
 
-                // SAFETY: getpid is safe to call.
                 let service_pid = getpid();
                 expect_no_panic(
                     pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
@@ -808,16 +805,8 @@ unsafe fn exec_with_creds_and_err_pipe(
     mut err_tx: PipeWriter,
 ) -> ! {
     // Using raw syscall as musl doesn't have a close_range() wrapper.
-    // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
     expect_no_panic(
-        cerr(unsafe {
-            libc::syscall(
-                libc::SYS_close_range,
-                3,
-                c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
-            ) as c_int
-        }),
+        close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
         "failed to `close_range",
     );
 
