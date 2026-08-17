@@ -10,13 +10,8 @@ use crate::Event;
 use beam_init::system::signal_set::SignalSet;
 
 pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
-    let mut signal_set = SignalSet::empty()?;
-    for &signum in signals {
-        signal_set.add(signum)?;
-    }
-
+    let signal_set = SignalSet::new(signals)?;
     let mut rx = AsyncFd::new(SignalFd::new(&signal_set)?)?;
-
     let old_sigmask = signal_set.block()?;
 
     tokio::spawn(async move {

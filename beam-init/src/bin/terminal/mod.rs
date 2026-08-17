@@ -118,15 +118,9 @@ pub struct SignalFdRestore(SignalFd, SignalSet);
 
 impl SignalFdRestore {
     pub fn new(signals: &[libc::c_int]) -> io::Result<SignalFdRestore> {
-        let mut signal_set = SignalSet::empty()?;
-        for &signum in signals {
-            signal_set.add(signum)?;
-        }
-
+        let signal_set = SignalSet::new(signals)?;
         let file = SignalFd::new(&signal_set)?;
-
         let old_sigmask = signal_set.block()?;
-
         Ok(SignalFdRestore(file, old_sigmask))
     }
 
