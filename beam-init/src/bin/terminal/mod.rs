@@ -1,8 +1,8 @@
 use std::fs::File;
-use std::io::{self, Read};
-use std::mem;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::io;
+use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
+use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
 mod user_term;
@@ -22,7 +22,8 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
         return Err(err);
     }
 
-    let mut signals = SignalFd::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
+    let mut signals =
+        SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -113,52 +114,35 @@ fn terminated<T>(result: io::Result<T>) -> io::Result<bool> {
     }
 }
 
-pub struct SignalFd(File, SignalSet);
+pub struct SignalFdRestore(SignalFd, SignalSet);
 
-impl SignalFd {
-    pub fn new(signals: &[libc::c_int]) -> io::Result<SignalFd> {
+impl SignalFdRestore {
+    pub fn new(signals: &[libc::c_int]) -> io::Result<SignalFdRestore> {
         let mut signal_set = SignalSet::empty()?;
         for &signum in signals {
             signal_set.add(signum)?;
         }
 
-        use libc::{SFD_CLOEXEC, SFD_NONBLOCK};
-
-        // -1 indicates creating a new signalfd receiving the given signals.
-        // SAFETY: `signalfd` is passed a valid signal set pointer and returns an owned fd.
-        let fd = unsafe {
-            OwnedFd::from_raw_fd(cerr(libc::signalfd(
-                -1,
-                signal_set.as_ref(),
-                SFD_CLOEXEC | SFD_NONBLOCK,
-            ))?)
-        };
-
-        let file = File::from(fd);
+        let file = SignalFd::new(&signal_set)?;
 
         let old_sigmask = signal_set.block()?;
 
-        Ok(SignalFd(file, old_sigmask))
+        Ok(SignalFdRestore(file, old_sigmask))
     }
 
     pub fn read(&mut self) -> io::Result<libc::c_int> {
-        let mut siginfo = [0; size_of::<libc::signalfd_siginfo>()];
-        self.0.read_exact(&mut siginfo)?;
-        // SAFETY: `signalfd_siginfo` does not contain any padding or
-        // pointers, nor does `[u8; _]`. And `signalfd_siginfo` doesn't
-        // have any private fields with invariants.
-        let info = unsafe { mem::transmute::<[u8; _], libc::signalfd_siginfo>(siginfo) };
+        let info = self.0.read()?;
         Ok(info.ssi_signo.try_into().expect("signo to fit in c_int"))
     }
 }
 
-impl AsRawFd for SignalFd {
+impl AsRawFd for SignalFdRestore {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }
 }
 
-impl Drop for SignalFd {
+impl Drop for SignalFdRestore {
     fn drop(&mut self) {
         self.1.set_mask().expect("to restore signals");
     }

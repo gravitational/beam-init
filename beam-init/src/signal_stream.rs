@@ -1,16 +1,12 @@
 use std::ffi::c_int;
-use std::fs::File;
-use std::io::{self, Read};
-use std::mem;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::io;
 
-use libc::{SFD_CLOEXEC, SFD_NONBLOCK, signalfd, signalfd_siginfo};
+use beam_init::system::signalfd::SignalFd;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
 use crate::Event;
-use beam_init::system::cerr;
 use beam_init::system::signal_set::SignalSet;
 
 pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
@@ -19,29 +15,16 @@ pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldS
         signal_set.add(signum)?;
     }
 
-    // -1 indicates creating a new signalfd receiving the given signals.
-    // SAFETY: `signalfd` is passed a valid signal set pointer and returns an owned fd.
-    let rx = unsafe {
-        OwnedFd::from_raw_fd(cerr(signalfd(
-            -1,
-            signal_set.as_ref(),
-            SFD_CLOEXEC | SFD_NONBLOCK,
-        ))?)
-    };
-    let mut rx = AsyncFd::new(File::from(rx))?;
+    let mut rx = AsyncFd::new(SignalFd::new(&signal_set)?)?;
 
     let old_sigmask = signal_set.block()?;
 
     tokio::spawn(async move {
         loop {
-            let mut siginfo = [0; size_of::<signalfd_siginfo>()];
-            rx.async_io_mut(Interest::READABLE, |inner| inner.read_exact(&mut siginfo))
+            let siginfo = rx
+                .async_io_mut(Interest::READABLE, |inner| inner.read())
                 .await
                 .expect("failed to read signal from signalfd");
-            // SAFETY: `signalfd_siginfo` does not contain any padding or
-            // pointers, nor does `[u8; _]`. And `signalfd_siginfo` doesn't
-            // have any private fields with invariants.
-            let siginfo = unsafe { mem::transmute::<[u8; _], signalfd_siginfo>(siginfo) };
             if tx_event.send(Event::Signal(siginfo)).await.is_err() {
                 return; // Main event loop has finished
             }
