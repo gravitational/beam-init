@@ -28,6 +28,9 @@ pub struct CreateService {
 
     /// Whether to run the service with a controlling pseudoterminal.
     pub pty: bool,
+
+    /// Optional tag to add to a service
+    pub tag: Option<String>,
 }
 
 /// Configuration for an HTTP liveness probe.

@@ -389,6 +389,7 @@ pub async fn handle_api_command(
                 args,
                 liveness,
                 pty,
+                tag,
             } = &service;
 
             service_manager.create_service(

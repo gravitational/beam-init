@@ -71,6 +71,7 @@ async fn main() {
             args: args.collect(),
             liveness: None,
             pty: false,
+            tag: None,
         },
     };
     // The channel is empty, so sending always succeeds.

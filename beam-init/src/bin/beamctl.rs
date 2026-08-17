@@ -50,6 +50,9 @@ enum Command {
         /// Name of the service to create
         #[arg(long)]
         name: Option<String>,
+        /// Tag to associate this service with
+        #[arg(long)]
+        tag: Option<String>,
         #[arg(long)]
         #[cfg(feature = "unstable-pty")]
         pty: bool,
@@ -62,7 +65,9 @@ enum Command {
     Stop {
         #[arg(index = 1)]
         name: String,
-
+        /// Lookup service by tag
+        #[arg(long)]
+        tag: bool,
         /// Remove this service from the list of services.
         #[arg(long)]
         prune: bool,
@@ -71,21 +76,33 @@ enum Command {
     Restart {
         #[arg(index = 1)]
         name: String,
+        /// Lookup service by tag
+        #[arg(long)]
+        tag: bool,
     },
     /// Freeze all processes of a service
     Freeze {
         #[arg(index = 1)]
         name: String,
+        /// Lookup service by tag
+        #[arg(long)]
+        tag: bool,
     },
     /// Resume all processes of a service
     Thaw {
         #[arg(index = 1)]
         name: String,
+        /// Lookup service by tag
+        #[arg(long)]
+        tag: bool,
     },
     /// Show information about a service
     Show {
         #[arg(index = 1)]
         name: String,
+        /// Lookup service by tag
+        #[arg(long)]
+        tag: bool,
     },
     /// List all services
     List,
@@ -179,6 +196,7 @@ fn main() {
     match args.command {
         Command::Start {
             name,
+            tag,
             command,
             liveness,
             #[cfg(feature = "unstable-pty")]
@@ -195,6 +213,7 @@ fn main() {
                         args: command[1..].to_owned(),
                         liveness: liveness.map(Into::into),
                         pty,
+                        tag,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
@@ -205,26 +224,26 @@ fn main() {
                 attach(client, name);
             }
         }
-        Command::Stop { name, prune } => {
+        Command::Stop { name, tag, prune } => {
             let name = prefix_match(&client, name);
 
             client
                 .stop_service(&name, prune)
                 .unwrap_or_else(show_error_and_exit)
         }
-        Command::Restart { name } => {
+        Command::Restart { name, tag } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
                 .restart_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
-        Command::Freeze { name } => {
+        Command::Freeze { name, tag } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
                 .freeze_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
-        Command::Thaw { name } => {
+        Command::Thaw { name, tag } => {
             let name = prefix_match(&client, name);
             let _resp: () = client
                 .thaw_service(&name)
@@ -242,7 +261,7 @@ fn main() {
                 print!("{logs}");
             }
         }
-        Command::Show { name } => {
+        Command::Show { name, tag } => {
             let name = prefix_match(&client, name);
             let service = client
                 .show_service(&name)
