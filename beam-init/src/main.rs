@@ -48,6 +48,13 @@ enum Event {
 async fn main() {
     eprintln!("Starting beam-init");
 
+    // Mark ourself as child subreaper to allow testing outside of a container. This ensures we can
+    // act as reaper for all our (indirect) child processes without needing to be pid 1.
+    // Safety: This prctl can't violate memory safety.
+    unsafe {
+        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1);
+    }
+
     // FIXME what is a reasonable channel capacity?
     let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
 
