@@ -67,6 +67,7 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub tag: Option<String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,

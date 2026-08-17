@@ -400,6 +400,7 @@ pub async fn handle_api_command(
                     liveness: liveness.clone(),
                     pty: *pty,
                     credentials,
+                    tag: tag.clone(),
                 },
             )?;
             service_manager.start_service(credentials, &name, StartReason::User)?;
