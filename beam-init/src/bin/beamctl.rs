@@ -390,7 +390,23 @@ fn service_match(
     match_on_tag: bool,
 ) -> Box<dyn Iterator<Item = String>> {
     if match_on_tag {
-        todo!()
+        use beam_init_api::ServiceStatus;
+        let services = client.list_services().unwrap_or_else(show_error_and_exit);
+
+        let results = services
+            .into_iter()
+            .filter_map(move |(service_name, status)| {
+                if let ServiceStatus::Running { tag, .. } | ServiceStatus::Frozen { tag, .. } =
+                    status
+                    && tag.is_some_and(|tag| tag == name)
+                {
+                    Some(service_name)
+                } else {
+                    None
+                }
+            });
+
+        Box::new(results)
     } else {
         let name = prefix_match(client, name);
         Box::new(std::iter::once(name))
