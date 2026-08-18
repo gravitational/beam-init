@@ -213,14 +213,14 @@ fn write_labels(
         return Ok(());
     }
 
-    write!(f, "labels=[")?;
+    write!(f, ", labels=[")?;
     for representation in intersperse(
         ",",
         labels.iter().map(|(key, value)| format!("{key}={value}")),
     ) {
         write!(f, "{}", representation)?;
     }
-    write!(f, "labels=]")?;
+    write!(f, "]")?;
 
     Ok(())
 }
