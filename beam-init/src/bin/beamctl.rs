@@ -67,10 +67,9 @@ enum Command {
         #[arg(
             index = 1,
             required_unless_present("selector"),
-            conflicts_with("selector"),
-            default_value("")
+            conflicts_with("selector")
         )]
-        name: String,
+        name: Option<String>,
         /// Lookup service by selector
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
@@ -83,10 +82,9 @@ enum Command {
         #[arg(
             index = 1,
             required_unless_present("selector"),
-            conflicts_with("selector"),
-            default_value("")
+            conflicts_with("selector")
         )]
-        name: String,
+        name: Option<String>,
         /// Lookup service by selector
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
@@ -96,10 +94,9 @@ enum Command {
         #[arg(
             index = 1,
             required_unless_present("selector"),
-            conflicts_with("selector"),
-            default_value("")
+            conflicts_with("selector")
         )]
-        name: String,
+        name: Option<String>,
         /// Lookup service by selector
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
@@ -109,10 +106,9 @@ enum Command {
         #[arg(
             index = 1,
             required_unless_present("selector"),
-            conflicts_with("selector"),
-            default_value("")
+            conflicts_with("selector")
         )]
-        name: String,
+        name: Option<String>,
         /// Lookup service by selector
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
@@ -122,10 +118,9 @@ enum Command {
         #[arg(
             index = 1,
             required_unless_present("selector"),
-            conflicts_with("selector"),
-            default_value("")
+            conflicts_with("selector")
         )]
-        name: String,
+        name: Option<String>,
         /// Lookup service by selector
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
@@ -456,10 +451,11 @@ fn keys_match(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, Str
 /// Match services based on a prefix of the name or based on a tag selection
 fn service_match(
     client: &Client,
-    name: String,
+    name: Option<String>,
     selector: Vec<Label>,
 ) -> Box<dyn Iterator<Item = String>> {
     if !selector.is_empty() {
+        debug_assert!(name.is_none());
         let selector = BTreeMap::from_iter(selector);
 
         use beam_init_api::ServiceStatus;
@@ -481,7 +477,7 @@ fn service_match(
 
         Box::new(results)
     } else {
-        let name = prefix_match(client, name);
+        let name = prefix_match(client, name.expect("name to be present"));
         Box::new(std::iter::once(name))
     }
 }
