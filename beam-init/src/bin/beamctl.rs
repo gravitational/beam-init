@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::process;
 use std::time::Duration;
 
@@ -388,6 +389,14 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     fd
 }
 
+/// Checks whether all the values indexed by selector have the indicated values
+fn keys_match(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, String>) -> bool {
+    selector
+        .keys()
+        .filter_map(|k| labels.get(k))
+        .eq(selector.values())
+}
+
 /// Match services based on a prefix of the name or based on a tag selection
 fn service_match(
     client: &Client,
@@ -395,6 +404,9 @@ fn service_match(
     match_on_tag: bool,
 ) -> Box<dyn Iterator<Item = String>> {
     if match_on_tag {
+        //TEMPORARY
+        let selector: BTreeMap<String, String> = [("tag".to_string(), name)].into();
+
         use beam_init_api::ServiceStatus;
         let services = client.list_services().unwrap_or_else(show_error_and_exit);
 
@@ -404,8 +416,7 @@ fn service_match(
                 .filter_map(move |(service_name, status)| {
                     if let ServiceStatus::Running { labels, .. }
                     | ServiceStatus::Frozen { labels, .. } = status
-                    //FIXME
-                        && labels.get("tag").is_some_and(|tag| tag == &name)
+                        && keys_match(&selector, &labels)
                     {
                         Some(service_name)
                     } else {
