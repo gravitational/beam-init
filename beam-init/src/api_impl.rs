@@ -316,7 +316,8 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
                 ref pty,
             } => ServiceStatus::Running {
                 main_pid,
-                labels: labels.clone(),
+                //FIXME
+                labels: labels.get("tag").cloned(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
@@ -327,7 +328,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
                 ref pty,
             } => ServiceStatus::Frozen {
                 main_pid,
-                labels: labels.clone(),
+                labels: labels.get("tag").cloned(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),

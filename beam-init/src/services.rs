@@ -67,7 +67,7 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
-    pub labels: Option<String>,
+    pub labels: BTreeMap<String, String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,
@@ -90,14 +90,14 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
-        labels: Option<String>,
+        labels: BTreeMap<String, String>,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
-        labels: Option<String>,
+        labels: BTreeMap<String, String>,
         pty: Option<Pty<StoredFd>>,
     },
 

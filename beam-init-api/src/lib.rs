@@ -3,7 +3,7 @@
 //! The types in this crate define the JSON exchanged between beam-init and its
 //! clients.
 
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub struct CreateService {
     pub pty: bool,
 
     /// Labels attached to a service
-    pub labels: Option<String>,
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Configuration for an HTTP liveness probe.

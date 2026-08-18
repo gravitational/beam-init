@@ -205,6 +205,8 @@ fn main() {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
+            //FIXME
+            let labels = labels.into_iter().map(|x| ("tag".to_string(), x)).collect();
             let _resp = client
                 .create_service(
                     &name,
