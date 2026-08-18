@@ -25,6 +25,7 @@ use crate::Error;
 ///     CreateService {
 ///         cmd: "/usr/bin/sleep".to_owned(),
 ///         args: vec!["infinity".to_owned()],
+///         labels: [("field".to_string(), "value".to_string())].into(),
 ///         liveness: None,
 ///         pty: false,
 ///     },

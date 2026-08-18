@@ -69,6 +69,7 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub labels: BTreeMap<String, String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,
@@ -91,12 +92,14 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
+        labels: BTreeMap<String, String>,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
+        labels: BTreeMap<String, String>,
         pty: Option<Pty<StoredFd>>,
     },
 
@@ -372,10 +375,13 @@ impl ServiceManager {
             Sink::Log(log_writer)
         };
 
+        let labels = service.config.labels.clone();
+
         match spawn_service(old_sigmask, &service.config, sink) {
             Ok(child_pid) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
+                    labels,
                     pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
@@ -415,12 +421,18 @@ impl ServiceManager {
             }
             ServiceStatus::Running {
                 main_pid,
+                ref mut labels,
                 ref mut pty,
             } => {
+                let labels = std::mem::take(labels);
                 let pty = pty.take();
                 service.abort_liveness_probe();
                 kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid, pty };
+                service.state.status = ServiceStatus::Frozen {
+                    main_pid,
+                    labels,
+                    pty,
+                };
             }
         }
 
@@ -448,11 +460,17 @@ impl ServiceManager {
             }
             ServiceStatus::Frozen {
                 main_pid,
+                ref mut labels,
                 ref mut pty,
             } => {
+                let labels = std::mem::take(labels);
                 let pty = pty.take();
                 kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid, pty };
+                service.state.status = ServiceStatus::Running {
+                    main_pid,
+                    labels,
+                    pty,
+                };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }

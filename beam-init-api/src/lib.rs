@@ -3,7 +3,7 @@
 //! The types in this crate define the JSON exchanged between beam-init and its
 //! clients.
 
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,9 @@ pub struct CreateService {
 
     /// Whether to run the service with a controlling pseudoterminal.
     pub pty: bool,
+
+    /// Labels attached to a service
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Configuration for an HTTP liveness probe.
@@ -79,6 +82,9 @@ pub enum ServiceStatus {
         /// Process ID of the service's main process.
         main_pid: pid_t,
 
+        /// Labels of the service
+        labels: BTreeMap<String, String>,
+
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
     },
@@ -87,6 +93,9 @@ pub enum ServiceStatus {
     Frozen {
         /// Process ID of the service's main process.
         main_pid: pid_t,
+
+        /// Labels of the service
+        labels: BTreeMap<String, String>,
 
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
@@ -136,18 +145,28 @@ impl std::fmt::Display for ServiceStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ServiceStatus::Stopped => f.write_str("stopped"),
-            ServiceStatus::Running { main_pid, pty } => {
+            ServiceStatus::Running {
+                main_pid,
+                labels,
+                pty,
+            } => {
                 write!(f, "running PID={main_pid}")?;
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
+                write_labels(labels, f)?;
                 Ok(())
             }
-            ServiceStatus::Frozen { main_pid, pty } => {
+            ServiceStatus::Frozen {
+                main_pid,
+                labels,
+                pty,
+            } => {
                 write!(f, "frozen PID={main_pid}")?;
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
+                write_labels(labels, f)?;
                 Ok(())
             }
             ServiceStatus::Stopping { main_pid, prune } => {
@@ -166,6 +185,44 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Error(err) => write!(f, "failed to start with {}", err),
         }
     }
+}
+
+// https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
+fn intersperse<Sep, T>(sep: Sep, mut iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+where
+    Sep: Copy,
+    T: From<Sep>,
+{
+    let mut do_sep = false;
+    std::iter::from_fn(move || {
+        if do_sep {
+            do_sep = false;
+            Some(sep.into())
+        } else {
+            do_sep = true;
+            iter.next()
+        }
+    })
+}
+
+fn write_labels(
+    labels: &BTreeMap<String, String>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    if labels.is_empty() {
+        return Ok(());
+    }
+
+    write!(f, ", labels=[")?;
+    for representation in intersperse(
+        ",",
+        labels.iter().map(|(key, value)| format!("{key}={value}")),
+    ) {
+        write!(f, "{}", representation)?;
+    }
+    write!(f, "]")?;
+
+    Ok(())
 }
 
 /// Functions to serialize and deserialize ExitStatus
