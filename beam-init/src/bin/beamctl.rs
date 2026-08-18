@@ -52,7 +52,7 @@ enum Command {
         name: Option<String>,
         /// Tag to associate this service with
         #[arg(long)]
-        tag: Option<String>,
+        labels: Option<String>,
         #[arg(long)]
         #[cfg(feature = "unstable-pty")]
         pty: bool,
@@ -65,9 +65,9 @@ enum Command {
     Stop {
         #[arg(index = 1)]
         name: String,
-        /// Lookup service by tag
+        /// Lookup service by selector
         #[arg(long)]
-        tag: bool,
+        selector: bool,
         /// Remove this service from the list of services.
         #[arg(long)]
         prune: bool,
@@ -76,33 +76,33 @@ enum Command {
     Restart {
         #[arg(index = 1)]
         name: String,
-        /// Lookup service by tag
+        /// Lookup service by selector
         #[arg(long)]
-        tag: bool,
+        selector: bool,
     },
     /// Freeze all processes of a service
     Freeze {
         #[arg(index = 1)]
         name: String,
-        /// Lookup service by tag
+        /// Lookup service by selector
         #[arg(long)]
-        tag: bool,
+        selector: bool,
     },
     /// Resume all processes of a service
     Thaw {
         #[arg(index = 1)]
         name: String,
-        /// Lookup service by tag
+        /// Lookup service by selector
         #[arg(long)]
-        tag: bool,
+        selector: bool,
     },
     /// Show information about a service
     Show {
         #[arg(index = 1)]
         name: String,
-        /// Lookup service by tag
+        /// Lookup service by selector
         #[arg(long)]
-        tag: bool,
+        selector: bool,
     },
     /// List all services
     List,
@@ -196,7 +196,7 @@ fn main() {
     match args.command {
         Command::Start {
             name,
-            tag,
+            labels,
             command,
             liveness,
             #[cfg(feature = "unstable-pty")]
@@ -213,7 +213,7 @@ fn main() {
                         args: command[1..].to_owned(),
                         liveness: liveness.map(Into::into),
                         pty,
-                        tag,
+                        labels,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
@@ -224,29 +224,33 @@ fn main() {
                 attach(client, name);
             }
         }
-        Command::Stop { name, tag, prune } => {
-            for name in service_match(&client, name, tag) {
+        Command::Stop {
+            name,
+            selector,
+            prune,
+        } => {
+            for name in service_match(&client, name, selector) {
                 client
                     .stop_service(&name, prune)
                     .unwrap_or_else(show_error_and_exit)
             }
         }
-        Command::Restart { name, tag } => {
-            for name in service_match(&client, name, tag) {
+        Command::Restart { name, selector } => {
+            for name in service_match(&client, name, selector) {
                 let _resp: () = client
                     .restart_service(&name)
                     .unwrap_or_else(show_error_and_exit);
             }
         }
-        Command::Freeze { name, tag } => {
-            for name in service_match(&client, name, tag) {
+        Command::Freeze { name, selector } => {
+            for name in service_match(&client, name, selector) {
                 let _resp: () = client
                     .freeze_service(&name)
                     .unwrap_or_else(show_error_and_exit);
             }
         }
-        Command::Thaw { name, tag } => {
-            for name in service_match(&client, name, tag) {
+        Command::Thaw { name, selector } => {
+            for name in service_match(&client, name, selector) {
                 let _resp: () = client
                     .thaw_service(&name)
                     .unwrap_or_else(show_error_and_exit);
@@ -264,8 +268,8 @@ fn main() {
                 print!("{logs}");
             }
         }
-        Command::Show { name, tag } => {
-            for name in service_match(&client, name, tag) {
+        Command::Show { name, selector } => {
+            for name in service_match(&client, name, selector) {
                 let service = client
                     .show_service(&name)
                     .unwrap_or_else(show_error_and_exit);
@@ -393,18 +397,19 @@ fn service_match(
         use beam_init_api::ServiceStatus;
         let services = client.list_services().unwrap_or_else(show_error_and_exit);
 
-        let results = services
-            .into_iter()
-            .filter_map(move |(service_name, status)| {
-                if let ServiceStatus::Running { tag, .. } | ServiceStatus::Frozen { tag, .. } =
-                    status
-                    && tag.is_some_and(|tag| tag == name)
-                {
-                    Some(service_name)
-                } else {
-                    None
-                }
-            });
+        let results =
+            services
+                .into_iter()
+                .filter_map(move |(service_name, status)| {
+                    if let ServiceStatus::Running { labels, .. }
+                    | ServiceStatus::Frozen { labels, .. } = status
+                        && labels.is_some_and(|tag| tag == name)
+                    {
+                        Some(service_name)
+                    } else {
+                        None
+                    }
+                });
 
         Box::new(results)
     } else {

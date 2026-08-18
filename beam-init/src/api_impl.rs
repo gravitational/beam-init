@@ -312,22 +312,22 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
             crate::services::ServiceStatus::Running {
                 main_pid,
-                ref tag,
+                ref labels,
                 ref pty,
             } => ServiceStatus::Running {
                 main_pid,
-                tag: tag.clone(),
+                labels: labels.clone(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
             },
             crate::services::ServiceStatus::Frozen {
                 main_pid,
-                ref tag,
+                ref labels,
                 ref pty,
             } => ServiceStatus::Frozen {
                 main_pid,
-                tag: tag.clone(),
+                labels: labels.clone(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
@@ -397,7 +397,7 @@ pub async fn handle_api_command(
                 args,
                 liveness,
                 pty,
-                tag,
+                labels,
             } = &service;
 
             service_manager.create_service(
@@ -408,7 +408,7 @@ pub async fn handle_api_command(
                     liveness: liveness.clone(),
                     pty: *pty,
                     credentials,
-                    tag: tag.clone(),
+                    labels: labels.clone(),
                 },
             )?;
             service_manager.start_service(credentials, &name, StartReason::User)?;
