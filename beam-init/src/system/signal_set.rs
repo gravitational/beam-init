@@ -1,8 +1,8 @@
 // Based on sudo-rs code which is
 // Copyright (c) 2022-2026 Trifecta Tech Foundation and contributors
 // SPDX-License-Identifier: Apache-2.0
-// this has been changed to add as_ptr, use pthread_sigmask instead of
-// sigprocmask and to remove full and unblock.
+// this has been changed to add as_ptr, replace empty+add with new, use
+// pthread_sigmask instead of sigprocmask and to remove full and unblock.
 
 use super::cerr;
 
@@ -18,23 +18,22 @@ pub struct SignalSet {
 }
 
 impl SignalSet {
-    /// Create an empty set.
-    pub fn empty() -> io::Result<Self> {
+    /// Create a set with the given signals added
+    pub fn new(signals: &[c_int]) -> io::Result<Self> {
         let mut set = MaybeUninit::<Self>::zeroed();
 
         // SAFETY: we pass a valid mutable pointer to `sigemptyset`
         cerr(unsafe { libc::sigemptyset(set.as_mut_ptr().cast()) })?;
 
         // SAFETY: `sigemptyset` will have initialized `set`
-        Ok(unsafe { set.assume_init() })
-    }
+        let mut set = unsafe { set.assume_init() };
 
-    /// Add a signal to this set
-    pub fn add(&mut self, sig: c_int) -> io::Result<()> {
-        // SAFETY: we pass a valid mutable pointer to `sigaddset`
-        cerr(unsafe { libc::sigaddset(&mut self.raw, sig) })?;
+        for &signum in signals {
+            // SAFETY: we pass a valid mutable pointer to `sigaddset`
+            cerr(unsafe { libc::sigaddset(&mut set.raw, signum) })?;
+        }
 
-        Ok(())
+        Ok(set)
     }
 
     /// Get a reference to the inner sigset_t.
@@ -43,7 +42,7 @@ impl SignalSet {
         &self.raw
     }
 
-    fn sigprocmask(&self, how: c_int) -> io::Result<Self> {
+    fn thread_sigmask(&self, how: c_int) -> io::Result<Self> {
         let mut original_set = MaybeUninit::<Self>::zeroed();
 
         // SAFETY: we pass a valid mutable pointer to `pthread_sigmask`
@@ -58,7 +57,7 @@ impl SignalSet {
     /// After calling this function successfully, the set of blocked signals will be the union of
     /// the previous set of blocked signals and this set.
     pub fn block(&self) -> io::Result<Self> {
-        self.sigprocmask(libc::SIG_BLOCK)
+        self.thread_sigmask(libc::SIG_BLOCK)
     }
 
     /// Block only the signals that are in this set and return the previous set of blocked signals.
@@ -66,6 +65,6 @@ impl SignalSet {
     /// After calling this function successfully, the set of blocked signals will be the exactly
     /// this set.
     pub fn set_mask(&self) -> io::Result<Self> {
-        self.sigprocmask(libc::SIG_SETMASK)
+        self.thread_sigmask(libc::SIG_SETMASK)
     }
 }

@@ -1,4 +1,4 @@
-use std::ffi::c_int;
+use std::ffi::{c_int, c_uint};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::{io, process};
@@ -8,6 +8,7 @@ use libc::pid_t;
 pub mod fork;
 pub mod pty;
 pub mod signal_set;
+pub mod signalfd;
 pub mod unix_socket;
 
 pub fn cerr(retval: c_int) -> io::Result<c_int> {
@@ -51,4 +52,24 @@ pub fn exit_with_signal(sig: c_int) -> ! {
     // SAFETY: This is always safe
     unsafe { libc::raise(sig) };
     process::abort();
+}
+
+pub fn getpid() -> pid_t {
+    // SAFETY: getpid is safe to call.
+    unsafe { libc::getpid() }
+}
+
+pub fn setsid() -> io::Result<pid_t> {
+    // SAFETY: setsid is safe to call.
+    cerr(unsafe { libc::setsid() })
+}
+
+pub fn setpgid(pid: pid_t, pgid: pid_t) -> io::Result<()> {
+    // SAFETY: setpgid is safe to call.
+    cerr(unsafe { libc::setpgid(pid, pgid) }).map(|_| ())
+}
+
+pub fn close_range(first: c_uint, last: c_uint, flags: c_int) -> io::Result<()> {
+    // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
+    cerr(unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) as c_int }).map(|_| ())
 }
