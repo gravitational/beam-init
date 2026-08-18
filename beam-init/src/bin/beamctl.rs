@@ -52,8 +52,8 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
         /// Tag to associate this service with
-        #[arg(long)]
-        labels: Option<String>,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        labels: Vec<Label>,
         #[arg(long)]
         #[cfg(feature = "unstable-pty")]
         pty: bool,
@@ -64,46 +64,71 @@ enum Command {
     },
     /// Stop a service
     Stop {
-        #[arg(index = 1)]
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector"),
+            default_value("")
+        )]
         name: String,
         /// Lookup service by selector
-        #[arg(long)]
-        selector: bool,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
         /// Remove this service from the list of services.
         #[arg(long)]
         prune: bool,
     },
     /// Stop a service if currently running and start it again.
     Restart {
-        #[arg(index = 1)]
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector"),
+            default_value("")
+        )]
         name: String,
         /// Lookup service by selector
-        #[arg(long)]
-        selector: bool,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Freeze all processes of a service
     Freeze {
-        #[arg(index = 1)]
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector"),
+            default_value("")
+        )]
         name: String,
         /// Lookup service by selector
-        #[arg(long)]
-        selector: bool,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Resume all processes of a service
     Thaw {
-        #[arg(index = 1)]
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector"),
+            default_value("")
+        )]
         name: String,
         /// Lookup service by selector
-        #[arg(long)]
-        selector: bool,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Show information about a service
     Show {
-        #[arg(index = 1)]
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector"),
+            default_value("")
+        )]
         name: String,
         /// Lookup service by selector
-        #[arg(long)]
-        selector: bool,
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// List all services
     List,
@@ -129,6 +154,9 @@ enum Command {
     /// Show the version of beamctl and beam-init
     Version,
 }
+
+/// A key-value pair.
+type Label = (String, String);
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
 //
@@ -189,6 +217,35 @@ fn parse_duration_seconds(s: &str) -> Result<Duration, std::num::ParseIntError> 
     Ok(Duration::from_secs(s.parse()?))
 }
 
+#[derive(Debug)]
+enum ParseLabelError {
+    InvalidKeyName(String),
+    NotKeyValue,
+}
+
+impl std::fmt::Display for ParseLabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotKeyValue => write!(f, "not a key-value pair")?,
+            Self::InvalidKeyName(key) => write!(f, "'{key}' is not a valid label designator")?,
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ParseLabelError {}
+
+fn parse_label(label: &str) -> Result<(String, String), ParseLabelError> {
+    let Some((key, value)) = label.split_once('=') else {
+        return Err(ParseLabelError::NotKeyValue);
+    };
+    if !key.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(ParseLabelError::InvalidKeyName(key.to_owned()));
+    }
+
+    Ok((key.to_owned(), value.to_owned()))
+}
+
 fn main() {
     let args = Cli::parse();
 
@@ -206,8 +263,7 @@ fn main() {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
-            //FIXME
-            let labels = labels.into_iter().map(|x| ("tag".to_string(), x)).collect();
+            let labels = BTreeMap::from_iter(labels);
             let _resp = client
                 .create_service(
                     &name,
@@ -401,11 +457,10 @@ fn keys_match(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, Str
 fn service_match(
     client: &Client,
     name: String,
-    match_on_tag: bool,
+    selector: Vec<Label>,
 ) -> Box<dyn Iterator<Item = String>> {
-    if match_on_tag {
-        //TEMPORARY
-        let selector: BTreeMap<String, String> = [("tag".to_string(), name)].into();
+    if !selector.is_empty() {
+        let selector = BTreeMap::from_iter(selector);
 
         use beam_init_api::ServiceStatus;
         let services = client.list_services().unwrap_or_else(show_error_and_exit);
