@@ -83,7 +83,7 @@ pub enum ServiceStatus {
         main_pid: pid_t,
 
         /// Labels of the service
-        labels: Option<String>,
+        labels: BTreeMap<String, String>,
 
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
@@ -95,7 +95,7 @@ pub enum ServiceStatus {
         main_pid: pid_t,
 
         /// Labels of the service
-        labels: Option<String>,
+        labels: BTreeMap<String, String>,
 
         /// File-descriptor store ID and device path for the service's PTY, if allocated.
         pty: Option<(u64, PathBuf)>,
@@ -151,12 +151,10 @@ impl std::fmt::Display for ServiceStatus {
                 pty,
             } => {
                 write!(f, "running PID={main_pid}")?;
-                if let Some(tag) = labels {
-                    write!(f, ", labels=[tag={tag}]")?;
-                }
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
+                write_labels(labels, f)?;
                 Ok(())
             }
             ServiceStatus::Frozen {
@@ -165,12 +163,10 @@ impl std::fmt::Display for ServiceStatus {
                 pty,
             } => {
                 write!(f, "frozen PID={main_pid}")?;
-                if let Some(tag) = labels {
-                    write!(f, ", labels=[tag={tag}]")?;
-                }
                 if let Some((_, path)) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
+                write_labels(labels, f)?;
                 Ok(())
             }
             ServiceStatus::Stopping { main_pid, prune } => {
@@ -189,6 +185,44 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Error(err) => write!(f, "failed to start with {}", err),
         }
     }
+}
+
+// https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
+fn intersperse<Sep, T>(sep: Sep, mut iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+where
+    Sep: Copy,
+    T: From<Sep>,
+{
+    let mut do_sep = false;
+    std::iter::from_fn(move || {
+        if do_sep {
+            do_sep = false;
+            Some(sep.into())
+        } else {
+            do_sep = true;
+            iter.next()
+        }
+    })
+}
+
+fn write_labels(
+    labels: &BTreeMap<String, String>,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    if labels.is_empty() {
+        return Ok(());
+    }
+
+    write!(f, "labels=[")?;
+    for representation in intersperse(
+        ",",
+        labels.iter().map(|(key, value)| format!("{key}={value}")),
+    ) {
+        write!(f, "{}", representation)?;
+    }
+    write!(f, "labels=]")?;
+
+    Ok(())
 }
 
 /// Functions to serialize and deserialize ExitStatus

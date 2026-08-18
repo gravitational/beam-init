@@ -388,8 +388,7 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     fd
 }
 
-/// As a userfriendliness feature, allow the user to match a service by only
-/// matching a prefix instead of the full service name.
+/// Match services based on a prefix of the name or based on a tag selection
 fn service_match(
     client: &Client,
     name: String,
@@ -405,7 +404,8 @@ fn service_match(
                 .filter_map(move |(service_name, status)| {
                     if let ServiceStatus::Running { labels, .. }
                     | ServiceStatus::Frozen { labels, .. } = status
-                        && labels.is_some_and(|tag| tag == name)
+                    //FIXME
+                        && labels.get("tag").is_some_and(|tag| tag == &name)
                     {
                         Some(service_name)
                     } else {
@@ -420,6 +420,8 @@ fn service_match(
     }
 }
 
+/// As a userfriendliness feature, allow the user to match a service by only
+/// matching a prefix instead of the full service name.
 fn prefix_match(client: &Client, name: String) -> String {
     let mut services = client.list_services().unwrap_or_else(show_error_and_exit);
 
