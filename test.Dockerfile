@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/src/target \
   arm64) rust_target="aarch64-unknown-linux-musl" ;; \
   *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
   esac \
-  && RUSTFLAGS="-Ctarget-feature=+crt-static" \
+  && RUSTFLAGS="-Ctarget-feature=+crt-static --cfg testing" \
   cargo build --all-features --locked --target "${rust_target}" \
   && cp "target/${rust_target}/debug/beam-init" /beam-init \
   && cp "target/${rust_target}/debug/beamctl" /beamctl
