@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
@@ -67,6 +68,9 @@ impl FdStore {
 
     pub(crate) fn bind_socket() -> io::Result<Self> {
         let socket = UnixListener::bind(FD_SOCKET_PATH)?;
+        let permissions = std::fs::Permissions::from_mode(0o666);
+        std::fs::set_permissions(FD_SOCKET_PATH, permissions)?;
+
         let inner = Arc::new(Mutex::new(FdStoreInner::default()));
 
         let inner2 = inner.clone();
