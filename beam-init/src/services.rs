@@ -343,7 +343,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new(|fd| self.fdstore.add(fd)))
+            .then(|| Pty::new(|fd| self.fdstore.add(fd, credentials.uid)))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
