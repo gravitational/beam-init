@@ -110,6 +110,11 @@ enum Command {
     },
     /// Show the version of beamctl and beam-init
     Version,
+    #[cfg(testing)]
+    TestingGetFdFromStore {
+        #[arg(index = 1)]
+        id: u64,
+    },
 }
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
@@ -285,6 +290,13 @@ fn main() {
             println!("beamctl: Version: {} - SHA: {}", VERSION, GIT_SHA);
             let resp = client.version().unwrap_or_else(show_error_and_exit);
             println!("beam-init: Version: {} - SHA: {}", resp.version, resp.sha);
+        }
+        #[cfg(testing)]
+        Command::TestingGetFdFromStore { id } => {
+            if get_fd_from_store(id).is_none() {
+                eprintln!("fd not found in store");
+                process::exit(1);
+            }
         }
     }
 }

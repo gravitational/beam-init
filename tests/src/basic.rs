@@ -130,3 +130,10 @@ fn pty_attach_race() {
         .run("pty_attach_race.py")
         .wait();
 }
+
+#[test]
+fn pty_attach_wrong_user() {
+    Image::build("test.Dockerfile")
+        .run("pty_attach_wrong_user.py")
+        .wait();
+}
