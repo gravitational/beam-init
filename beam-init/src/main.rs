@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use std::{env, process};
 
 use axum::response::{IntoResponse, Response};
+use clap::Parser;
 use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
@@ -14,6 +15,8 @@ use crate::services::{ServiceManager, ServiceStatus};
 use beam_init::system::exit_with_signal;
 
 mod api_impl;
+mod cli;
+mod environment;
 mod fdstore;
 mod logs;
 mod services;
@@ -59,17 +62,15 @@ async fn main() {
     // FIXME what is a reasonable channel capacity?
     let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
 
-    // Queue a fake API command to start the first service
-    let mut args = std::env::args().skip(1);
-    let cmd = args.next().unwrap_or_else(|| {
-        eprintln!("Usage: beam-init <COMMAND>...");
-        process::exit(2);
-    });
+    let mut cli = cli::Cli::parse();
+    let cmd = cli.command.remove(0);
+
+    // Queue an API command to start the first service
     let init_cmd = api_impl::Command::CreateService {
-        name: "bootstrap".to_owned(),
+        name: beam_init::BOOTSTRAP_NAME.to_owned(),
         service: beam_init_api::CreateService {
             cmd,
-            args: args.collect(),
+            args: cli.command,
             env: BTreeMap::new(),
             liveness: None,
             pty: false,
@@ -97,7 +98,8 @@ async fn main() {
     // Listen for API commands
     api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
 
-    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, fdstore);
+    let mut service_manager =
+        ServiceManager::new(old_sigmask, tx_event, fdstore, cli.environment_file);
     loop {
         match rx_event
             .recv()

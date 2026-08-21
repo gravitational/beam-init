@@ -8,12 +8,14 @@ use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use beam_init::BOOTSTRAP_NAME;
 use serde::Deserialize;
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 
 use crate::Event;
+use crate::environment::build_environment;
 use crate::services::{self, ServiceError, ServiceManager, StartReason};
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
@@ -391,13 +393,22 @@ pub async fn handle_api_command(
                 liveness,
                 pty,
             } = &service;
+            let env = if name == BOOTSTRAP_NAME {
+                std::env::vars_os().collect()
+            } else {
+                let mut svc_env =
+                    build_environment(credentials.uid, service_manager.user_env_files())
+                        .map_err(|e| ServiceError::BuildEnvironment { err: e.to_string() })?;
+                svc_env.extend(env.iter().map(|(k, v)| (k.into(), v.into())));
+                svc_env
+            };
 
             service_manager.create_service(
                 name.clone(),
                 services::ServiceConfig {
                     cmd: cmd.clone(),
                     args: args.clone(),
-                    env: env.clone(),
+                    env,
                     liveness: liveness.clone(),
                     pty: *pty,
                     credentials,
