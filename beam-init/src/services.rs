@@ -1,17 +1,23 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CStr, CString, NulError, OsString, c_char, c_uint};
+use std::ffi::{CStr, CString, NulError, OsString, c_char, c_int, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::process::ExitStatusExt;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
+use beam_init::system::signal_set::SignalSet;
+use beam_init::system::signalfd::SignalFd;
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo, uid_t};
+use libc::{
+    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, killpg, pid_t,
+    poll, pollfd, signalfd_siginfo, tcsetpgrp, uid_t,
+};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -25,7 +31,8 @@ use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
 use beam_init::system::{
-    _exit, cerr, close_range, getpid, kill_process_group, setpgid, setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, getpid, kill_process_group, setpgid, setsid,
+    waitpid,
 };
 use beam_init_api::Probe;
 
@@ -687,6 +694,32 @@ fn add_single_log_message(logs: &Logs, msg: String) {
     });
 }
 
+enum MonitorCommand {
+    Signal(c_int),
+    Foreground,
+    Background,
+}
+
+impl MonitorCommand {
+    fn ser(self) -> u8 {
+        match self {
+            MonitorCommand::Signal(sig) => (sig.cast_unsigned()).try_into().unwrap(),
+            MonitorCommand::Foreground => -1i8,
+            MonitorCommand::Background => -2,
+        }
+        .cast_unsigned()
+    }
+
+    fn de(b: u8) -> MonitorCommand {
+        match b.cast_signed() {
+            -1 => MonitorCommand::Foreground,
+            -2 => MonitorCommand::Background,
+            b if b >= 0 => MonitorCommand::Signal(b.into()),
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[allow(clippy::upper_case_acronyms)]
 enum Sink<'a> {
     Log(OwnedFd),
@@ -743,9 +776,12 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
+    let (mut cmd_rx, mut cmd_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
+            drop(cmd_tx);
+
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
             // Create a new session and process group led by this process.
@@ -788,23 +824,101 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
                 _exit(0);
             } else {
-                // Avoid a double fork for now when a pty is attached as the
-                // session leader exiting causes a SIGHUP which will kill the
-                // child if it happened after the exec.
-                // FIXME add a persistent monitor process
+                let sigset =
+                    expect_no_panic(SignalSet::new(&[SIGCHLD]), "failed to create signal set");
+                let old_sigset = expect_no_panic(sigset.block(), "failed to block SIGCHLD");
+                let signals = expect_no_panic(SignalFd::new(&sigset), "failed to create signalfd");
 
-                let service_pid = getpid();
+                let service_pid = expect_no_panic(
+                    unsafe_fork!({
+                        expect_no_panic(old_sigset.set_mask(), "failed to unblock SIGCHLD");
+
+                        // Create a new process group led by this process.
+                        // Uses the current PID as the PGID of the new process group.
+                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
+
+                        // SAFETY: args is a NULL terminated list of C strings.
+                        exec_with_creds_and_err_pipe(
+                            &cmd,
+                            &args,
+                            &mut envp,
+                            &config.credentials,
+                            err_tx,
+                        )
+                    }),
+                    "failed to fork",
+                );
+                drop(err_tx);
+
+                let self_pid = getpid();
                 expect_no_panic(
-                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                    pid_tx.write_all(&pid_t::to_ne_bytes(self_pid)),
                     "failed to write pid",
                 );
 
-                // SAFETY: args is a NULL terminated list of C strings.
-                exec_with_creds_and_err_pipe(&cmd, &args, &mut envp, &config.credentials, err_tx)
+                loop {
+                    let mut fds = [
+                        pollfd {
+                            fd: cmd_rx.as_raw_fd(),
+                            events: POLLIN,
+                            revents: 0,
+                        },
+                        pollfd {
+                            fd: signals.as_raw_fd(),
+                            events: POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    expect_no_panic(cerr(poll(fds.as_mut_ptr(), 2, -1)), "failed to `poll`");
+
+                    if fds[0].revents & POLLIN != 0 {
+                        let mut cmd = [0];
+                        expect_no_panic(cmd_rx.read(&mut cmd), "failed to read cmd pipe");
+                        let cmd = MonitorCommand::de(cmd[0]);
+                        match cmd {
+                            MonitorCommand::Signal(signal) => {
+                                expect_no_panic(
+                                    cerr(killpg(service_pid, signal)),
+                                    "failed to `killpg`",
+                                );
+                            }
+                            MonitorCommand::Foreground => {
+                                expect_no_panic(
+                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, service_pid)),
+                                    "failed to `tcsetpgrp`",
+                                );
+                            }
+                            MonitorCommand::Background => {
+                                expect_no_panic(
+                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, self_pid)),
+                                    "failed to `tcsetpgrp`",
+                                );
+                            }
+                        }
+                    }
+
+                    if fds[0].revents & (POLLERR | POLLHUP) != 0 {
+                        // beam-init probably got killed
+                        killpg(service_pid, SIGKILL);
+                    }
+
+                    if fds[1].revents & POLLIN != 0 {
+                        let (_pid, status) =
+                            expect_no_panic(waitpid(service_pid, WNOHANG), "failed to `waitpid");
+                        if let Some(code) = status.code() {
+                            _exit(code);
+                        } else if let Some(signal) = status.signal() {
+                            exit_with_signal(signal)
+                        } else {
+                            _exit(1);
+                        }
+                    }
+                }
             }
         })?
     };
     drop(err_tx);
+    drop(cmd_rx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
