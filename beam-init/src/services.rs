@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use crate::api_impl::Credentials;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
-use crate::spawn::{Sink, spawn_service};
+use crate::spawn::{MonitorCommandSender, Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::pty::Pty;
@@ -151,11 +151,18 @@ pub(crate) enum ServiceStatus {
 #[derive(Debug)]
 pub(crate) struct ServiceProcess {
     pub(crate) main_pid: pid_t,
+    monitor_tx: Option<MonitorCommandSender>,
 }
 
 impl ServiceProcess {
     fn send_signal(&mut self, signal: c_int) {
-        kill_process_group(self.main_pid, signal).expect("process to exist");
+        if let Some(monitor_tx) = &mut self.monitor_tx {
+            monitor_tx
+                .signal(signal)
+                .expect("failed to send command on monitor pipe");
+        } else {
+            kill_process_group(self.main_pid, signal).expect("process to exist");
+        }
     }
 }
 
@@ -459,10 +466,11 @@ impl ServiceManager {
         };
 
         match spawn_service(old_sigmask, &service.config, sink) {
-            Ok(child_pid) => {
+            Ok((child_pid, monitor_tx)) => {
                 service.state.status = ServiceStatus::Running {
                     process: ServiceProcess {
                         main_pid: child_pid,
+                        monitor_tx,
                     },
                     pty,
                 };
@@ -727,10 +735,43 @@ impl ServiceManager {
         let service = self.get_service_mut(credentials, name)?;
 
         match &mut service.state.status {
-            ServiceStatus::Running { process, pty } | ServiceStatus::Frozen { process, pty } => {
-                if pty.is_some() {
-                    // send SIGWINCH to the application to stimulate it to redraw
-                    kill_process_group(process.main_pid, libc::SIGWINCH).expect("process to exist");
+            ServiceStatus::Running { process, pty: _ }
+            | ServiceStatus::Frozen { process, pty: _ } => {
+                if let Some(monitor_tx) = &mut process.monitor_tx {
+                    monitor_tx
+                        .foreground()
+                        .expect("failed to send command on monitor pipe");
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+
+            ServiceStatus::Dummy => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    pub fn notify_pty_detached(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        match &mut service.state.status {
+            ServiceStatus::Running { process, pty: _ }
+            | ServiceStatus::Frozen { process, pty: _ } => {
+                if let Some(monitor_tx) = &mut process.monitor_tx {
+                    monitor_tx
+                        .background()
+                        .expect("failed to send command on monitor pipe");
                 }
             }
 
