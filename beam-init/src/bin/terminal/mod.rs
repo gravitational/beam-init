@@ -11,9 +11,7 @@ use user_term::UserTerm;
 
 pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
-
     let mut tty = UserTerm::open()?;
-    tty.sync(&app)?;
 
     let mut signals =
         SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
@@ -24,6 +22,10 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let client = Client::new().map_err(io::Error::other)?;
 
     client.notify_pty_attached(name).map_err(io::Error::other)?;
+
+    // Sync after attach to ensure the service process receives the SIGWINCH for
+    // changing the window size rather than the monitor process.
+    tty.sync(&app)?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -71,8 +73,10 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
                             continue;
                         }
                         libc::SIGTSTP => {
-                            // FIXME: send process to the background
                             // Suspend was received, detach
+                            client
+                                .notify_pty_detached(name)
+                                .map_err(|err| io::Error::other(err))?;
                             Ok(0)
                         }
                         _ => unreachable!("An unexpected signal was caught"),
