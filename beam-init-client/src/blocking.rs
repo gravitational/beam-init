@@ -15,6 +15,7 @@ use crate::Error;
 /// # Examples
 ///
 /// ```no_run
+/// use std::collections::BTreeMap;
 /// use beam_init_api::CreateService;
 /// use beam_init_client::blocking::Client;
 ///
@@ -25,6 +26,7 @@ use crate::Error;
 ///     CreateService {
 ///         cmd: "/usr/bin/sleep".to_owned(),
 ///         args: vec!["infinity".to_owned()],
+///         env: BTreeMap::default(),
 ///         liveness: None,
 ///         pty: false,
 ///     },

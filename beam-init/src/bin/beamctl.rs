@@ -57,6 +57,8 @@ enum Command {
         command: Vec<String>,
         #[command(flatten)]
         liveness: Option<LivenessProbe>,
+        #[arg(long, value_name = "KEY=VALUE", value_parser = parse_key_value)]
+        env: Vec<(String, String)>,
     },
     /// Stop a service
     Stop {
@@ -183,16 +185,19 @@ fn main() {
             liveness,
             #[cfg(feature = "unstable-pty")]
             pty,
+            env,
         } => {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
+            let env = env.into_iter().collect();
             let _resp = client
                 .create_service(
                     &name,
                     beam_init_api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
+                        env,
                         liveness: liveness.map(Into::into),
                         pty,
                     },
@@ -381,6 +386,16 @@ fn gen_name() -> String {
     // SAFETY: We pass a valid mutable byte array of the given size.
     unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
     format!("{:016x}", u64::from_ne_bytes(buf))
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once("=")
+        .ok_or_else(|| format!("invalid KEY=VALUE: `=` not found in {s}"))?;
+    if k.is_empty() {
+        return Err("environment variable key cannot be empty".to_owned());
+    }
+    Ok((k.to_owned(), v.to_owned()))
 }
 
 #[cfg(test)]

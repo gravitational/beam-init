@@ -1,5 +1,6 @@
 #![deny(clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::LazyLock;
 use std::{env, process};
@@ -69,6 +70,7 @@ async fn main() {
         service: beam_init_api::CreateService {
             cmd,
             args: args.collect(),
+            env: BTreeMap::new(),
             liveness: None,
             pty: false,
         },

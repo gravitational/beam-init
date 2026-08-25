@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CStr, CString, NulError, c_char, c_uint};
+use std::ffi::{CStr, CString, NulError, OsString, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -27,6 +28,10 @@ use beam_init::system::{
     _exit, cerr, close_range, getpid, kill_process_group, setpgid, setsid, waitpid,
 };
 use beam_init_api::Probe;
+
+unsafe extern "C" {
+    static mut environ: *mut *mut libc::c_char;
+}
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
@@ -69,9 +74,33 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,
+}
+
+impl ServiceConfig {
+    fn validate(&self) -> Result<(), ServiceError> {
+        for (k, v) in &self.env {
+            if k.is_empty() {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment keys may not be empty".to_string(),
+                });
+            }
+            if k.contains('=') {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment keys may not contain '='".to_string(),
+                });
+            }
+            if k.contains('\0') || v.contains('\0') {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment key/value may not contain NUL".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The runtime state of a service.
@@ -119,6 +148,7 @@ pub enum ServiceError {
     ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
     InvalidCredentials,
+    InvalidRequest { err: String },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -145,6 +175,7 @@ impl IntoResponse for ServiceError {
                 "Service owned by a different user",
             )
                 .into_response(),
+            ServiceError::InvalidRequest { err } => (StatusCode::BAD_REQUEST, err).into_response(),
         }
     }
 }
@@ -248,6 +279,8 @@ impl ServiceManager {
         name: String,
         config: ServiceConfig,
     ) -> Result<(), ServiceError> {
+        config.validate()?;
+
         let logs = Logs::new();
 
         if *DEBUG_LOGS {
@@ -684,6 +717,30 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
+    // FIXME(rcanderson23): this keeps the current behavior but we do not want user services to
+    // inherit a copy of beam-init's environment so we should construct one
+    let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    env.extend(
+        config
+            .env
+            .iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    let envp_store = env
+        .iter()
+        .map(|(k, v)| {
+            let mut entry = k.clone().into_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(v.as_bytes());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, NulError>>()?;
+    let mut envp = envp_store
+        .iter()
+        .map(|p| p.as_ptr().cast_mut())
+        .chain(Some(ptr::null_mut()))
+        .collect::<Box<[_]>>();
+
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
@@ -712,7 +769,13 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                         expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
                         // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                        exec_with_creds_and_err_pipe(
+                            &cmd,
+                            &args,
+                            &mut envp,
+                            &config.credentials,
+                            err_tx,
+                        )
                     }),
                     "failed to fork",
                 );
@@ -737,7 +800,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 );
 
                 // SAFETY: args is a NULL terminated list of C strings.
-                exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                exec_with_creds_and_err_pipe(&cmd, &args, &mut envp, &config.credentials, err_tx)
             }
         })?
     };
@@ -798,9 +861,11 @@ impl Sink<'_> {
 /// # Safety
 ///
 /// `args` must be a NULL terminated list of C strings.
+/// `envp` must be a NULL terminated list of C strings.
 unsafe fn exec_with_creds_and_err_pipe(
     cmd: &CStr,
     args: &[*const c_char],
+    envp: &mut [*mut c_char],
     credentials: &Credentials,
     mut err_tx: PipeWriter,
 ) -> ! {
@@ -814,9 +879,12 @@ unsafe fn exec_with_creds_and_err_pipe(
     // supplementary group list.
     expect_no_panic(credentials.set_creds(), "failed to set process credentials");
 
-    // SAFETY: Per the safety requirements of this function, args is a NULL
-    // terminated list of C strings.
-    unsafe { libc::execvp(cmd.as_ptr(), args.as_ptr()) };
+    // SAFETY: Per the safety requirements of this function, args and env is a NULL
+    // terminated lists of C strings.
+    unsafe {
+        environ = envp.as_mut_ptr();
+        libc::execvp(cmd.as_ptr(), args.as_ptr())
+    };
 
     // If we reach this point, the exec failed.
     let Some(err) = io::Error::last_os_error().raw_os_error() else {
