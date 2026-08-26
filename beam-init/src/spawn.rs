@@ -26,7 +26,17 @@ unsafe extern "C" {
     static mut environ: *mut *mut libc::c_char;
 }
 
-enum MonitorCommand {
+#[derive(Debug)]
+pub(crate) struct MonitorCommandSender(PipeWriter);
+
+impl MonitorCommandSender {
+    pub(crate) fn send(&mut self, cmd: MonitorCommand) -> io::Result<()> {
+        self.0.write_all(&[cmd.ser()])
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum MonitorCommand {
     Signal(c_int),
     Foreground,
     Background,
@@ -72,7 +82,7 @@ pub(crate) fn spawn_service(
     old_sigmask: OldSigmask,
     config: &ServiceConfig,
     sink: Sink,
-) -> io::Result<pid_t> {
+) -> io::Result<(pid_t, Option<MonitorCommandSender>)> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -102,13 +112,15 @@ pub(crate) fn spawn_service(
         .chain(Some(ptr::null_mut()))
         .collect::<Box<[_]>>();
 
+    let has_ctty = matches!(sink, Sink::PTY(_));
+
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
-    let (mut cmd_rx, mut cmd_tx) = io::pipe()?;
+    let (mut monitor_rx, monitor_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
-            drop(cmd_tx);
+            drop(monitor_tx);
 
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -118,7 +130,6 @@ pub(crate) fn spawn_service(
             // hang if the container has a tty attached.
             expect_no_panic(setsid(), "failed to setsid");
 
-            let has_ctty = matches!(sink, Sink::PTY(_));
             sink.set_stdioe(config.credentials.uid);
 
             if !has_ctty {
@@ -184,10 +195,12 @@ pub(crate) fn spawn_service(
                     "failed to write pid",
                 );
 
+                // FIXME block until setpgrp in child
+
                 loop {
                     let mut fds = [
                         pollfd {
-                            fd: cmd_rx.as_raw_fd(),
+                            fd: monitor_rx.as_raw_fd(),
                             events: POLLIN,
                             revents: 0,
                         },
@@ -201,7 +214,7 @@ pub(crate) fn spawn_service(
 
                     if fds[0].revents & POLLIN != 0 {
                         let mut cmd = [0];
-                        expect_no_panic(cmd_rx.read(&mut cmd), "failed to read cmd pipe");
+                        expect_no_panic(monitor_rx.read(&mut cmd), "failed to read cmd pipe");
                         let cmd = MonitorCommand::de(cmd[0]);
                         match cmd {
                             MonitorCommand::Signal(signal) => {
@@ -246,14 +259,17 @@ pub(crate) fn spawn_service(
         })?
     };
     drop(err_tx);
-    drop(cmd_rx);
+    drop(monitor_rx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
             let mut child_pid = [0; size_of::<pid_t>()];
             pid_rx.read_exact(&mut child_pid)?;
-            Ok(pid_t::from_ne_bytes(child_pid))
+            Ok((
+                pid_t::from_ne_bytes(child_pid),
+                has_ctty.then(|| MonitorCommandSender(monitor_tx)),
+            ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
