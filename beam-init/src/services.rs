@@ -402,9 +402,8 @@ impl ServiceManager {
             StartReason::Automatic => service.state.automatic_restart_attempts.saturating_add(1),
         };
 
-        let mut pty = service
-            .config
-            .pty
+        // FIXME test mode which uses monitor process + ctty, but keeps logs for stdout/stderr
+        let mut pty = (name != "bootstrap" || service.config.pty)
             .then(|| Pty::new(|fd| self.fdstore.add(fd, credentials.uid)))
             .transpose()
             .map_err(|err| {
