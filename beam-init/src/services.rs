@@ -127,20 +127,34 @@ pub enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
+        /// Pipe of [`MonitorCommand`] values.
+        monitor_tx: Option<PipeWriter>,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
+        /// Pipe of [`MonitorCommand`] values.
+        monitor_tx: Option<PipeWriter>,
         pty: Option<Pty<StoredFd>>,
     },
 
     /// The service was stopped, but will soon be started again as part of a restart.
-    Restarting { main_pid: pid_t, name: String },
+    Restarting {
+        main_pid: pid_t,
+        /// Pipe of [`MonitorCommand`] values.
+        monitor_tx: Option<PipeWriter>,
+        name: String,
+    },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: pid_t, prune: bool },
+    Stopping {
+        main_pid: pid_t,
+        /// Pipe of [`MonitorCommand`] values.
+        monitor_tx: Option<PipeWriter>,
+        prune: bool,
+    },
 
     /// The service exited with the given exit status.
     Exited(ExitStatus),
@@ -233,7 +247,11 @@ impl ServiceManager {
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { main_pid, prune } if main_pid == pid => {
+                        ServiceStatus::Stopping {
+                            main_pid,
+                            monitor_tx: _,
+                            prune,
+                        } if main_pid == pid => {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
@@ -244,7 +262,11 @@ impl ServiceManager {
 
                             break;
                         }
-                        ServiceStatus::Restarting { main_pid, ref name } if main_pid == pid => {
+                        ServiceStatus::Restarting {
+                            main_pid,
+                            monitor_tx: _,
+                            ref name,
+                        } if main_pid == pid => {
                             let name = name.clone();
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
@@ -413,9 +435,10 @@ impl ServiceManager {
         };
 
         match spawn_service(old_sigmask, &service.config, sink) {
-            Ok(child_pid) => {
+            Ok((child_pid, monitor_tx)) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
+                    monitor_tx,
                     pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
@@ -455,12 +478,22 @@ impl ServiceManager {
             }
             ServiceStatus::Running {
                 main_pid,
+                ref mut monitor_tx,
                 ref mut pty,
             } => {
+                let mut monitor_tx = monitor_tx.take();
                 let pty = pty.take();
                 service.abort_liveness_probe();
-                kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid, pty };
+                if let Some(monitor_tx) = &mut monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGSTOP).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGSTOP).expect("process to exist");
+                }
+                service.state.status = ServiceStatus::Frozen {
+                    main_pid,
+                    monitor_tx,
+                    pty,
+                };
             }
         }
 
@@ -488,11 +521,21 @@ impl ServiceManager {
             }
             ServiceStatus::Frozen {
                 main_pid,
+                ref mut monitor_tx,
                 ref mut pty,
             } => {
+                let mut monitor_tx = monitor_tx.take();
                 let pty = pty.take();
-                kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid, pty };
+                if let Some(monitor_tx) = &mut monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGCONT).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGCONT).expect("process to exist");
+                }
+                service.state.status = ServiceStatus::Running {
+                    main_pid,
+                    monitor_tx,
+                    pty,
+                };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -520,19 +563,42 @@ impl ServiceManager {
             }
             ServiceStatus::Stopping {
                 main_pid,
+                ref mut monitor_tx,
                 prune: old_prune,
             } => {
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
+                    monitor_tx: monitor_tx.take(),
                     prune: prune || old_prune,
                 };
             }
-            ServiceStatus::Running { main_pid, .. }
-            | ServiceStatus::Frozen { main_pid, .. }
-            | ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Running {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            }
+            | ServiceStatus::Frozen {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            }
+            | ServiceStatus::Restarting {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            } => {
+                let mut monitor_tx = monitor_tx.take();
                 service.abort_liveness_probe();
-                service.state.status = ServiceStatus::Stopping { main_pid, prune };
-                kill_process_group(main_pid, SIGTERM).expect("process to exist");
+                if let Some(monitor_tx) = &mut monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGTERM).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGTERM).expect("process to exist");
+                }
+                service.state.status = ServiceStatus::Stopping {
+                    main_pid,
+                    monitor_tx,
+                    prune,
+                };
             }
         }
 
@@ -552,13 +618,28 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. } => {
                 // all good
             }
-            ServiceStatus::Running { main_pid, .. } | ServiceStatus::Frozen { main_pid, .. } => {
+            ServiceStatus::Running {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            }
+            | ServiceStatus::Frozen {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            } => {
+                let mut monitor_tx = monitor_tx.take();
                 service.abort_liveness_probe();
+                if let Some(monitor_tx) = &mut monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGTERM).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGTERM).expect("process to exist");
+                }
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,
+                    monitor_tx,
                     name: name.to_owned(),
                 };
-                kill_process_group(main_pid, SIGTERM).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
@@ -582,17 +663,34 @@ impl ServiceManager {
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid, prune: _ } => {
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
+            ServiceStatus::Stopping {
+                main_pid,
+                ref mut monitor_tx,
+                prune: _,
+            } => {
+                if let Some(monitor_tx) = monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGKILL).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGKILL).expect("process to exist");
+                }
             }
-            ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Restarting {
+                main_pid,
+                ref mut monitor_tx,
+                ..
+            } => {
+                if let Some(monitor_tx) = monitor_tx {
+                    monitor_tx.write_all(&[MonitorCommand::Signal(SIGKILL).ser()]);
+                } else {
+                    kill_process_group(main_pid, SIGKILL).expect("process to exist");
+                }
+
                 // Prevent the restart, only stop this service.
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
+                    monitor_tx: monitor_tx.take(),
                     prune: false,
                 };
-
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
@@ -736,7 +834,11 @@ fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
     }
 }
 
-fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) -> io::Result<pid_t> {
+fn spawn_service(
+    old_sigmask: OldSigmask,
+    config: &ServiceConfig,
+    sink: Sink,
+) -> io::Result<(pid_t, Option<PipeWriter>)> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -774,13 +876,15 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null_mut()))
         .collect::<Box<[_]>>();
 
+    let has_ctty = matches!(sink, Sink::PTY(_));
+
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
-    let (mut cmd_rx, mut cmd_tx) = io::pipe()?;
+    let (mut monitor_rx, monitor_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
-            drop(cmd_tx);
+            drop(monitor_tx);
 
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -790,7 +894,6 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // hang if the container has a tty attached.
             expect_no_panic(setsid(), "failed to setsid");
 
-            let has_ctty = matches!(sink, Sink::PTY(_));
             sink.set_stdioe(config.credentials.uid);
 
             if !has_ctty {
@@ -856,10 +959,12 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     "failed to write pid",
                 );
 
+                // FIXME block until setpgrp in child
+
                 loop {
                     let mut fds = [
                         pollfd {
-                            fd: cmd_rx.as_raw_fd(),
+                            fd: monitor_rx.as_raw_fd(),
                             events: POLLIN,
                             revents: 0,
                         },
@@ -873,7 +978,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 
                     if fds[0].revents & POLLIN != 0 {
                         let mut cmd = [0];
-                        expect_no_panic(cmd_rx.read(&mut cmd), "failed to read cmd pipe");
+                        expect_no_panic(monitor_rx.read(&mut cmd), "failed to read cmd pipe");
                         let cmd = MonitorCommand::de(cmd[0]);
                         match cmd {
                             MonitorCommand::Signal(signal) => {
@@ -918,14 +1023,17 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         })?
     };
     drop(err_tx);
-    drop(cmd_rx);
+    drop(monitor_rx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
             let mut child_pid = [0; size_of::<pid_t>()];
             pid_rx.read_exact(&mut child_pid)?;
-            Ok(pid_t::from_ne_bytes(child_pid))
+            Ok((
+                pid_t::from_ne_bytes(child_pid),
+                has_ctty.then(|| monitor_tx),
+            ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),

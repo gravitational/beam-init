@@ -310,29 +310,39 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
-                ServiceStatus::Running {
-                    main_pid,
-                    pty: pty
-                        .as_ref()
-                        .map(|inner| (inner.master.id(), inner.path.clone())),
-                }
-            }
-            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
+            crate::services::ServiceStatus::Running {
+                main_pid,
+                monitor_tx: _,
+                ref pty,
+            } => ServiceStatus::Running {
                 main_pid,
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
             },
-            crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
-                ServiceStatus::Restarting {
-                    main_pid,
-                    name: name.to_owned(),
-                }
-            }
-            crate::services::ServiceStatus::Stopping { main_pid, prune } => {
-                ServiceStatus::Stopping { main_pid, prune }
-            }
+            crate::services::ServiceStatus::Frozen {
+                main_pid,
+                monitor_tx: _,
+                ref pty,
+            } => ServiceStatus::Frozen {
+                main_pid,
+                pty: pty
+                    .as_ref()
+                    .map(|inner| (inner.master.id(), inner.path.clone())),
+            },
+            crate::services::ServiceStatus::Restarting {
+                main_pid,
+                monitor_tx: _,
+                ref name,
+            } => ServiceStatus::Restarting {
+                main_pid,
+                name: name.to_owned(),
+            },
+            crate::services::ServiceStatus::Stopping {
+                main_pid,
+                monitor_tx: _,
+                prune,
+            } => ServiceStatus::Stopping { main_pid, prune },
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(exit_status)
             }
