@@ -39,10 +39,7 @@ impl<T: AsFd> Pty<T> {
                 return Err(io::Error::from_raw_os_error(err));
             }
 
-            let c_str =
-                CStr::from_bytes_until_nul(&buffer).expect("CStr conversion should not fail");
-
-            c_str
+            CStr::from_bytes_until_nul(&buffer).expect("CStr conversion should not fail")
         };
 
         Ok(Pty {
