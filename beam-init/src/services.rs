@@ -391,7 +391,10 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             add_single_log_message(
                 &service.state.logs,
-                format!("[process connected to pty: {}]", terminal.path.display()),
+                format!(
+                    "[process connected to pty: {}]",
+                    terminal.as_path().display()
+                ),
             );
 
             Sink::PTY(terminal.client())

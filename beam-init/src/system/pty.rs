@@ -2,14 +2,14 @@ use std::ffi::{CStr, CString, OsStr};
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::system::cerr;
 
 #[derive(Debug)]
 pub struct Pty<T> {
     pub master: T,
-    pub path: PathBuf,
+    pub path: CString,
 }
 
 #[derive(Debug)]
@@ -39,17 +39,17 @@ impl<T: AsFd> Pty<T> {
                 return Err(io::Error::from_raw_os_error(err));
             }
 
-            let c_str = CStr::from_bytes_until_nul(&buffer)
-                .expect("CStr conversion should not fail")
-                .to_bytes();
-
-            Path::new(OsStr::from_bytes(c_str))
+            CStr::from_bytes_until_nul(&buffer).expect("CStr conversion should not fail")
         };
 
         Ok(Pty {
             master: map_fd(master),
             path: pts_name.to_owned(),
         })
+    }
+
+    pub fn as_path(&self) -> &Path {
+        Path::new(OsStr::from_bytes(self.path.as_bytes()))
     }
 
     pub fn client(&mut self) -> PtyClient<'_, T> {
@@ -68,9 +68,6 @@ impl<'a, T: AsFd> PtyClient<'a, T> {
             cerr(libc::unlockpt(master.as_raw_fd()))?;
         }
 
-        let path = CString::new(self.parent.path.as_os_str().as_bytes())
-            .expect("PTY path to not have null bytes");
-
         // SAFETY:
         // - libc::open is passed a correct null-terminated C string
         // - only if the fd is opened correctly is it passed to from_raw_fd
@@ -78,7 +75,7 @@ impl<'a, T: AsFd> PtyClient<'a, T> {
         let client = unsafe {
             // NOTE: Opening terminal device makes that the controlling terminal for this session;
             // so by not passing O_NOCTTY we can avoid the TIOCSCTTY ioctl
-            let fd = cerr(libc::open(path.as_ptr(), libc::O_RDWR))?;
+            let fd = cerr(libc::open(self.parent.path.as_ptr(), libc::O_RDWR))?;
             OwnedFd::from_raw_fd(fd)
         };
 
