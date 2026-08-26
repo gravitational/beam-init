@@ -144,3 +144,8 @@ fn pty_attach_wrong_user() {
         .run("pty_attach_wrong_user.py")
         .wait();
 }
+
+#[test]
+fn pty_owner() {
+    Image::build("test.Dockerfile").run("pty_owner.py").wait();
+}
