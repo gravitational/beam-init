@@ -244,9 +244,12 @@ pub(crate) fn spawn_service(
                     }
 
                     if fds[1].revents & POLLIN != 0 {
-                        let (_pid, status) =
+                        let (pid, status) =
                             expect_no_panic(waitpid(service_pid, WNOHANG), "failed to `waitpid");
-                        if let Some(code) = status.code() {
+                        if pid == 0 {
+                            // Nothing to do. One of our children likely just got suspended by
+                            // SIGSTOP.
+                        } else if let Some(code) = status.code() {
                             _exit(code);
                         } else if let Some(signal) = status.signal() {
                             exit_with_signal(signal)
