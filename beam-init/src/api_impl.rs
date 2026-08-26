@@ -315,14 +315,14 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
                     main_pid,
                     pty: pty
                         .as_ref()
-                        .map(|inner| (inner.master.id(), inner.as_path().to_owned())),
+                        .map(|inner| (inner.master.id(), inner.path.clone())),
                 }
             }
             crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
                 main_pid,
                 pty: pty
                     .as_ref()
-                    .map(|inner| (inner.master.id(), inner.as_path().to_owned())),
+                    .map(|inner| (inner.master.id(), inner.path.clone())),
             },
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
                 ServiceStatus::Restarting {

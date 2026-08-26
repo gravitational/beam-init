@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo, uid_t};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -391,10 +391,7 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             add_single_log_message(
                 &service.state.logs,
-                format!(
-                    "[process connected to pty: {}]",
-                    terminal.as_path().display()
-                ),
+                format!("[process connected to pty: {}]", terminal.path.display()),
             );
 
             Sink::PTY(terminal.client())
@@ -758,7 +755,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             expect_no_panic(setsid(), "failed to setsid");
 
             let has_ctty = matches!(sink, Sink::PTY(_));
-            sink.set_stdioe();
+            sink.set_stdioe(config.credentials.uid);
 
             if !has_ctty {
                 // Double fork to ensure the service can't accidentally attach a
@@ -822,11 +819,11 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 }
 
 impl Sink<'_> {
-    fn set_stdioe(self) {
+    fn set_stdioe(self, uid: uid_t) {
         match self {
             Sink::PTY(pty) => {
                 let pty_fd = expect_no_panic(
-                    pty.make_tty(),
+                    pty.make_tty(uid),
                     "could not make the pty the controlling terminal",
                 );
 
