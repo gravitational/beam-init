@@ -1,0 +1,81 @@
+name: Publish container image
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to ${{ github.event_name == 'workflow_dispatch' && 'private ECR' || 'public ECR' }}
+    runs-on: ubuntu-22.04
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && 'staging' || 'release' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ github.event_name == 'workflow_dispatch' && 'us-west-2' || 'us-east-1' }}
+      ECR_REGISTRY_TYPE: ${{ github.event_name == 'workflow_dispatch' && 'private' || 'public' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Get private ECR configuration
+        uses: gravitational/shared-workflows/tools/env-kvstore@900b169b906d75f37db2ac649c227bb107285757 # tools/env-kvstore/v1.0.3
+        with:
+          cognito-identity-pool-id: "us-west-2:da53389e-a459-4a28-bd54-43eeb8e4b579"
+          cognito-role-arn: "arn:aws:iam::247230412011:role/github-actions-cognito-oidc"
+          values: |
+            ECR_ROLE,variable
+            PRIVATE_ECR_REPO,variable
+            PUBLIC_ECR_REPO,variable
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.ECR_ROLE }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        with:
+          registry-type: ${{ env.ECR_REGISTRY_TYPE }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Prepare image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: |
+            name=${{ env.PRIVATE_ECR_REPO }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            name=${{ env.PUBLIC_ECR_REPO }},enable=${{ github.event_name == 'push' }}
+          flavor: latest=false
+          tags: |
+            type=sha,prefix={{branch}}-,suffix=-{{date 'YYYYMMDDTHHmmss'}},format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'push' }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BEAM_VERSION=${{ steps.meta.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
