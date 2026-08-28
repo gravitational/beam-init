@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory() as root:
         f"--env=PATH={configured_path}",
         "--env=BEAM_REPEATED=first",
         "--env=BEAM_REPEATED=second",
+        "--env=USER_OVERRIDE=true",
         "--",
         "environment-probe",
     ])
@@ -38,6 +39,19 @@ with tempfile.TemporaryDirectory() as root:
     ])
     print(output)
 
+    # user defined env vars via beamctl
     assert f"PATH={configured_path}\n".encode() in output, output
     assert b"BEAM_REPEATED=second\n" in output, output
+
+    # beam-init file defined env vars via files
+    assert b"ENV1=true\n" in output, output
+    assert b"ENV2=true\n" in output, output
+
+    # beam-init file order override
+    assert b"FILE_OVERRIDE=env2\n" in output, output
+
+    # beamctl overrides beam-init file defined var
+    assert b"USER_OVERRIDE=true\n" in output, output
+
+    # beamctl repeated definition overridden
     assert b"BEAM_REPEATED=first\n" not in output, output

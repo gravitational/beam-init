@@ -4,6 +4,7 @@ use std::ffi::{CStr, CString, NulError, OsString, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -38,6 +39,7 @@ pub struct ServiceManager {
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
     fdstore: FdStore,
+    user_env_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -74,7 +76,7 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
-    pub env: BTreeMap<String, String>,
+    pub env: BTreeMap<OsString, OsString>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,
@@ -83,17 +85,19 @@ pub struct ServiceConfig {
 impl ServiceConfig {
     fn validate(&self) -> Result<(), ServiceError> {
         for (k, v) in &self.env {
+            let k = k.as_os_str().as_bytes();
+            let v = v.as_os_str().as_bytes();
             if k.is_empty() {
                 return Err(ServiceError::InvalidRequest {
                     err: "environment keys may not be empty".to_string(),
                 });
             }
-            if k.contains('=') {
+            if k.contains(&b'=') {
                 return Err(ServiceError::InvalidRequest {
                     err: "environment keys may not contain '='".to_string(),
                 });
             }
-            if k.contains('\0') || v.contains('\0') {
+            if k.contains(&b'\0') || v.contains(&b'\0') {
                 return Err(ServiceError::InvalidRequest {
                     err: "environment key/value may not contain NUL".to_string(),
                 });
@@ -149,6 +153,7 @@ pub enum ServiceError {
     SpawnFailed { cmd: String, err: String },
     InvalidCredentials,
     InvalidRequest { err: String },
+    BuildEnvironment { err: String },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -176,6 +181,9 @@ impl IntoResponse for ServiceError {
             )
                 .into_response(),
             ServiceError::InvalidRequest { err } => (StatusCode::BAD_REQUEST, err).into_response(),
+            ServiceError::BuildEnvironment { err } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, err).into_response()
+            }
         }
     }
 }
@@ -188,12 +196,18 @@ pub(crate) enum StartReason {
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>, fdstore: FdStore) -> Self {
+    pub fn new(
+        old_sigmask: OldSigmask,
+        tx_event: mpsc::Sender<Event>,
+        fdstore: FdStore,
+        user_env_files: Vec<PathBuf>,
+    ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
             fdstore,
+            user_env_files,
         }
     }
 
@@ -626,6 +640,10 @@ impl ServiceManager {
             .iter()
             .map(|(name, service)| (name, &service.state.status))
     }
+
+    pub fn user_env_files(&self) -> &[PathBuf] {
+        &self.user_env_files
+    }
 }
 
 async fn run_liveness_probe(
@@ -717,16 +735,8 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
-    // FIXME(rcanderson23): this keeps the current behavior but we do not want user services to
-    // inherit a copy of beam-init's environment so we should construct one
-    let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    env.extend(
-        config
-            .env
-            .iter()
-            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
-    );
-    let envp_store = env
+    let envp_store = config
+        .env
         .iter()
         .map(|(k, v)| {
             let mut entry = k.clone().into_vec();

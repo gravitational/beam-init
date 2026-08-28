@@ -1,4 +1,7 @@
-use crate::docker::Image;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+use crate::docker::{Image, RunOptions};
 
 #[test]
 fn self_test_pass() {
@@ -30,8 +33,27 @@ fn api_start_service() {
 
 #[test]
 fn api_service_environment() {
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/environment");
+    let mut env_files: Vec<OsString> = std::fs::read_dir(&fixture_dir)
+        .unwrap()
+        .map(|f| f.unwrap())
+        .filter(|f| f.file_type().unwrap().is_file())
+        .map(|f| f.file_name())
+        .collect();
+    env_files.sort();
+
+    let container_dir = Path::new("/mnt/env/");
+    let args = env_files.into_iter().flat_map(|f| {
+        let path = container_dir.join(f).into_os_string();
+        [OsString::from("--environment-file"), path]
+    });
+
+    let options = RunOptions::default()
+        .mount(fixture_dir, container_dir.into())
+        .beam_init_args(args);
+
     Image::build("test.Dockerfile")
-        .run("api_service_environment.py")
+        .run_with_options("api_service_environment.py", options)
         .wait();
 }
 
