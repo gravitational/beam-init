@@ -953,6 +953,7 @@ fn spawn_service(
                 );
                 drop(err_tx);
 
+                // FIXME user should probably see child pid
                 let self_pid = getpid();
                 expect_no_panic(
                     pid_tx.write_all(&pid_t::to_ne_bytes(self_pid)),
