@@ -15,6 +15,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     tty.sync(&app)?;
 
     // send SIGWINCH to the application to stimulate it to redraw
+    // FIXME send signal through beam-init instead
     if let Err(err) = kill_process_group(pid, libc::SIGWINCH) {
         if err.raw_os_error() == Some(libc::ESRCH) {
             return Ok(());
