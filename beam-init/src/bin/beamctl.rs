@@ -349,12 +349,18 @@ fn main() {
                     .collect::<Result<Vec<_>, _>>()
                     .unwrap_or_else(show_error_and_exit);
 
-                // Handle formatting if there are no arguments.
                 for (name, service) in services {
+                    // Handle formatting if there are no arguments.
                     let mut args = service.args;
                     args.insert(0, service.cmd);
 
-                    println!("{name} ({}): {}", service.status, args.join(" "));
+                    let labels = if service.labels.is_empty() {
+                        format_args!("")
+                    } else {
+                        format_args!(" [{}]", display_labels(&service.labels))
+                    };
+
+                    println!("{name}{labels} ({}): {}", service.status, args.join(" "));
                 }
             }
         }
@@ -478,7 +484,7 @@ fn service_match(
     client: &Client,
     name: Option<String>,
     selector: Vec<Label>,
-) -> Box<dyn Iterator<Item = String>> {
+) -> Box<dyn Iterator<Item = String> + '_> {
     if selector.is_empty() {
         let name = prefix_match(client, name.expect("name to be present"));
         Box::new(std::iter::once(name))
@@ -486,22 +492,19 @@ fn service_match(
         debug_assert!(name.is_none());
         let selector = BTreeMap::from_iter(selector);
 
-        use beam_init_api::ServiceStatus;
         let services = client.list_services().unwrap_or_else(show_error_and_exit);
 
-        let results =
-            services
-                .into_iter()
-                .filter_map(move |(service_name, status)| {
-                    if let ServiceStatus::Running { labels, .. }
-                    | ServiceStatus::Frozen { labels, .. } = status
-                        && keys_match(&selector, &labels)
-                    {
-                        Some(service_name)
-                    } else {
-                        None
-                    }
-                });
+        let results = services.into_keys().filter_map(move |service_name| {
+            let labels = client
+                .show_service(&service_name)
+                .unwrap_or_else(show_error_and_exit)
+                .labels;
+            if keys_match(&selector, &labels) {
+                Some(service_name)
+            } else {
+                None
+            }
+        });
 
         Box::new(results)
     }
@@ -543,6 +546,37 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
         return Err("environment variable key cannot be empty".to_owned());
     }
     Ok((k.to_owned(), v.to_owned()))
+}
+
+// https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
+fn intersperse<Sep, T>(sep: Sep, iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+where
+    Sep: Copy,
+    T: From<Sep>,
+{
+    let mut iter = iter.peekable();
+    let mut do_sep = false;
+    std::iter::from_fn(move || {
+        if do_sep && iter.peek().is_some() {
+            do_sep = false;
+            Some(sep.into())
+        } else {
+            do_sep = true;
+            iter.next()
+        }
+    })
+}
+
+fn display_labels(labels: &BTreeMap<String, String>) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+
+    intersperse(
+        ",",
+        labels.iter().map(|(key, value)| format!("{key}={value}")),
+    )
+    .collect()
 }
 
 #[cfg(test)]
@@ -608,5 +642,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_intersperse() {
+        assert_eq!(
+            intersperse(0, None.into_iter()).collect::<Vec<u8>>(),
+            Vec::<u8>::new(),
+        );
+        assert_eq!(
+            intersperse(0, [1].into_iter()).collect::<Vec<u8>>(),
+            vec![1]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2, 3].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2, 0, 3]
+        );
     }
 }

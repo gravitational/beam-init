@@ -304,6 +304,7 @@ impl From<&crate::services::Service> for beam_init_api::Service {
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
+            labels: value.config.labels.clone(),
         }
     }
 }
@@ -312,24 +313,16 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running {
+            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
+                ServiceStatus::Running {
+                    main_pid,
+                    pty: pty
+                        .as_ref()
+                        .map(|inner| (inner.master.id(), inner.path.clone())),
+                }
+            }
+            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
                 main_pid,
-                ref labels,
-                ref pty,
-            } => ServiceStatus::Running {
-                main_pid,
-                labels: labels.clone(),
-                pty: pty
-                    .as_ref()
-                    .map(|inner| (inner.master.id(), inner.path.clone())),
-            },
-            crate::services::ServiceStatus::Frozen {
-                main_pid,
-                ref labels,
-                ref pty,
-            } => ServiceStatus::Frozen {
-                main_pid,
-                labels: labels.clone(),
                 pty: pty
                     .as_ref()
                     .map(|inner| (inner.master.id(), inner.path.clone())),
