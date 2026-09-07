@@ -454,7 +454,10 @@ fn service_match(
     name: Option<String>,
     selector: Vec<Label>,
 ) -> Box<dyn Iterator<Item = String>> {
-    if !selector.is_empty() {
+    if selector.is_empty() {
+        let name = prefix_match(client, name.expect("name to be present"));
+        Box::new(std::iter::once(name))
+    } else {
         debug_assert!(name.is_none());
         let selector = BTreeMap::from_iter(selector);
 
@@ -476,9 +479,6 @@ fn service_match(
                 });
 
         Box::new(results)
-    } else {
-        let name = prefix_match(client, name.expect("name to be present"));
-        Box::new(std::iter::once(name))
     }
 }
 
