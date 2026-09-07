@@ -31,7 +31,12 @@ pub(crate) struct MonitorCommandSender(PipeWriter);
 
 impl MonitorCommandSender {
     pub(crate) fn send(&mut self, cmd: MonitorCommand) -> io::Result<()> {
-        self.0.write_all(&[cmd.ser()])
+        match self.0.write_all(&[cmd.ser()]) {
+            Ok(()) => Ok(()),
+            // Monitor process exited, we will get a SIGCHLD soon
+            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 }
 

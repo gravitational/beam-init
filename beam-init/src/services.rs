@@ -483,7 +483,9 @@ impl ServiceManager {
                 let pty = pty.take();
                 service.abort_liveness_probe();
                 if let Some(monitor_tx) = &mut monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGSTOP));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGSTOP))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGSTOP).expect("process to exist");
                 }
@@ -525,7 +527,9 @@ impl ServiceManager {
                 let mut monitor_tx = monitor_tx.take();
                 let pty = pty.take();
                 if let Some(monitor_tx) = &mut monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGCONT));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGCONT))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGCONT).expect("process to exist");
                 }
@@ -588,7 +592,9 @@ impl ServiceManager {
                 let mut monitor_tx = monitor_tx.take();
                 service.abort_liveness_probe();
                 if let Some(monitor_tx) = &mut monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGTERM));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGTERM))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGTERM).expect("process to exist");
                 }
@@ -629,7 +635,9 @@ impl ServiceManager {
                 let mut monitor_tx = monitor_tx.take();
                 service.abort_liveness_probe();
                 if let Some(monitor_tx) = &mut monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGTERM));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGTERM))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGTERM).expect("process to exist");
                 }
@@ -667,7 +675,9 @@ impl ServiceManager {
                 prune: _,
             } => {
                 if let Some(monitor_tx) = monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGKILL));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGKILL))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGKILL).expect("process to exist");
                 }
@@ -678,7 +688,9 @@ impl ServiceManager {
                 ..
             } => {
                 if let Some(monitor_tx) = monitor_tx {
-                    monitor_tx.send(MonitorCommand::Signal(SIGKILL));
+                    monitor_tx
+                        .send(MonitorCommand::Signal(SIGKILL))
+                        .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(main_pid, SIGKILL).expect("process to exist");
                 }
