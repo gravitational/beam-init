@@ -82,28 +82,28 @@ impl Client {
         if prune {
             self.delete(&service_path(name))
         } else {
-            self.post(&service_action_path(name, "stop"), name)
+            self.post(&service_action_path(name, "stop"), ())
         }
     }
 
     /// Stops and starts the service.
     pub fn restart_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "restart"), name)
+        self.post(&service_action_path(name, "restart"), ())
     }
 
     /// Returns the configuration and current state of the service.
     pub fn show_service(&self, name: &str) -> Result<Service, Error> {
-        self.post(&service_action_path(name, "show"), name)
+        self.post(&service_action_path(name, "show"), ())
     }
 
     /// Pauses the process for the service.
     pub fn freeze_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "freeze"), name)
+        self.post(&service_action_path(name, "freeze"), ())
     }
 
     /// Resumes the paused process for the service.
     pub fn thaw_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "thaw"), name)
+        self.post(&service_action_path(name, "thaw"), ())
     }
 
     /// Returns the buffered logs for the service.
