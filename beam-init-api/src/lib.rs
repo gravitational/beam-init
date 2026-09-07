@@ -188,14 +188,15 @@ impl std::fmt::Display for ServiceStatus {
 }
 
 // https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
-fn intersperse<Sep, T>(sep: Sep, mut iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+fn intersperse<Sep, T>(sep: Sep, iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
 where
     Sep: Copy,
     T: From<Sep>,
 {
+    let mut iter = iter.peekable();
     let mut do_sep = false;
     std::iter::from_fn(move || {
-        if do_sep {
+        if do_sep && iter.peek().is_some() {
             do_sep = false;
             Some(sep.into())
         } else {
@@ -244,5 +245,30 @@ mod exit_status_serde {
     {
         let raw = i32::deserialize(deserializer)?;
         Ok(ExitStatus::from_raw(raw))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::intersperse;
+
+    #[test]
+    fn test_intersperse() {
+        assert_eq!(
+            intersperse(0, None.into_iter()).collect::<Vec<u8>>(),
+            vec![]
+        );
+        assert_eq!(
+            intersperse(0, [1].into_iter()).collect::<Vec<u8>>(),
+            vec![1]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2, 3].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2, 0, 3]
+        );
     }
 }
