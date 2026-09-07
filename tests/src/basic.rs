@@ -171,3 +171,17 @@ fn pty_attach_wrong_user() {
 fn pty_owner() {
     Image::build("test.Dockerfile").run("pty_owner.py").wait();
 }
+
+#[test]
+fn bootstrap_protected() {
+    assert!(
+        std::str::from_utf8(
+            &Image::build("test.Dockerfile")
+                .run("api_protect_bootstrap.py")
+                .wait()
+                .stdout
+        )
+        .unwrap()
+        .contains("Still here")
+    );
+}
