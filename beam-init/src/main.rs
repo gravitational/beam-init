@@ -21,6 +21,7 @@ mod fdstore;
 mod logs;
 mod services;
 mod signal_stream;
+mod spawn;
 
 pub(crate) const VERSION: &str = match option_env!("BEAM_VERSION") {
     Some(version) => version,
