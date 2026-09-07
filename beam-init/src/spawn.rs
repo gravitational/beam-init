@@ -19,7 +19,7 @@ use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{
-    _exit, cerr, close_range, exit_with_signal, getpid, setpgid, setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, getpid, ipc_barrier, setpgid, setsid, waitpid,
 };
 
 unsafe extern "C" {
@@ -117,6 +117,7 @@ pub(crate) fn spawn_service(
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     let (mut monitor_rx, monitor_tx) = io::pipe()?;
+    let (pgid_sync_rx, pgid_sync_tx) = ipc_barrier::barrier()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
@@ -176,6 +177,8 @@ pub(crate) fn spawn_service(
                         // Uses the current PID as the PGID of the new process group.
                         expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
+                        drop(pgid_sync_tx);
+
                         // SAFETY: args is a NULL terminated list of C strings.
                         exec_with_creds_and_err_pipe(
                             &cmd,
@@ -188,6 +191,7 @@ pub(crate) fn spawn_service(
                     "failed to fork",
                 );
                 drop(err_tx);
+                drop(pgid_sync_tx);
 
                 // FIXME user should probably see child pid
                 let self_pid = getpid();
@@ -196,7 +200,7 @@ pub(crate) fn spawn_service(
                     "failed to write pid",
                 );
 
-                // FIXME block until setpgrp in child
+                expect_no_panic(pgid_sync_rx.wait(), "failed to read from pgid sync pipe");
 
                 loop {
                     let mut fds = [
