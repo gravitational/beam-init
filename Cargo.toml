@@ -38,6 +38,10 @@ tokio-stream = "0.1.18"
 mio = "1.2.0"
 
 
+[workspace.lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ["cfg(testing)"]
+
 [workspace.lints.clippy]
 missing_safety_doc = "warn"
 undocumented_unsafe_blocks = "warn"

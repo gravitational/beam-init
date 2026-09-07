@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
+use std::ffi::{CStr, CString, NulError, OsString, c_char, c_uint};
 use std::io::{self, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::ptr;
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, getpid, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo, uid_t};
 use reqwest::StatusCode;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
@@ -23,14 +25,21 @@ use crate::signal_stream::OldSigmask;
 use crate::{DEBUG_LOGS, Event};
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::{Pty, PtyClient};
-use beam_init::system::{_exit, cerr, kill_process_group, waitpid};
+use beam_init::system::{
+    _exit, cerr, close_range, getpid, kill_process_group, setpgid, setsid, waitpid,
+};
 use beam_init_api::Probe;
+
+unsafe extern "C" {
+    static mut environ: *mut *mut libc::c_char;
+}
 
 pub struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
     fdstore: FdStore,
+    user_env_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -67,10 +76,36 @@ impl Service {
 pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<OsString, OsString>,
     pub labels: BTreeMap<String, String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,
+}
+
+impl ServiceConfig {
+    fn validate(&self) -> Result<(), ServiceError> {
+        for (k, v) in &self.env {
+            let k = k.as_os_str().as_bytes();
+            let v = v.as_os_str().as_bytes();
+            if k.is_empty() {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment keys may not be empty".to_string(),
+                });
+            }
+            if k.contains(&b'=') {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment keys may not contain '='".to_string(),
+                });
+            }
+            if k.contains(&b'\0') || v.contains(&b'\0') {
+                return Err(ServiceError::InvalidRequest {
+                    err: "environment key/value may not contain NUL".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The runtime state of a service.
@@ -120,6 +155,8 @@ pub enum ServiceError {
     ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
     InvalidCredentials,
+    InvalidRequest { err: String },
+    BuildEnvironment { err: String },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -146,6 +183,10 @@ impl IntoResponse for ServiceError {
                 "Service owned by a different user",
             )
                 .into_response(),
+            ServiceError::InvalidRequest { err } => (StatusCode::BAD_REQUEST, err).into_response(),
+            ServiceError::BuildEnvironment { err } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, err).into_response()
+            }
         }
     }
 }
@@ -158,12 +199,18 @@ pub(crate) enum StartReason {
 }
 
 impl ServiceManager {
-    pub fn new(old_sigmask: OldSigmask, tx_event: mpsc::Sender<Event>, fdstore: FdStore) -> Self {
+    pub fn new(
+        old_sigmask: OldSigmask,
+        tx_event: mpsc::Sender<Event>,
+        fdstore: FdStore,
+        user_env_files: Vec<PathBuf>,
+    ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
             fdstore,
+            user_env_files,
         }
     }
 
@@ -249,6 +296,8 @@ impl ServiceManager {
         name: String,
         config: ServiceConfig,
     ) -> Result<(), ServiceError> {
+        config.validate()?;
+
         let logs = Logs::new();
 
         if *DEBUG_LOGS {
@@ -344,7 +393,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new(|fd| self.fdstore.add(fd)))
+            .then(|| Pty::new(|fd| self.fdstore.add(fd, credentials.uid)))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
@@ -609,6 +658,10 @@ impl ServiceManager {
             .iter()
             .map(|(name, service)| (name, &service.state.status))
     }
+
+    pub fn user_env_files(&self) -> &[PathBuf] {
+        &self.user_env_files
+    }
 }
 
 async fn run_liveness_probe(
@@ -700,6 +753,22 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
         .chain(Some(ptr::null()))
         .collect::<Vec<_>>();
 
+    let envp_store = config
+        .env
+        .iter()
+        .map(|(k, v)| {
+            let mut entry = k.clone().into_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(v.as_bytes());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, NulError>>()?;
+    let mut envp = envp_store
+        .iter()
+        .map(|p| p.as_ptr().cast_mut())
+        .chain(Some(ptr::null_mut()))
+        .collect::<Box<[_]>>();
+
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
@@ -711,12 +780,10 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
             // Uses the current PID as the PGID of the new process group.
             // Using only a new process group won't work as then bash will
             // hang if the container has a tty attached.
-            //
-            // SAFETY: setsid is safe to call.
-            expect_no_panic(cerr(libc::setsid()), "failed to setsid");
+            expect_no_panic(setsid(), "failed to setsid");
 
             let has_ctty = matches!(sink, Sink::PTY(_));
-            sink.set_stdioe();
+            sink.set_stdioe(config.credentials.uid);
 
             if !has_ctty {
                 // Double fork to ensure the service can't accidentally attach a
@@ -727,12 +794,16 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                     unsafe_fork!({
                         // Create a new process group led by this process.
                         // Uses the current PID as the PGID of the new process group.
-                        //
-                        // SAFETY: setpgid is safe to call.
-                        expect_no_panic(cerr(libc::setpgid(0, 0)), "failed to `setpgid`");
+                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
                         // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                        exec_with_creds_and_err_pipe(
+                            &cmd,
+                            &args,
+                            &mut envp,
+                            &config.credentials,
+                            err_tx,
+                        )
                     }),
                     "failed to fork",
                 );
@@ -750,7 +821,6 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 // child if it happened after the exec.
                 // FIXME add a persistent monitor process
 
-                // SAFETY: getpid is safe to call.
                 let service_pid = getpid();
                 expect_no_panic(
                     pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
@@ -758,7 +828,7 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
                 );
 
                 // SAFETY: args is a NULL terminated list of C strings.
-                exec_with_creds_and_err_pipe(&cmd, &args, &config.credentials, err_tx)
+                exec_with_creds_and_err_pipe(&cmd, &args, &mut envp, &config.credentials, err_tx)
             }
         })?
     };
@@ -777,11 +847,11 @@ fn spawn_service(old_sigmask: OldSigmask, config: &ServiceConfig, sink: Sink) ->
 }
 
 impl Sink<'_> {
-    fn set_stdioe(self) {
+    fn set_stdioe(self, uid: uid_t) {
         match self {
             Sink::PTY(pty) => {
                 let pty_fd = expect_no_panic(
-                    pty.make_tty(),
+                    pty.make_tty(uid),
                     "could not make the pty the controlling terminal",
                 );
 
@@ -819,23 +889,17 @@ impl Sink<'_> {
 /// # Safety
 ///
 /// `args` must be a NULL terminated list of C strings.
+/// `envp` must be a NULL terminated list of C strings.
 unsafe fn exec_with_creds_and_err_pipe(
     cmd: &CStr,
     args: &[*const c_char],
+    envp: &mut [*mut c_char],
     credentials: &Credentials,
     mut err_tx: PipeWriter,
 ) -> ! {
     // Using raw syscall as musl doesn't have a close_range() wrapper.
-    // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
     expect_no_panic(
-        cerr(unsafe {
-            libc::syscall(
-                libc::SYS_close_range,
-                3,
-                c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC.cast_signed(),
-            ) as c_int
-        }),
+        close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
         "failed to `close_range",
     );
 
@@ -843,9 +907,12 @@ unsafe fn exec_with_creds_and_err_pipe(
     // supplementary group list.
     expect_no_panic(credentials.set_creds(), "failed to set process credentials");
 
-    // SAFETY: Per the safety requirements of this function, args is a NULL
-    // terminated list of C strings.
-    unsafe { libc::execvp(cmd.as_ptr(), args.as_ptr()) };
+    // SAFETY: Per the safety requirements of this function, args and env is a NULL
+    // terminated lists of C strings.
+    unsafe {
+        environ = envp.as_mut_ptr();
+        libc::execvp(cmd.as_ptr(), args.as_ptr())
+    };
 
     // If we reach this point, the exec failed.
     let Some(err) = io::Error::last_os_error().raw_os_error() else {

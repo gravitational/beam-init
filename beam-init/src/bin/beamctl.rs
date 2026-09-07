@@ -61,6 +61,8 @@ enum Command {
         command: Vec<String>,
         #[command(flatten)]
         liveness: Option<LivenessProbe>,
+        #[arg(long, value_name = "KEY=VALUE", value_parser = parse_key_value)]
+        env: Vec<(String, String)>,
     },
     /// Stop a service
     Stop {
@@ -148,6 +150,11 @@ enum Command {
     },
     /// Show the version of beamctl and beam-init
     Version,
+    #[cfg(testing)]
+    TestingGetFdFromStore {
+        #[arg(index = 1)]
+        id: u64,
+    },
 }
 
 /// A key-value pair.
@@ -254,17 +261,20 @@ fn main() {
             liveness,
             #[cfg(feature = "unstable-pty")]
             pty,
+            env,
         } => {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
             let labels = BTreeMap::from_iter(labels);
+            let env = env.into_iter().collect();
             let _resp = client
                 .create_service(
                     &name,
                     beam_init_api::CreateService {
                         cmd: command[0].clone(),
                         args: command[1..].to_owned(),
+                        env,
                         liveness: liveness.map(Into::into),
                         pty,
                         labels,
@@ -374,6 +384,13 @@ fn main() {
             println!("beamctl: Version: {} - SHA: {}", VERSION, GIT_SHA);
             let resp = client.version().unwrap_or_else(show_error_and_exit);
             println!("beam-init: Version: {} - SHA: {}", resp.version, resp.sha);
+        }
+        #[cfg(testing)]
+        Command::TestingGetFdFromStore { id } => {
+            if get_fd_from_store(id).is_none() {
+                eprintln!("fd not found in store");
+                process::exit(1);
+            }
         }
     }
 }
@@ -516,6 +533,16 @@ fn gen_name() -> String {
     // SAFETY: We pass a valid mutable byte array of the given size.
     unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
     format!("{:016x}", u64::from_ne_bytes(buf))
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once("=")
+        .ok_or_else(|| format!("invalid KEY=VALUE: `=` not found in {s}"))?;
+    if k.is_empty() {
+        return Err("environment variable key cannot be empty".to_owned());
+    }
+    Ok((k.to_owned(), v.to_owned()))
 }
 
 #[cfg(test)]

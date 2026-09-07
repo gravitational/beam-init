@@ -1,6 +1,7 @@
 #![allow(clippy::disallowed_types)]
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{LazyLock, Mutex};
@@ -13,6 +14,28 @@ const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 #[derive(Clone, Debug)]
 pub struct Image {
     tag: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    mounts: Vec<(PathBuf, PathBuf)>,
+    beam_init_args: Vec<OsString>,
+}
+
+impl RunOptions {
+    pub fn mount(mut self, src: PathBuf, dst: PathBuf) -> Self {
+        self.mounts.push((src, dst));
+        self
+    }
+
+    pub fn beam_init_args<I, A>(mut self, args: I) -> Self
+    where
+        I: Iterator<Item = A>,
+        A: Into<OsString>,
+    {
+        self.beam_init_args.extend(args.into_iter().map(Into::into));
+        self
+    }
 }
 
 impl Image {
@@ -50,6 +73,10 @@ impl Image {
     }
 
     pub fn run(&self, script: &str) -> Container {
+        self.run_with_options(script, RunOptions::default())
+    }
+
+    pub fn run_with_options(&self, script: &str, options: RunOptions) -> Container {
         let script_path = PathBuf::from(MANIFEST_DIR).join("tests").join(script);
         let script_path = script_path.to_str().unwrap();
 
@@ -58,7 +85,14 @@ impl Image {
         cmd.arg("run").arg("-i").arg("--rm");
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
-        cmd.arg(&self.tag).arg("python3").arg("/mnt/script.py");
+        for (src, dst) in options.mounts {
+            cmd.arg("-v")
+                .arg(format!("{}:{}:ro", src.display(), dst.display()));
+        }
+
+        cmd.arg(&self.tag);
+        cmd.args(options.beam_init_args);
+        cmd.arg("python3").arg("/mnt/script.py");
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         Container {

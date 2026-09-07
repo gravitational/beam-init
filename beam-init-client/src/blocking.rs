@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
 
 use beam_init_api::{CreateService, Service, ServiceStatus, VersionResponse};
 use reqwest::{Method, StatusCode};
@@ -14,6 +15,7 @@ use crate::Error;
 /// # Examples
 ///
 /// ```no_run
+/// use std::collections::BTreeMap;
 /// use beam_init_api::CreateService;
 /// use beam_init_client::blocking::Client;
 ///
@@ -24,6 +26,7 @@ use crate::Error;
 ///     CreateService {
 ///         cmd: "/usr/bin/sleep".to_owned(),
 ///         args: vec!["infinity".to_owned()],
+///         env: BTreeMap::default(),
 ///         labels: [("field".to_string(), "value".to_string())].into(),
 ///         liveness: None,
 ///         pty: false,
@@ -36,6 +39,8 @@ use crate::Error;
 pub struct Client {
     client: reqwest::blocking::Client,
 }
+
+const THIRTY_SECONDS: Duration = Duration::from_secs(30);
 
 impl Client {
     /// Creates a client connected to the default beam-init API socket.
@@ -50,6 +55,7 @@ impl Client {
         }
         let client = reqwest::blocking::ClientBuilder::new()
             .unix_socket(path.as_ref())
+            .timeout(None)
             .build()
             .map_err(|e| Error::Creation(e.to_string()))?;
 
@@ -113,8 +119,10 @@ impl Client {
     /// The returned reader yields buffered log lines first, then waits for new
     /// output from the service.
     pub fn follow_logs(&self, name: &str) -> Result<impl Read, Error> {
+        // Other requests have a timeout of 30s, but this request should not time out.
+        let timeout = None;
         let path = format!("{}?follow=true", service_action_path(name, "logs"));
-        self.get_raw(&path)
+        self.get_raw_with_timeout(&path, timeout)
     }
 
     pub fn version(&self) -> Result<VersionResponse, Error> {
@@ -144,7 +152,18 @@ impl Client {
     }
 
     fn get_raw(&self, path: &str) -> Result<reqwest::blocking::Response, Error> {
-        Self::send(self.request(Method::GET, path))
+        self.get_raw_with_timeout(path, Some(THIRTY_SECONDS))
+    }
+
+    fn get_raw_with_timeout(
+        &self,
+        path: &str,
+        timeout: Option<Duration>,
+    ) -> Result<reqwest::blocking::Response, Error> {
+        match timeout {
+            Some(timeout) => Self::send(self.request(Method::GET, path).timeout(timeout)),
+            None => Self::send(self.request(Method::GET, path)),
+        }
     }
 
     fn get<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
@@ -154,13 +173,17 @@ impl Client {
     }
 
     fn post<T: Serialize, U: DeserializeOwned>(&self, path: &str, body: T) -> Result<U, Error> {
-        Self::send(self.request(Method::POST, path).json(&body))?
-            .json()
-            .map_err(|e| Error::Decode(e.to_string()))
+        Self::send(
+            self.request(Method::POST, path)
+                .json(&body)
+                .timeout(THIRTY_SECONDS),
+        )?
+        .json()
+        .map_err(|e| Error::Decode(e.to_string()))
     }
 
     fn delete<U: DeserializeOwned>(&self, path: &str) -> Result<U, Error> {
-        Self::send(self.request(Method::DELETE, path))?
+        Self::send(self.request(Method::DELETE, path).timeout(THIRTY_SECONDS))?
             .json()
             .map_err(|e| Error::Decode(e.to_string()))
     }

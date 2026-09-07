@@ -3,7 +3,8 @@
 //! The types in this crate define the JSON exchanged between beam-init and its
 //! clients.
 
-use std::{collections::BTreeMap, path::PathBuf, process::ExitStatus, time::Duration};
+use std::collections::BTreeMap;
+use std::{path::PathBuf, process::ExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,10 @@ pub struct CreateService {
 
     /// Arguments passed to the executable.
     pub args: Vec<String>,
+
+    /// Environment variables
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 
     /// Optional HTTP liveness probe configuration.
     pub liveness: Option<Probe>,
