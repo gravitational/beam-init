@@ -6,6 +6,7 @@ use std::{io, process};
 use libc::pid_t;
 
 pub mod fork;
+pub mod ipc_barrier;
 pub mod pty;
 pub mod signal_set;
 pub mod signalfd;
