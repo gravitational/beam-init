@@ -3,7 +3,7 @@ import time
 
 # We should not be able to modify bootstrap.
 
-subprocess.call(["beamctl", "stop", "bootstrap"])
+assert subprocess.call(["beamctl", "stop", "bootstrap"]) == 1
 
 # Wait a bit to ensure we have ample time to get killed
 time.sleep(.1)

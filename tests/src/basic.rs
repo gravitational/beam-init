@@ -175,7 +175,7 @@ fn pty_owner() {
 #[test]
 fn bootstrap_protected() {
     assert!(
-        std::str::from_utf8(
+        str::from_utf8(
             &Image::build("test.Dockerfile")
                 .run("api_protect_bootstrap.py")
                 .wait()
