@@ -323,16 +323,24 @@ fn main() {
             }
         }
         Command::Show { name, selector } => {
-            for name in service_match(&client, name, selector) {
-                let service = client
-                    .show_service(&name)
+            let names = service_match(&client, name, selector);
+
+            if args.json {
+                let services = names
+                    .map(|name| client.show_service(&name))
+                    .collect::<Result<Vec<_>, _>>()
                     .unwrap_or_else(show_error_and_exit);
 
-                if args.json {
-                    serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
-                    println!();
-                } else {
-                    // Handle formatting if there are no arguments.
+                serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
+                println!();
+            } else {
+                let services = names
+                    .map(|name| client.show_service(&name).map(|service| (name, service)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_else(show_error_and_exit);
+
+                // Handle formatting if there are no arguments.
+                for (name, service) in services {
                     let mut args = service.args;
                     args.insert(0, service.cmd);
 
