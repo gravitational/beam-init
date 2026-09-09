@@ -61,8 +61,13 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                 CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
-                        sig @ (libc::SIGINT | libc::SIGQUIT | libc::SIGWINCH) => {
+                        sig @ (libc::SIGINT | libc::SIGQUIT) => {
                             kill_process_group(pid, sig)?;
+                            continue;
+                        }
+                        libc::SIGWINCH => {
+                            // Window size changed, the kernel will send a SIGWINCH to the service
+                            // once we sync the window size to the pty again.
                             continue;
                         }
                         libc::SIGTSTP => {
@@ -77,7 +82,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
             };
 
             if terminated(res)? {
-                // TODO: this should also reset the terminal, actually, but for now this suffices
+                drop(tty); // Restore tty config
                 println!();
                 return Ok(());
             }
