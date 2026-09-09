@@ -13,10 +13,10 @@ assert re.fullmatch(rb"sleep \(running PID=\d+\): sleep 10\n", output), output
 output = subprocess.check_output(["beamctl", "show", "sleep", "--json"])
 service = json.loads(output)
 
-assert service["cmd"] == "sleep", service
-assert service["args"] == ["10"], service
+assert service[0]["cmd"] == "sleep", service
+assert service[0]["args"] == ["10"], service
 
-status = service["status"]
+status = service[0]["status"]
 assert "Running" in status, status
 assert isinstance(status["Running"]["main_pid"], int), status
 
@@ -36,6 +36,6 @@ service = json.loads(output)
 output = subprocess.check_output(["beamctl", "--json", "show", "sleep"])
 assert json.loads(output) == service
 
-assert service["cmd"] == "sleep", service
-assert service["args"] == ["10"], service
-assert service["status"] == "Stopped", service
+assert service[0]["cmd"] == "sleep", service
+assert service[0]["args"] == ["10"], service
+assert service[0]["status"] == "Stopped", service

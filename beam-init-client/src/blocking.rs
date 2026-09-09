@@ -27,6 +27,7 @@ use crate::Error;
 ///         cmd: "/usr/bin/sleep".to_owned(),
 ///         args: vec!["infinity".to_owned()],
 ///         env: BTreeMap::default(),
+///         labels: [("field".to_string(), "value".to_string())].into(),
 ///         liveness: None,
 ///         pty: false,
 ///     },

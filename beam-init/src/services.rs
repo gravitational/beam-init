@@ -69,6 +69,7 @@ pub struct ServiceConfig {
     pub cmd: String,
     pub args: Vec<String>,
     pub env: BTreeMap<OsString, OsString>,
+    pub labels: BTreeMap<String, String>,
     pub liveness: Option<Probe>,
     pub pty: bool,
     pub credentials: Credentials,

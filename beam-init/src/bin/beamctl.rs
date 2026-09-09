@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::process;
 use std::time::Duration;
 
@@ -50,6 +51,9 @@ enum Command {
         /// Name of the service to create
         #[arg(long)]
         name: Option<String>,
+        /// Tag to associate this service with
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        labels: Vec<Label>,
         #[arg(long)]
         #[cfg(feature = "unstable-pty")]
         pty: bool,
@@ -62,32 +66,66 @@ enum Command {
     },
     /// Stop a service
     Stop {
-        #[arg(index = 1)]
-        name: String,
-
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector")
+        )]
+        name: Option<String>,
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
         /// Remove this service from the list of services.
         #[arg(long)]
         prune: bool,
     },
     /// Stop a service if currently running and start it again.
     Restart {
-        #[arg(index = 1)]
-        name: String,
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector")
+        )]
+        name: Option<String>,
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Freeze all processes of a service
     Freeze {
-        #[arg(index = 1)]
-        name: String,
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector")
+        )]
+        name: Option<String>,
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Resume all processes of a service
     Thaw {
-        #[arg(index = 1)]
-        name: String,
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector")
+        )]
+        name: Option<String>,
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// Show information about a service
     Show {
-        #[arg(index = 1)]
-        name: String,
+        #[arg(
+            index = 1,
+            required_unless_present("selector"),
+            conflicts_with("selector")
+        )]
+        name: Option<String>,
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
     },
     /// List all services
     List,
@@ -118,6 +156,9 @@ enum Command {
         id: u64,
     },
 }
+
+/// A key-value pair.
+type Label = (String, String);
 
 // Defaults are from https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/v1/defaults.go.
 //
@@ -178,6 +219,35 @@ fn parse_duration_seconds(s: &str) -> Result<Duration, std::num::ParseIntError> 
     Ok(Duration::from_secs(s.parse()?))
 }
 
+#[derive(Debug)]
+enum ParseLabelError {
+    InvalidKeyName(String),
+    NotKeyValue,
+}
+
+impl std::fmt::Display for ParseLabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotKeyValue => write!(f, "not a key-value pair")?,
+            Self::InvalidKeyName(key) => write!(f, "'{key}' is not a valid label designator")?,
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ParseLabelError {}
+
+fn parse_label(label: &str) -> Result<(String, String), ParseLabelError> {
+    let Some((key, value)) = label.split_once('=') else {
+        return Err(ParseLabelError::NotKeyValue);
+    };
+    if !key.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return Err(ParseLabelError::InvalidKeyName(key.to_owned()));
+    }
+
+    Ok((key.to_owned(), value.to_owned()))
+}
+
 fn main() {
     let args = Cli::parse();
 
@@ -186,6 +256,7 @@ fn main() {
     match args.command {
         Command::Start {
             name,
+            labels,
             command,
             liveness,
             #[cfg(feature = "unstable-pty")]
@@ -195,6 +266,7 @@ fn main() {
             #[cfg(not(feature = "unstable-pty"))]
             let pty = false;
             let name = name.unwrap_or_else(gen_name);
+            let labels = BTreeMap::from_iter(labels);
             let env = env.into_iter().collect();
             let _resp = client
                 .create_service(
@@ -205,6 +277,7 @@ fn main() {
                         env,
                         liveness: liveness.map(Into::into),
                         pty,
+                        labels,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);
@@ -215,30 +288,37 @@ fn main() {
                 attach(client, name);
             }
         }
-        Command::Stop { name, prune } => {
-            let name = prefix_match(&client, name);
-
-            client
-                .stop_service(&name, prune)
-                .unwrap_or_else(show_error_and_exit)
+        Command::Stop {
+            name,
+            selector,
+            prune,
+        } => {
+            for name in service_match(&client, name, selector) {
+                client
+                    .stop_service(&name, prune)
+                    .unwrap_or_else(show_error_and_exit)
+            }
         }
-        Command::Restart { name } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .restart_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+        Command::Restart { name, selector } => {
+            for name in service_match(&client, name, selector) {
+                let _resp: () = client
+                    .restart_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
-        Command::Freeze { name } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .freeze_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+        Command::Freeze { name, selector } => {
+            for name in service_match(&client, name, selector) {
+                let _resp: () = client
+                    .freeze_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
-        Command::Thaw { name } => {
-            let name = prefix_match(&client, name);
-            let _resp: () = client
-                .thaw_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+        Command::Thaw { name, selector } => {
+            for name in service_match(&client, name, selector) {
+                let _resp: () = client
+                    .thaw_service(&name)
+                    .unwrap_or_else(show_error_and_exit);
+            }
         }
         Command::Logs { name, follow } => {
             let name = prefix_match(&client, name);
@@ -252,21 +332,36 @@ fn main() {
                 print!("{logs}");
             }
         }
-        Command::Show { name } => {
-            let name = prefix_match(&client, name);
-            let service = client
-                .show_service(&name)
-                .unwrap_or_else(show_error_and_exit);
+        Command::Show { name, selector } => {
+            let names = service_match(&client, name, selector);
 
             if args.json {
-                serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
+                let services = names
+                    .map(|name| client.show_service(&name))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_else(show_error_and_exit);
+
+                serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
                 println!();
             } else {
-                // Handle formatting if there are no arguments.
-                let mut args = service.args;
-                args.insert(0, service.cmd);
+                let services = names
+                    .map(|name| client.show_service(&name).map(|service| (name, service)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_else(show_error_and_exit);
 
-                println!("{name} ({}): {}", service.status, args.join(" "));
+                for (name, service) in services {
+                    // Handle formatting if there are no arguments.
+                    let mut args = service.args;
+                    args.insert(0, service.cmd);
+
+                    let labels = if service.labels.is_empty() {
+                        format_args!("")
+                    } else {
+                        format_args!(" [{}]", display_labels(&service.labels))
+                    };
+
+                    println!("{name}{labels} ({}): {}", service.status, args.join(" "));
+                }
             }
         }
         Command::List => {
@@ -277,7 +372,7 @@ fn main() {
                 println!();
             } else {
                 for (name, status) in services {
-                    println!("{name} ({status})")
+                    println!("{name} ({status})");
                 }
             }
         }
@@ -314,8 +409,12 @@ fn attach(client: Client, name: String) {
         .unwrap_or_else(show_error_and_exit);
 
     let (pid, pty) = match service.status {
-        beam_init_api::ServiceStatus::Running { ref pty, main_pid }
-        | beam_init_api::ServiceStatus::Frozen { ref pty, main_pid } => {
+        beam_init_api::ServiceStatus::Running {
+            ref pty, main_pid, ..
+        }
+        | beam_init_api::ServiceStatus::Frozen {
+            ref pty, main_pid, ..
+        } => {
             if let Some((index, _)) = pty {
                 if let Some(fd) = get_fd_from_store(*index) {
                     (main_pid, fd)
@@ -372,6 +471,45 @@ fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     fd
 }
 
+/// Checks whether all the values indexed by selector have the indicated values
+fn keys_match(selector: &BTreeMap<String, String>, labels: &BTreeMap<String, String>) -> bool {
+    selector
+        .keys()
+        .filter_map(|k| labels.get(k))
+        .eq(selector.values())
+}
+
+/// Match services based on a prefix of the name or based on a tag selection
+fn service_match(
+    client: &Client,
+    name: Option<String>,
+    selector: Vec<Label>,
+) -> Box<dyn Iterator<Item = String> + '_> {
+    if selector.is_empty() {
+        let name = prefix_match(client, name.expect("name to be present"));
+        Box::new(std::iter::once(name))
+    } else {
+        debug_assert!(name.is_none());
+        let selector = BTreeMap::from_iter(selector);
+
+        let services = client.list_services().unwrap_or_else(show_error_and_exit);
+
+        let results = services.into_keys().filter_map(move |service_name| {
+            let labels = client
+                .show_service(&service_name)
+                .unwrap_or_else(show_error_and_exit)
+                .labels;
+            if keys_match(&selector, &labels) {
+                Some(service_name)
+            } else {
+                None
+            }
+        });
+
+        Box::new(results)
+    }
+}
+
 /// As a userfriendliness feature, allow the user to match a service by only
 /// matching a prefix instead of the full service name.
 fn prefix_match(client: &Client, name: String) -> String {
@@ -408,6 +546,37 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
         return Err("environment variable key cannot be empty".to_owned());
     }
     Ok((k.to_owned(), v.to_owned()))
+}
+
+// https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
+fn intersperse<Sep, T>(sep: Sep, iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+where
+    Sep: Copy,
+    T: From<Sep>,
+{
+    let mut iter = iter.peekable();
+    let mut do_sep = false;
+    std::iter::from_fn(move || {
+        if do_sep && iter.peek().is_some() {
+            do_sep = false;
+            Some(sep.into())
+        } else {
+            do_sep = true;
+            iter.next()
+        }
+    })
+}
+
+fn display_labels(labels: &BTreeMap<String, String>) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
+
+    intersperse(
+        ",",
+        labels.iter().map(|(key, value)| format!("{key}={value}")),
+    )
+    .collect()
 }
 
 #[cfg(test)]
@@ -473,5 +642,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_intersperse() {
+        assert_eq!(
+            intersperse(0, None.into_iter()).collect::<Vec<u8>>(),
+            Vec::<u8>::new(),
+        );
+        assert_eq!(
+            intersperse(0, [1].into_iter()).collect::<Vec<u8>>(),
+            vec![1]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            intersperse(0, [1, 2, 3].into_iter()).collect::<Vec<u8>>(),
+            vec![1, 0, 2, 0, 3]
+        );
     }
 }

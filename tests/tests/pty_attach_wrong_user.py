@@ -40,7 +40,7 @@ assert process_exists("sleep"), "Sleep not started"
 # Get pty fdstore id
 result = beamctl(["--json", "show", "sleep"], uid=UID_A, gid=GID_A)
 assert result.returncode == 0, result.stderr
-pty_id = json.loads(result.stdout)["status"]["Running"]["pty"][0]
+pty_id = json.loads(result.stdout)[0]["status"]["Running"]["pty"][0]
 print(pty_id)
 
 # User B trying to get the pty for user A's service fails.
