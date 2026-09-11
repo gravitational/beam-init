@@ -4,6 +4,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
+use beam_init::system::getrandom;
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
@@ -393,8 +394,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
 fn gen_name() -> String {
     let mut buf = [0u8; 8];
-    // SAFETY: We pass a valid mutable byte array of the given size.
-    unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    getrandom(&mut buf);
     format!("{:016x}", u64::from_ne_bytes(buf))
 }
 
