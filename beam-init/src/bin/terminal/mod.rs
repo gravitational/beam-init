@@ -1,15 +1,15 @@
 use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
 use beam_init::system::signalfd::SignalFd;
-use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
+use beam_init::system::{cerr, signal_set::SignalSet};
 
 mod user_term;
 use beam_init_client::blocking::Client;
 use user_term::UserTerm;
 
-pub(super) fn manage(name: &str, pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
+pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
     let mut tty = UserTerm::open()?;
@@ -64,7 +64,13 @@ pub(super) fn manage(name: &str, pid: libc::pid_t, pty: OwnedFd) -> io::Result<(
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
                         sig @ (libc::SIGINT | libc::SIGQUIT) => {
-                            kill_process_group(pid, sig)?;
+                            // Assume the terminal is configured in a normal way
+                            // FIXME handle full input buffer
+                            if sig == libc::SIGINT {
+                                app.write_all(b"\x03")?;
+                            } else {
+                                app.write_all(b"\x1C")?;
+                            }
                             continue;
                         }
                         libc::SIGWINCH => {

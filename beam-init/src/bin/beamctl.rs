@@ -312,12 +312,18 @@ fn attach(client: Client, name: String) {
         .show_service(&name)
         .unwrap_or_else(show_error_and_exit);
 
-    let (pid, pty) = match service.status {
-        beam_init_api::ServiceStatus::Running { ref pty, main_pid }
-        | beam_init_api::ServiceStatus::Frozen { ref pty, main_pid } => {
+    let pty = match service.status {
+        beam_init_api::ServiceStatus::Running {
+            ref pty,
+            main_pid: _,
+        }
+        | beam_init_api::ServiceStatus::Frozen {
+            ref pty,
+            main_pid: _,
+        } => {
             if let Some((index, _)) = pty {
                 if let Some(fd) = get_fd_from_store(*index) {
-                    (main_pid, fd)
+                    fd
                 } else {
                     // We raced with the process exiting
                     let service = client
@@ -341,7 +347,7 @@ fn attach(client: Client, name: String) {
     // it interferes with signal handling
     drop(client);
 
-    if let Err(err) = terminal::manage(&name, pid, pty) {
+    if let Err(err) = terminal::manage(&name, pty) {
         println!("pty error for service {name} ({})", err);
     } else {
         // Retrieve the new status, which could have changed.
