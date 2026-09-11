@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::c_int;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -50,6 +51,10 @@ pub enum Command {
     },
     NotifyPtyAttached {
         name: String,
+    },
+    SendSignal {
+        name: String,
+        sig: c_int,
     },
 }
 
@@ -118,6 +123,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
             "/service/{name}/notify_pty_attached",
             post(notify_pty_attached),
         )
+        .route("/service/{name}/send_signal", post(send_signal))
         .route("/version", get(version))
         .with_state(tx_event);
 
@@ -305,6 +311,24 @@ async fn notify_pty_attached(
     tx_events
         .send(Event::Command {
             command: Command::NotifyPtyAttached { name },
+            tx,
+            credentials,
+        })
+        .await
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
+}
+
+async fn send_signal(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+    Json(sig): Json<c_int>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command {
+            command: Command::SendSignal { name, sig },
             tx,
             credentials,
         })
@@ -501,6 +525,11 @@ pub async fn handle_api_command(
         }
         Command::NotifyPtyAttached { name } => {
             service_manager.notify_pty_attached(credentials, &name)?;
+
+            Ok(Json(()).into_response())
+        }
+        Command::SendSignal { name, sig } => {
+            service_manager.send_signal(credentials, &name, sig)?;
 
             Ok(Json(()).into_response())
         }
