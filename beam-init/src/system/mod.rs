@@ -73,3 +73,20 @@ pub fn close_range(first: c_uint, last: c_uint, flags: c_int) -> io::Result<()> 
     // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
     cerr(unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) as c_int }).map(|_| ())
 }
+
+pub fn getrandom(mut buf: &mut [u8]) {
+    loop {
+        // SAFETY: We pass a valid mutable byte array of the given size.
+        let res = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+        match cerr(res.try_into().expect("buffer too large")) {
+            Ok(len) if len as usize == buf.len() => break,
+            // Getrandom got interrupted by a signal, buffer is partially filled.
+            Ok(len) => buf = &mut buf[len as usize..],
+            // This will panic rather than return the error because a getrandom
+            // error is rarely recoverable and, while likely not applicable to
+            // beam-init given the lack of crypto code, in general it is way too
+            // easy to accidentally ignore the error and cause a security issue.
+            Err(err) => panic!("failed to get random number: {err}"),
+        }
+    }
+}
