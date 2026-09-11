@@ -217,26 +217,25 @@ fn main() {
         }
         Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
-
             client
                 .stop_service(&name, prune)
                 .unwrap_or_else(show_error_and_exit)
         }
         Command::Restart { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .restart_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Freeze { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .freeze_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Thaw { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .thaw_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
@@ -288,7 +287,6 @@ fn main() {
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
-
             generate(shell, &mut command, "beamctl", &mut std::io::stdout());
         }
         Command::Version => {
