@@ -26,7 +26,7 @@ use beam_init::system::pty::Pty;
 use beam_init::system::{kill_process_group, waitpid};
 use beam_init_api::Probe;
 
-pub struct ServiceManager {
+pub(crate) struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
@@ -35,9 +35,9 @@ pub struct ServiceManager {
 }
 
 #[derive(Debug)]
-pub struct Service {
-    pub config: ServiceConfig,
-    pub state: ServiceState,
+pub(crate) struct Service {
+    pub(crate) config: ServiceConfig,
+    pub(crate) state: ServiceState,
 }
 
 impl Service {
@@ -65,13 +65,13 @@ impl Service {
 ///
 /// This only changes when explicitly modified through the API.
 #[derive(Debug)]
-pub struct ServiceConfig {
-    pub cmd: String,
-    pub args: Vec<String>,
-    pub env: BTreeMap<OsString, OsString>,
-    pub liveness: Option<Probe>,
-    pub pty: bool,
-    pub credentials: Credentials,
+pub(crate) struct ServiceConfig {
+    pub(crate) cmd: String,
+    pub(crate) args: Vec<String>,
+    pub(crate) env: BTreeMap<OsString, OsString>,
+    pub(crate) liveness: Option<Probe>,
+    pub(crate) pty: bool,
+    pub(crate) credentials: Credentials,
 }
 
 impl ServiceConfig {
@@ -101,15 +101,15 @@ impl ServiceConfig {
 
 /// The runtime state of a service.
 #[derive(Debug)]
-pub struct ServiceState {
-    pub status: ServiceStatus,
-    pub logs: Logs,
-    pub automatic_restart_attempts: u32,
-    pub liveness_probe: Option<AbortHandle>,
+pub(crate) struct ServiceState {
+    pub(crate) status: ServiceStatus,
+    pub(crate) logs: Logs,
+    pub(crate) automatic_restart_attempts: u32,
+    pub(crate) liveness_probe: Option<AbortHandle>,
 }
 
 #[derive(Debug)]
-pub enum ServiceStatus {
+pub(crate) enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
 

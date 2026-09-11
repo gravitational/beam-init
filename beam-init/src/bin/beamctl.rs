@@ -4,6 +4,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
+use beam_init::system::getrandom;
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
@@ -217,26 +218,25 @@ fn main() {
         }
         Command::Stop { name, prune } => {
             let name = prefix_match(&client, name);
-
             client
                 .stop_service(&name, prune)
                 .unwrap_or_else(show_error_and_exit)
         }
         Command::Restart { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .restart_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Freeze { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .freeze_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
         Command::Thaw { name } => {
             let name = prefix_match(&client, name);
-            let _resp: () = client
+            client
                 .thaw_service(&name)
                 .unwrap_or_else(show_error_and_exit);
         }
@@ -288,7 +288,6 @@ fn main() {
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
-
             generate(shell, &mut command, "beamctl", &mut std::io::stdout());
         }
         Command::Version => {
@@ -395,8 +394,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
 fn gen_name() -> String {
     let mut buf = [0u8; 8];
-    // SAFETY: We pass a valid mutable byte array of the given size.
-    unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    getrandom(&mut buf);
     format!("{:016x}", u64::from_ne_bytes(buf))
 }
 
