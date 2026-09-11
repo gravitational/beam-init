@@ -171,3 +171,10 @@ fn pty_attach_wrong_user() {
 fn pty_owner() {
     Image::build("test.Dockerfile").run("pty_owner.py").wait();
 }
+
+#[test]
+fn pty_attach_sigwinch() {
+    Image::build("test.Dockerfile")
+        .run("pty_attach_sigwinch.py")
+        .wait();
+}

@@ -6,24 +6,26 @@ use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
 
 mod user_term;
+use beam_init_client::blocking::Client;
 use user_term::UserTerm;
 
-pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
+pub(super) fn manage(name: &str, pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
     let mut tty = UserTerm::open()?;
     tty.sync(&app)?;
 
-    // send SIGWINCH to the application to stimulate it to redraw
-    if let Err(err) = kill_process_group(pid, libc::SIGWINCH) {
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        return Err(err);
-    }
-
     let mut signals =
         SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
+
+    // Make sure tokio doesn't get started until after setting the signal mask.
+    // Otherwise signalfd won't be able to receive the signals as the tokio
+    // workers will receive them instead.
+    let client = Client::new().map_err(|err| io::Error::other(err))?;
+
+    client
+        .notify_pty_attached(name)
+        .map_err(|err| io::Error::other(err))?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();

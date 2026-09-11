@@ -48,6 +48,9 @@ pub enum Command {
         name: String,
         follow: bool,
     },
+    NotifyPtyAttached {
+        name: String,
+    },
 }
 
 use axum::serve::IncomingStream;
@@ -111,6 +114,10 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         .route("/service/{name}/thaw", post(thaw_service))
         .route("/service/{name}/show", post(show_service))
         .route("/service/{name}/logs", get(service_logs))
+        .route(
+            "/service/{name}/notify_pty_attached",
+            post(notify_pty_attached),
+        )
         .route("/version", get(version))
         .with_state(tx_event);
 
@@ -281,6 +288,23 @@ async fn service_logs(
                 name,
                 follow: query.follow,
             },
+            tx,
+            credentials,
+        })
+        .await
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
+}
+
+async fn notify_pty_attached(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command {
+            command: Command::NotifyPtyAttached { name },
             tx,
             credentials,
         })
@@ -474,6 +498,11 @@ pub async fn handle_api_command(
                     .collect::<String>()
                     .into_response())
             }
+        }
+        Command::NotifyPtyAttached { name } => {
+            service_manager.notify_pty_attached(credentials, &name)?;
+
+            Ok(Json(()).into_response())
         }
     }
 }

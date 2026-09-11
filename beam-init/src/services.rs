@@ -633,6 +633,33 @@ impl ServiceManager {
             .map(|(name, service)| (name, &service.state.status))
     }
 
+    pub fn notify_pty_attached(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        match &service.state.status {
+            ServiceStatus::Running { main_pid, pty } | ServiceStatus::Frozen { main_pid, pty } => {
+                if pty.is_some() {
+                    // send SIGWINCH to the application to stimulate it to redraw
+                    kill_process_group(*main_pid, libc::SIGWINCH).expect("process to exist");
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn user_env_files(&self) -> &[PathBuf] {
         &self.user_env_files
     }
