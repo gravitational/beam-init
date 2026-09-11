@@ -342,8 +342,9 @@ fn attach(client: Client, name: String) {
     // it interferes with signal handling
     drop(client);
 
-    if let Err(err) = terminal::manage(pid, pty) {
+    if let Err(err) = terminal::manage(&name, pid, pty) {
         println!("pty error for service {name} ({})", err);
+        process::exit(1);
     } else {
         // Retrieve the new status, which could have changed.
         let client = Client::new().unwrap_or_else(show_error_and_exit);

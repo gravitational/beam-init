@@ -124,6 +124,15 @@ impl Client {
         self.get_raw_with_timeout(&path, timeout)
     }
 
+    /// Used to notify beam-init that this client has attached to the pty of a service.
+    ///
+    /// This will instruct beam-init to send the service process group to the
+    /// foreground.
+    /// FIXME currently only sends a SIGWINCH
+    pub fn notify_pty_attached(&self, name: &str) -> Result<(), Error> {
+        self.post(&service_action_path(name, "notify_pty_attached"), ())
+    }
+
     pub fn version(&self) -> Result<VersionResponse, Error> {
         self.get("/version")
     }
