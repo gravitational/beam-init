@@ -80,8 +80,11 @@ pub fn getrandom(mut buf: &mut [u8]) {
         let res = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
         match cerr(res.try_into().expect("buffer too large")) {
             Ok(len) if len as usize == buf.len() => break,
+
             // Getrandom got interrupted by a signal, buffer is partially filled.
             Ok(len) => buf = &mut buf[len as usize..],
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+
             // This will panic rather than return the error because a getrandom
             // error is rarely recoverable and, while likely not applicable to
             // beam-init given the lack of crypto code, in general it is way too
