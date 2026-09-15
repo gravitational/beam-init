@@ -679,6 +679,15 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
+        // Check that the signal is valid to avoid an expect on EINVAL
+        // Technically 32..=64 is also valid, but those are real-time signals,
+        // which are unlikely to be necessary to trigger for users.
+        if sig <= 0 || sig >= 32 {
+            return Err(ServiceError::InvalidRequest {
+                err: format!("Signal {sig} is not valid"),
+            });
+        }
+
         match service.state.status {
             ServiceStatus::Running { main_pid, .. }
             | ServiceStatus::Frozen { main_pid, .. }
