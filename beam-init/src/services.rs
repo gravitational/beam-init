@@ -22,6 +22,7 @@ use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
+use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::pty::Pty;
 use beam_init::system::{kill_process_group, waitpid};
 use beam_init_api::Probe;
@@ -146,6 +147,7 @@ pub enum ServiceError {
     InvalidCredentials,
     InvalidRequest { err: String },
     BuildEnvironment { err: String },
+    BootstrapIsProtected,
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -176,6 +178,11 @@ impl IntoResponse for ServiceError {
             ServiceError::BuildEnvironment { err } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, err).into_response()
             }
+            ServiceError::BootstrapIsProtected => (
+                StatusCode::FORBIDDEN,
+                "The \"bootstrap\" service cannot be modified",
+            )
+                .into_response(),
         }
     }
 }
@@ -340,6 +347,10 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
     ) -> Result<&mut Service, ServiceError> {
+        if name == BOOTSTRAP_NAME {
+            return Err(ServiceError::BootstrapIsProtected);
+        }
+
         let Some(service) = self.services.get_mut(name) else {
             return Err(ServiceError::ServiceNotFound {
                 name: name.to_owned(),
