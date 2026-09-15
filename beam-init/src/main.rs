@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::api_impl::Credentials;
 use crate::services::{ServiceManager, ServiceStatus};
+use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::exit_with_signal;
 
 mod api_impl;
@@ -134,7 +135,7 @@ async fn main() {
             }
         }
 
-        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), BOOTSTRAP_NAME)
             && let ServiceStatus::Exited(status) = service.state.status
         {
             if let Some(code) = status.code() {
@@ -145,7 +146,7 @@ async fn main() {
                 process::exit(1);
             }
         }
-        if let Ok(service) = service_manager.get_service(Credentials::root(), "bootstrap")
+        if let Ok(service) = service_manager.get_service(Credentials::root(), BOOTSTRAP_NAME)
             && let ServiceStatus::Stopped = service.state.status
         {
             process::exit(0);

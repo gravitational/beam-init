@@ -4,6 +4,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
+use beam_init::BOOTSTRAP_NAME;
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
@@ -384,7 +385,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
     if let Some(found_name) = service_names.next()
         && let None = service_names.next()
-        && found_name != "bootstrap"
+        && found_name != BOOTSTRAP_NAME
     {
         // the prefix uniquely defines exactly one service
         found_name

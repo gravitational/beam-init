@@ -22,6 +22,7 @@ use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
+use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::pty::Pty;
 use beam_init::system::{kill_process_group, waitpid};
 use beam_init_api::Probe;
@@ -346,7 +347,7 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
     ) -> Result<&mut Service, ServiceError> {
-        if name == "bootstrap" {
+        if name == BOOTSTRAP_NAME {
             return Err(ServiceError::BootstrapIsProtected);
         }
 
