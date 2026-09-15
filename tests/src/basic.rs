@@ -185,3 +185,10 @@ fn bootstrap_protected() {
         .contains("Still here")
     );
 }
+
+#[test]
+fn pty_attach_sigwinch() {
+    Image::build("test.Dockerfile")
+        .run("pty_attach_sigwinch.py")
+        .wait();
+}

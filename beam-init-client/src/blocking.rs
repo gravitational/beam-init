@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::c_int;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -122,6 +123,19 @@ impl Client {
         let timeout = None;
         let path = format!("{}?follow=true", service_action_path(name, "logs"));
         self.get_raw_with_timeout(&path, timeout)
+    }
+
+    /// Used to notify beam-init that this client has attached to the pty of a service.
+    ///
+    /// This will instruct beam-init to send the service process group to the
+    /// foreground.
+    /// FIXME currently only sends a SIGWINCH
+    pub fn notify_pty_attached(&self, name: &str) -> Result<(), Error> {
+        self.post(&service_action_path(name, "notify_pty_attached"), ())
+    }
+
+    pub fn send_signal(&self, name: &str, sig: c_int) -> Result<(), Error> {
+        self.post(&service_action_path(name, "send_signal"), sig)
     }
 
     pub fn version(&self) -> Result<VersionResponse, Error> {

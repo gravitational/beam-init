@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::ffi::OsString;
+use std::ffi::{OsString, c_int};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -642,6 +642,66 @@ impl ServiceManager {
         self.services
             .iter()
             .map(|(name, service)| (name, &service.state.status))
+    }
+
+    pub fn notify_pty_attached(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        match &service.state.status {
+            ServiceStatus::Running { main_pid, pty } | ServiceStatus::Frozen { main_pid, pty } => {
+                if pty.is_some() {
+                    // send SIGWINCH to the application to stimulate it to redraw
+                    kill_process_group(*main_pid, libc::SIGWINCH).expect("process to exist");
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn send_signal(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+        sig: c_int,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        // Check that the signal is valid to avoid an expect on EINVAL
+        // Technically 32..=64 is also valid, but those are real-time signals,
+        // which are unlikely to be necessary to trigger for users.
+        if sig <= 0 || sig >= 32 {
+            return Err(ServiceError::InvalidRequest {
+                err: format!("Signal {sig} is not valid"),
+            });
+        }
+
+        match service.state.status {
+            ServiceStatus::Running { main_pid, .. }
+            | ServiceStatus::Frozen { main_pid, .. }
+            | ServiceStatus::Restarting { main_pid, .. }
+            | ServiceStatus::Stopping { main_pid, .. } => {
+                kill_process_group(main_pid, sig).expect("process to exist");
+            }
+
+            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+        }
+
+        Ok(())
     }
 
     pub fn user_env_files(&self) -> &[PathBuf] {

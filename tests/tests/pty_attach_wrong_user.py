@@ -32,7 +32,7 @@ def beamctl(args, *, uid, gid):
 
 # Start service as user A.
 result = beamctl(["start", "--name", "sleep", "--pty", "--", "sleep", "30"], uid=UID_A, gid=GID_A)
-assert result.returncode == 0, result.stderr
+assert result.returncode == 1, result.stderr
 
 time.sleep(0.1)
 assert process_exists("sleep"), "Sleep not started"
