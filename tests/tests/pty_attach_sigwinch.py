@@ -12,7 +12,7 @@ for i in range(0, 100):
     # Use su --pty to set a controlling tty for beamctl
     output = subprocess.check_output(["su", "--pty", "root", "-c", "beamctl attach foo"])
     print(output)
-    assert output.index(b"sigwinch\r\r\n\r\ndetached from") != -1
+    assert output.index(b"sigwinch\r\n\r\ndetached from") != -1
     assert output.endswith(b"(exited normally)\r\n")
 
     # Cleanup for the next test iteration
