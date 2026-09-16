@@ -775,13 +775,49 @@ impl ServiceManager {
                 monitor_tx,
                 pty: _,
             } => {
-                // send SIGWINCH to the application to stimulate it to redraw
                 if let Some(monitor_tx) = monitor_tx {
                     monitor_tx
                         .foreground()
                         .expect("failed to send command on monitor pipe");
                 } else {
                     kill_process_group(*main_pid, SIGWINCH).expect("process to exist");
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn notify_pty_detached(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        match &mut service.state.status {
+            ServiceStatus::Running {
+                main_pid: _,
+                monitor_tx,
+                pty: _,
+            }
+            | ServiceStatus::Frozen {
+                main_pid: _,
+                monitor_tx,
+                pty: _,
+            } => {
+                if let Some(monitor_tx) = monitor_tx {
+                    monitor_tx
+                        .background()
+                        .expect("failed to send command on monitor pipe");
                 }
             }
 

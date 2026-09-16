@@ -75,8 +75,10 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
                             continue;
                         }
                         libc::SIGTSTP => {
-                            // FIXME: send process to the background
                             // Suspend was received, detach
+                            client
+                                .notify_pty_detached(name)
+                                .map_err(|err| io::Error::other(err))?;
                             Ok(0)
                         }
                         _ => unreachable!("An unexpected signal was caught"),

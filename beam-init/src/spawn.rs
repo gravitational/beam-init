@@ -6,8 +6,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::ptr;
 
 use libc::{
-    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTTOU, WNOHANG, killpg, pid_t, poll,
-    pollfd, tcsetpgrp, uid_t,
+    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, killpg, pid_t,
+    poll, pollfd, tcsetpgrp, uid_t,
 };
 
 use crate::api_impl::Credentials;
@@ -267,6 +267,10 @@ pub(crate) fn spawn_service(
                                 );
                             }
                             MonitorCommand::Background => {
+                                expect_no_panic(
+                                    cerr(killpg(service_pid, SIGTSTP)),
+                                    "failed to send SIGCONT",
+                                );
                                 expect_no_panic(
                                     cerr(tcsetpgrp(libc::STDOUT_FILENO, self_pid)),
                                     "failed to `tcsetpgrp`",
