@@ -11,9 +11,7 @@ use user_term::UserTerm;
 
 pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
-
     let mut tty = UserTerm::open()?;
-    tty.sync(&app)?;
 
     let mut signals =
         SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
@@ -26,6 +24,10 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     client
         .notify_pty_attached(name)
         .map_err(|err| io::Error::other(err))?;
+
+    // Sync after attach to ensure the service process receives the SIGWINCH for
+    // changing the window size rather than the monitor process.
+    tty.sync(&app)?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
