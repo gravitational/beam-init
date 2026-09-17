@@ -117,15 +117,8 @@ enum Command {
     },
     /// Show information about a service
     Show {
-        #[arg(
-            index = 1,
-            required_unless_present("selector"),
-            conflicts_with("selector")
-        )]
-        name: Option<String>,
-        /// Lookup service by selector
-        #[arg(long, value_delimiter=',', value_parser = parse_label)]
-        selector: Vec<Label>,
+        #[arg(index = 1)]
+        name: String,
     },
     /// List all services
     List,
@@ -335,36 +328,27 @@ fn main() {
                 print!("{logs}");
             }
         }
-        Command::Show { name, selector } => {
-            let names = service_match(&client, name, selector);
+        Command::Show { name } => {
+            let name = prefix_match(&client, name);
+            let service = client
+                .show_service(&name)
+                .unwrap_or_else(show_error_and_exit);
 
             if args.json {
-                let services = names
-                    .map(|name| client.show_service(&name))
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap_or_else(show_error_and_exit);
-
-                serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
+                serde_json::to_writer_pretty(std::io::stdout(), &service).unwrap();
                 println!();
             } else {
-                let services = names
-                    .map(|name| client.show_service(&name).map(|service| (name, service)))
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap_or_else(show_error_and_exit);
+                // Handle formatting if there are no arguments.
+                let mut args = service.args;
+                args.insert(0, service.cmd);
 
-                for (name, service) in services {
-                    // Handle formatting if there are no arguments.
-                    let mut args = service.args;
-                    args.insert(0, service.cmd);
+                let labels = if service.labels.is_empty() {
+                    format_args!("")
+                } else {
+                    format_args!(" [{}]", display_labels(&service.labels))
+                };
 
-                    let labels = if service.labels.is_empty() {
-                        format_args!("")
-                    } else {
-                        format_args!(" [{}]", display_labels(&service.labels))
-                    };
-
-                    println!("{name}{labels} ({}): {}", service.status, args.join(" "));
-                }
+                println!("{name}{labels} ({}): {}", service.status, args.join(" "));
             }
         }
         Command::List => {

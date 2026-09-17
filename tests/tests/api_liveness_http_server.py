@@ -20,7 +20,7 @@ def get(path):
         return 0, b""
 
 def show():
-    return json.loads(subprocess.check_output(["beamctl", "--json", "show", "web"]))[0]
+    return json.loads(subprocess.check_output(["beamctl", "--json", "show", "web"]))
 
 server = f"""
 import http.server
