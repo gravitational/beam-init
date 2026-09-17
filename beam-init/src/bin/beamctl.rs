@@ -549,22 +549,15 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
 }
 
 // https://doc.rust-lang.org/std/iter/struct.Intersperse.html is not stable yet, but we can lego it
-fn intersperse<Sep, T>(sep: Sep, iter: impl Iterator<Item = T>) -> impl Iterator<Item = T>
+fn intersperse<Sep, T, Iter>(sep: Sep, iter: Iter) -> impl Iterator<Item = T>
 where
+    Iter: Iterator<Item = T> + ExactSizeIterator,
     Sep: Copy,
     T: From<Sep>,
 {
-    let mut iter = iter.peekable();
-    let mut do_sep = false;
-    std::iter::from_fn(move || {
-        if do_sep && iter.peek().is_some() {
-            do_sep = false;
-            Some(sep.into())
-        } else {
-            do_sep = true;
-            iter.next()
-        }
-    })
+    let len = iter.len();
+    let alternated = iter.flat_map(move |item| [item, sep.into()]);
+    alternated.take(if len == 0 { 0 } else { 2 * len - 1 })
 }
 
 fn display_labels(labels: &BTreeMap<String, String>) -> String {
