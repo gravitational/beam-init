@@ -3,27 +3,29 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
 use beam_init::system::signalfd::SignalFd;
-use beam_init::system::{cerr, kill_process_group, signal_set::SignalSet};
+use beam_init::system::{cerr, signal_set::SignalSet};
 
 mod user_term;
+use beam_init_client::blocking::Client;
 use user_term::UserTerm;
 
-pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
+pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
 
     let mut tty = UserTerm::open()?;
     tty.sync(&app)?;
 
-    // send SIGWINCH to the application to stimulate it to redraw
-    if let Err(err) = kill_process_group(pid, libc::SIGWINCH) {
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        return Err(err);
-    }
-
     let mut signals =
         SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
+
+    // Make sure tokio doesn't get started until after setting the signal mask.
+    // Otherwise signalfd won't be able to receive the signals as the tokio
+    // workers will receive them instead.
+    let client = Client::new().map_err(|err| io::Error::other(err))?;
+
+    client
+        .notify_pty_attached(name)
+        .map_err(|err| io::Error::other(err))?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -61,8 +63,15 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
                 CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
-                        sig @ (libc::SIGINT | libc::SIGQUIT | libc::SIGWINCH) => {
-                            kill_process_group(pid, sig)?;
+                        sig @ (libc::SIGINT | libc::SIGQUIT) => {
+                            client
+                                .send_signal(name, sig)
+                                .map_err(|err| io::Error::other(err))?;
+                            continue;
+                        }
+                        libc::SIGWINCH => {
+                            // Window size changed, the kernel will send a SIGWINCH to the service
+                            // once we sync the window size to the pty again.
                             continue;
                         }
                         libc::SIGTSTP => {
@@ -77,7 +86,7 @@ pub(super) fn manage(pid: libc::pid_t, pty: OwnedFd) -> io::Result<()> {
             };
 
             if terminated(res)? {
-                // TODO: this should also reset the terminal, actually, but for now this suffices
+                drop(tty); // Restore tty config
                 println!();
                 return Ok(());
             }

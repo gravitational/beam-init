@@ -16,9 +16,9 @@ use std::{
 
 use libc::{
     ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR, IMAXBEL,
-    INLCR, INPCK, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR, ONLRET,
-    ONOCR, OPOST, PARMRK, PENDIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE, ioctl,
-    tcflag_t, tcgetattr, tcsetattr, termios, winsize,
+    INLCR, INPCK, ISIG, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR,
+    ONLRET, ONOCR, OPOST, PARMRK, PENDIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE,
+    cfmakeraw, ioctl, tcflag_t, tcgetattr, tcsetattr, termios, winsize,
 };
 
 use beam_init::system::cerr;
@@ -93,6 +93,12 @@ impl UserTerm {
         tt_dst.c_iflag |= tt_src.c_iflag & INPUT_FLAGS;
         tt_dst.c_oflag |= tt_src.c_oflag & OUTPUT_FLAGS;
         tt_dst.c_lflag |= tt_src.c_lflag & LOCAL_FLAGS;
+
+        // Put user tty in raw mode to avoid double echoing of input and to let
+        // the service pty handle buffering.
+        unsafe { cfmakeraw(&mut tt_dst) };
+        // But we still need signals to be sent to beam-init rather than the service pty.
+        tt_dst.c_lflag |= ISIG;
 
         // SAFETY: dst is a valid file descriptor and `tt_dst` is an
         // initialized struct obtained through tcgetattr; so this is safe to

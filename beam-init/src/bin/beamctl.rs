@@ -5,6 +5,8 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
+use beam_init::BOOTSTRAP_NAME;
+use beam_init::system::getrandom;
 use beam_init_api::Probe;
 use beam_init_client::blocking::Client;
 
@@ -297,21 +299,21 @@ fn main() {
         }
         Command::Restart { name, selector } => {
             for name in service_match(&client, name, selector) {
-                let _resp: () = client
+                client
                     .restart_service(&name)
                     .unwrap_or_else(show_error_and_exit);
             }
         }
         Command::Freeze { name, selector } => {
             for name in service_match(&client, name, selector) {
-                let _resp: () = client
+                client
                     .freeze_service(&name)
                     .unwrap_or_else(show_error_and_exit);
             }
         }
         Command::Thaw { name, selector } => {
             for name in service_match(&client, name, selector) {
-                let _resp: () = client
+                client
                     .thaw_service(&name)
                     .unwrap_or_else(show_error_and_exit);
             }
@@ -370,7 +372,6 @@ fn main() {
         }
         Command::Completions { shell } => {
             let mut command = Cli::command();
-
             generate(shell, &mut command, "beamctl", &mut std::io::stdout());
         }
         Command::Version => {
@@ -395,16 +396,18 @@ fn attach(client: Client, name: String) {
         .show_service(&name)
         .unwrap_or_else(show_error_and_exit);
 
-    let (pid, pty) = match service.status {
+    let pty = match service.status {
         beam_init_api::ServiceStatus::Running {
-            ref pty, main_pid, ..
+            ref pty,
+            main_pid: _,
         }
         | beam_init_api::ServiceStatus::Frozen {
-            ref pty, main_pid, ..
+            ref pty,
+            main_pid: _,
         } => {
             if let Some((index, _)) = pty {
                 if let Some(fd) = get_fd_from_store(*index) {
-                    (main_pid, fd)
+                    fd
                 } else {
                     // We raced with the process exiting
                     let service = client
@@ -428,8 +431,9 @@ fn attach(client: Client, name: String) {
     // it interferes with signal handling
     drop(client);
 
-    if let Err(err) = terminal::manage(pid, pty) {
+    if let Err(err) = terminal::manage(&name, pty) {
         println!("pty error for service {name} ({})", err);
+        process::exit(1);
     } else {
         // Retrieve the new status, which could have changed.
         let client = Client::new().unwrap_or_else(show_error_and_exit);
@@ -509,7 +513,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
     if let Some(found_name) = service_names.next()
         && let None = service_names.next()
-        && found_name != "bootstrap"
+        && found_name != BOOTSTRAP_NAME
     {
         // the prefix uniquely defines exactly one service
         found_name
@@ -520,8 +524,7 @@ fn prefix_match(client: &Client, name: String) -> String {
 
 fn gen_name() -> String {
     let mut buf = [0u8; 8];
-    // SAFETY: We pass a valid mutable byte array of the given size.
-    unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    getrandom(&mut buf);
     format!("{:016x}", u64::from_ne_bytes(buf))
 }
 

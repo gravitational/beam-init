@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::c_int;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -83,28 +84,28 @@ impl Client {
         if prune {
             self.delete(&service_path(name))
         } else {
-            self.post(&service_action_path(name, "stop"), name)
+            self.post(&service_action_path(name, "stop"), ())
         }
     }
 
     /// Stops and starts the service.
     pub fn restart_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "restart"), name)
+        self.post(&service_action_path(name, "restart"), ())
     }
 
     /// Returns the configuration and current state of the service.
     pub fn show_service(&self, name: &str) -> Result<Service, Error> {
-        self.post(&service_action_path(name, "show"), name)
+        self.post(&service_action_path(name, "show"), ())
     }
 
     /// Pauses the process for the service.
     pub fn freeze_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "freeze"), name)
+        self.post(&service_action_path(name, "freeze"), ())
     }
 
     /// Resumes the paused process for the service.
     pub fn thaw_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "thaw"), name)
+        self.post(&service_action_path(name, "thaw"), ())
     }
 
     /// Returns the buffered logs for the service.
@@ -123,6 +124,19 @@ impl Client {
         let timeout = None;
         let path = format!("{}?follow=true", service_action_path(name, "logs"));
         self.get_raw_with_timeout(&path, timeout)
+    }
+
+    /// Used to notify beam-init that this client has attached to the pty of a service.
+    ///
+    /// This will instruct beam-init to send the service process group to the
+    /// foreground.
+    /// FIXME currently only sends a SIGWINCH
+    pub fn notify_pty_attached(&self, name: &str) -> Result<(), Error> {
+        self.post(&service_action_path(name, "notify_pty_attached"), ())
+    }
+
+    pub fn send_signal(&self, name: &str, sig: c_int) -> Result<(), Error> {
+        self.post(&service_action_path(name, "send_signal"), sig)
     }
 
     pub fn version(&self) -> Result<VersionResponse, Error> {
