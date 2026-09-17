@@ -485,16 +485,13 @@ fn service_match(
 
         let services = client.list_services().unwrap_or_else(show_error_and_exit);
 
-        let results = services.into_keys().filter_map(move |service_name| {
+        let results = services.into_keys().filter(move |service_name| {
             let labels = client
-                .show_service(&service_name)
+                .show_service(service_name)
                 .unwrap_or_else(show_error_and_exit)
                 .labels;
-            if keys_match(&selector, &labels) {
-                Some(service_name)
-            } else {
-                None
-            }
+
+            keys_match(&selector, &labels)
         });
 
         Box::new(results)
