@@ -233,15 +233,17 @@ impl std::fmt::Display for ParseLabelError {
 impl std::error::Error for ParseLabelError {}
 
 fn parse_label(label: &str) -> Result<(String, String), ParseLabelError> {
-    let allowed = |ch: char| !ch.is_control() && ch != '=';
-
-    if !label.chars().all(allowed) {
+    if label.chars().any(|ch| ch.is_control()) {
         return Err(ParseLabelError::InvalidKeyValue(label.to_owned()));
     }
 
     let Some((key, value)) = label.split_once('=') else {
         return Err(ParseLabelError::NotKeyValue);
     };
+
+    if value.find('=').is_some() {
+        return Err(ParseLabelError::InvalidKeyValue(label.to_owned()));
+    }
 
     Ok((key.to_owned(), value.to_owned()))
 }
