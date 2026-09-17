@@ -269,7 +269,7 @@ pub(crate) fn spawn_service(
                             MonitorCommand::Background => {
                                 expect_no_panic(
                                     cerr(killpg(service_pid, SIGTSTP)),
-                                    "failed to send SIGCONT",
+                                    "failed to send SIGTSTP",
                                 );
                                 expect_no_panic(
                                     cerr(tcsetpgrp(libc::STDOUT_FILENO, self_pid)),
