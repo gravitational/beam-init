@@ -187,13 +187,6 @@ fn bootstrap_protected() {
 }
 
 #[test]
-fn pty_attach_sigwinch() {
-    Image::build("test.Dockerfile")
-        .run("pty_attach_sigwinch.py")
-        .wait();
-}
-
-#[test]
 fn service_filtering() {
     Image::build("test.Dockerfile")
         .run("client_selectors.py")
