@@ -32,3 +32,9 @@ assert set(services) == {"sleep5"}, services
 output = subprocess.check_output(["beamctl", "list", "--selector", "prio=low,task=dreaming", "--json"])
 services = json.loads(output)
 assert set(services) == {"sleep3"}, services
+
+subprocess.check_call(["beamctl", "stop", "--selector", "prio=low", "--prune"])
+
+output = subprocess.check_output(["beamctl", "list", "--selector", "task=dreaming", "--json"])
+services = json.loads(output)
+assert set(services) == {"sleep2", "sleep4"}, services
