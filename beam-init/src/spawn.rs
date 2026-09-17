@@ -183,14 +183,6 @@ pub(crate) fn spawn_service(
 
                 _exit(0);
             } else {
-                // If we don't block SIGTTOU, tcsetpgrp while the service is in the foreground will
-                // give ENOTTY.
-                expect_no_panic(
-                    expect_no_panic(SignalSet::new(&[SIGTTOU]), "failed to create signal set")
-                        .block(),
-                    "failed to block SIGTTOU",
-                );
-
                 let sigset =
                     expect_no_panic(SignalSet::new(&[SIGCHLD]), "failed to create signal set");
                 let old_sigset = expect_no_panic(sigset.block(), "failed to block SIGCHLD");
@@ -229,6 +221,14 @@ pub(crate) fn spawn_service(
                 );
 
                 expect_no_panic(pgid_sync_rx.wait(), "failed to read from pgid sync pipe");
+
+                // If we don't block SIGTTOU, tcsetpgrp while the service is in the foreground will
+                // give ENOTTY.
+                expect_no_panic(
+                    expect_no_panic(SignalSet::new(&[SIGTTOU]), "failed to create signal set")
+                        .block(),
+                    "failed to block SIGTTOU",
+                );
 
                 loop {
                     let mut fds = [
