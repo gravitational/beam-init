@@ -192,3 +192,10 @@ fn pty_attach_sigwinch() {
         .run("pty_attach_sigwinch.py")
         .wait();
 }
+
+#[test]
+fn service_filtering() {
+    Image::build("test.Dockerfile")
+        .run("client_selectors.py")
+        .wait();
+}
