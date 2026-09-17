@@ -221,7 +221,7 @@ fn parse_duration_seconds(s: &str) -> Result<Duration, std::num::ParseIntError> 
 
 #[derive(Debug)]
 enum ParseLabelError {
-    InvalidKeyName(String),
+    InvalidKeyValue(String),
     NotKeyValue,
 }
 
@@ -229,7 +229,7 @@ impl std::fmt::Display for ParseLabelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotKeyValue => write!(f, "not a key-value pair")?,
-            Self::InvalidKeyName(key) => write!(f, "'{key}' is not a valid label designator")?,
+            Self::InvalidKeyValue(value) => write!(f, "'{value}' is not a valid key-value pair")?,
         }
         Ok(())
     }
@@ -238,12 +238,15 @@ impl std::fmt::Display for ParseLabelError {
 impl std::error::Error for ParseLabelError {}
 
 fn parse_label(label: &str) -> Result<(String, String), ParseLabelError> {
+    let allowed = |ch: char| !ch.is_control() && ch != '=';
+
+    if !label.chars().all(allowed) {
+        return Err(ParseLabelError::InvalidKeyValue(label.to_owned()));
+    }
+
     let Some((key, value)) = label.split_once('=') else {
         return Err(ParseLabelError::NotKeyValue);
     };
-    if !key.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        return Err(ParseLabelError::InvalidKeyName(key.to_owned()));
-    }
 
     Ok((key.to_owned(), value.to_owned()))
 }
