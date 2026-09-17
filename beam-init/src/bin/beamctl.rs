@@ -123,7 +123,11 @@ enum Command {
         name: String,
     },
     /// List all services
-    List,
+    List {
+        /// Lookup service by selector
+        #[arg(long, value_delimiter=',', value_parser = parse_label)]
+        selector: Vec<Label>,
+    },
     /// Show logs of a service
     Logs {
         #[arg(index = 1)]
@@ -355,8 +359,21 @@ fn main() {
                 println!("{name}{labels} ({}): {}", service.status, args.join(" "));
             }
         }
-        Command::List => {
-            let services = client.list_services().unwrap_or_else(show_error_and_exit);
+        Command::List { selector } => {
+            let mut services = client.list_services().unwrap_or_else(show_error_and_exit);
+
+            if !selector.is_empty() {
+                let selector = BTreeMap::from_iter(selector);
+
+                services.retain(|service_name, _| {
+                    let labels = client
+                        .show_service(service_name)
+                        .unwrap_or_else(show_error_and_exit)
+                        .labels;
+
+                    keys_match(&selector, &labels)
+                })
+            }
 
             if args.json {
                 serde_json::to_writer_pretty(std::io::stdout(), &services).unwrap();
