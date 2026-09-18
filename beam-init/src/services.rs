@@ -70,6 +70,7 @@ pub(crate) struct ServiceConfig {
     pub(crate) cmd: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: BTreeMap<OsString, OsString>,
+    pub(crate) labels: BTreeMap<String, String>,
     pub(crate) liveness: Option<Probe>,
     pub(crate) pty: bool,
     pub(crate) credentials: Credentials,

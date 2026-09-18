@@ -352,6 +352,7 @@ impl From<&crate::services::Service> for beam_init_api::Service {
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
+            labels: value.config.labels.clone(),
         }
     }
 }
@@ -440,6 +441,7 @@ pub async fn handle_api_command(
                 env,
                 liveness,
                 pty,
+                labels,
             } = &service;
             let env = if name == BOOTSTRAP_NAME {
                 std::env::vars_os().collect()
@@ -460,6 +462,7 @@ pub async fn handle_api_command(
                     liveness: liveness.clone(),
                     pty: *pty,
                     credentials,
+                    labels: labels.clone(),
                 },
             )?;
             service_manager.start_service(credentials, &name, StartReason::User)?;

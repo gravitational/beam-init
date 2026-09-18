@@ -33,6 +33,9 @@ pub struct CreateService {
 
     /// Whether to run the service with a controlling pseudoterminal.
     pub pty: bool,
+
+    /// Labels attached to a service
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Configuration for an HTTP liveness probe.
@@ -71,6 +74,9 @@ pub struct Service {
 
     /// Number of automatic restart attempts since start.
     pub automatic_restart_attempts: u32,
+
+    /// Labels of the service
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Current runtime state of a service.
