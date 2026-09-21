@@ -219,7 +219,8 @@ impl ServiceManager {
                     reason = "this is the only place waitpid is ok"
                 )]
                 let (pid, status) = match waitpid(-1, WNOHANG) {
-                    Ok((pid, status)) => (pid, status),
+                    Ok(Some((pid, status))) => (pid, status),
+                    Ok(None) => break,
                     Err(err) if err.raw_os_error() == Some(libc::ECHILD) => {
                         // No more zombies to wait for. While the man page of wait/waitpid only
                         // explicitly says ECHILD happens for wait when there is no child to wait
@@ -229,9 +230,6 @@ impl ServiceManager {
                     }
                     Err(err) => panic!("waitpid failed with {err:?}"),
                 };
-                if pid == 0 {
-                    return;
-                }
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
