@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
 use beam_init::system::signalfd::SignalFd;
@@ -13,8 +13,7 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     let mut app = File::from(pty);
     let mut tty = UserTerm::open()?;
 
-    let mut signals =
-        SignalFdRestore::new(&[libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGWINCH])?;
+    let mut signals = SignalFdRestore::new(&[libc::SIGWINCH])?;
 
     // Make sure tokio doesn't get started until after setting the signal mask.
     // Otherwise signalfd won't be able to receive the signals as the tokio
@@ -63,22 +62,20 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
                 CAN_READ_FROM_CONTROLLER => std::io::copy(&mut tty, &mut app),
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
-                        sig @ (libc::SIGINT | libc::SIGQUIT) => {
-                            client.send_signal(name, sig).map_err(io::Error::other)?;
-                            continue;
-                        }
+                        // sig @ (libc::SIGINT | libc::SIGQUIT) => {
+                        //     client.send_signal(name, sig).map_err(io::Error::other)?;
+                        //     continue;
+                        // }
                         libc::SIGWINCH => {
                             // Window size changed, the kernel will send a SIGWINCH to the service
                             // once we sync the window size to the pty again.
                             continue;
                         }
-                        libc::SIGTSTP => {
-                            // Suspend was received, detach
-                            client
-                                .notify_pty_detached(name)
-                                .map_err(|err| io::Error::other(err))?;
-                            Ok(0)
-                        }
+                        // libc::SIGTSTP => {
+                        //     // Suspend was received, detach
+                        //     app.write_all(b"\x1A")?; // ^Z
+                        //     Ok(0)
+                        // }
                         _ => unreachable!("An unexpected signal was caught"),
                     }
                 }

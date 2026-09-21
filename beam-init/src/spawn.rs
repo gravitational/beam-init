@@ -6,8 +6,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::ptr;
 
 use libc::{
-    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, killpg, pid_t,
-    poll, pollfd, tcsetpgrp, uid_t,
+    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, WUNTRACED,
+    killpg, pid_t, poll, pollfd, tcsetpgrp, uid_t,
 };
 
 use crate::api_impl::Credentials;
@@ -294,10 +294,12 @@ pub(crate) fn spawn_service(
                             reason = "forked monitor doesn't have SIGCHLD handler"
                         )]
                         while let Some((pid, status)) =
-                            expect_no_panic(waitpid(-1, WNOHANG), "failed to `waitpid")
+                            expect_no_panic(waitpid(-1, WNOHANG | WUNTRACED), "failed to `waitpid")
                         {
                             if pid != service_pid {
                                 // Nothing to do. Not the main process of the service.
+                            } else if status.stopped_signal().is_some() {
+                                // FIXME notify beamctl
                             } else if let Some(code) = status.code() {
                                 _exit(code);
                             } else if let Some(signal) = status.signal() {
