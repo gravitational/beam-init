@@ -7,7 +7,6 @@ use std::ptr;
 use libc::{pid_t, uid_t};
 
 use crate::api_impl::Credentials;
-use crate::fdstore::StoredFd;
 use crate::services::ServiceConfig;
 use crate::signal_stream::OldSigmask;
 use beam_init::system::fork::unsafe_fork;
@@ -21,7 +20,7 @@ unsafe extern "C" {
 #[allow(clippy::upper_case_acronyms)]
 pub(crate) enum Sink<'a> {
     Log(OwnedFd),
-    PTY(PtyClient<'a, StoredFd>),
+    PTY(PtyClient<'a>),
 }
 
 fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {

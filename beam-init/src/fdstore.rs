@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
@@ -11,13 +11,13 @@ use tokio::net::UnixListener;
 use beam_init::system::unix_socket::socket_send_fd;
 use beam_init_api::FD_SOCKET_PATH;
 
-pub struct StoredFd {
+pub struct StoredFd<T> {
     id: u64,
-    fd: Arc<OwnedFd>,
+    fd: Arc<T>,
     store: Arc<Mutex<FdStoreInner>>,
 }
 
-impl fmt::Debug for StoredFd {
+impl<T: fmt::Debug> fmt::Debug for StoredFd<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoredFd")
             .field("id", &self.id)
@@ -26,19 +26,17 @@ impl fmt::Debug for StoredFd {
     }
 }
 
-impl StoredFd {
+impl<T> StoredFd<T> {
     pub fn id(&self) -> u64 {
         self.id
     }
-}
 
-impl AsFd for StoredFd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+    pub fn inner(&self) -> &T {
+        &self.fd
     }
 }
 
-impl Drop for StoredFd {
+impl<T> Drop for StoredFd<T> {
     fn drop(&mut self) {
         self.store
             .lock()
@@ -57,9 +55,12 @@ pub struct FdStore(Arc<Mutex<FdStoreInner>>);
 
 #[derive(Debug, Default)]
 struct FdStoreInner {
-    fds: BTreeMap<u64, (Arc<OwnedFd>, uid_t)>,
+    fds: BTreeMap<u64, (Arc<dyn InnerFd>, uid_t)>,
     next_id: u64,
 }
+
+trait InnerFd: fmt::Debug + AsFd + Send + Sync {}
+impl<T: fmt::Debug + AsFd + Send + Sync> InnerFd for T {}
 
 impl FdStore {
     pub(crate) fn no_socket() -> Self {
@@ -128,7 +129,10 @@ impl FdStore {
         Ok(FdStore(inner))
     }
 
-    pub(crate) fn add(&self, fd: OwnedFd, uid: uid_t) -> StoredFd {
+    pub(crate) fn add<T>(&self, fd: T, uid: uid_t) -> StoredFd<T>
+    where
+        T: fmt::Debug + AsFd + Send + Sync + 'static,
+    {
         let fd = Arc::new(fd);
 
         let mut this = self.0.lock().expect("lock shouldn't be poisoned");

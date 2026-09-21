@@ -118,13 +118,13 @@ pub(crate) enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
-        pty: Option<Pty<StoredFd>>,
+        pty: Option<StoredFd<Pty>>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
-        pty: Option<Pty<StoredFd>>,
+        pty: Option<StoredFd<Pty>>,
     },
 
     /// The service was stopped, but will soon be started again as part of a restart.
@@ -392,7 +392,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new(|fd| self.fdstore.add(fd, credentials.uid)))
+            .then(|| Pty::new().map(|pty| self.fdstore.add(pty, credentials.uid)))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
@@ -407,10 +407,13 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             add_single_log_message(
                 &service.state.logs,
-                format!("[process connected to pty: {}]", terminal.path.display()),
+                format!(
+                    "[process connected to pty: {}]",
+                    terminal.inner().path.display()
+                ),
             );
 
-            Sink::PTY(terminal.client())
+            Sink::PTY(terminal.inner().client())
         } else {
             let log_writer = service
                 .state
