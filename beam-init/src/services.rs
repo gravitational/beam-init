@@ -242,7 +242,7 @@ impl ServiceManager {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
-                                self.services.remove(&name);
+                                self.services.remove(&name).expect("service should exist");
                             } else {
                                 service.state.status = ServiceStatus::Stopped;
                             }
@@ -532,7 +532,7 @@ impl ServiceManager {
         match service.state.status {
             ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 if prune {
-                    self.services.remove(name);
+                    self.services.remove(name).expect("service should exist");
                 }
 
                 // Stopped already.
