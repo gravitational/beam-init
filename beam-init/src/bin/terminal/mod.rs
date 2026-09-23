@@ -21,11 +21,9 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     // Make sure tokio doesn't get started until after setting the signal mask.
     // Otherwise signalfd won't be able to receive the signals as the tokio
     // workers will receive them instead.
-    let client = Client::new().map_err(|err| io::Error::other(err))?;
+    let client = Client::new().map_err(io::Error::other)?;
 
-    client
-        .notify_pty_attached(name)
-        .map_err(|err| io::Error::other(err))?;
+    client.notify_pty_attached(name).map_err(io::Error::other)?;
 
     let mut poller = mio::Poll::new()?;
     let reg = poller.registry();
@@ -64,9 +62,7 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
                 SIGNAL_ARRIVED => {
                     match signals.read()? {
                         sig @ (libc::SIGINT | libc::SIGQUIT) => {
-                            client
-                                .send_signal(name, sig)
-                                .map_err(|err| io::Error::other(err))?;
+                            client.send_signal(name, sig).map_err(io::Error::other)?;
                             continue;
                         }
                         libc::SIGWINCH => {

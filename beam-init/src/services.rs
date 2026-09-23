@@ -242,7 +242,7 @@ impl ServiceManager {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
-                                self.services.remove(&name);
+                                self.services.remove(&name).expect("service should exist");
                             } else {
                                 service.state.status = ServiceStatus::Stopped;
                             }
@@ -291,6 +291,17 @@ impl ServiceManager {
         name: String,
         config: ServiceConfig,
     ) -> Result<(), ServiceError> {
+        if name.is_empty() {
+            // Not reachable through the REST API
+            return Err(ServiceError::InvalidRequest {
+                err: "Service name may not be empty".to_owned(),
+            });
+        } else if name.len() > usize::from(u8::MAX) {
+            return Err(ServiceError::InvalidRequest {
+                err: "Service name may not be longer than 255 bytes".to_owned(),
+            });
+        }
+
         config.validate()?;
 
         let logs = Logs::new();
@@ -521,7 +532,7 @@ impl ServiceManager {
         match service.state.status {
             ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 if prune {
-                    self.services.remove(name);
+                    self.services.remove(name).expect("service should exist");
                 }
 
                 // Stopped already.
