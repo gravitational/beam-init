@@ -37,7 +37,7 @@ assert result.returncode == 1, result.stderr
 time.sleep(0.1)
 assert process_exists("sleep"), "Sleep not started"
 
-# Get pty fdstore id
+# Get pty ptystore id
 result = beamctl(["--json", "show", "sleep"], uid=UID_A, gid=GID_A)
 assert result.returncode == 0, result.stderr
 pty_id = json.loads(result.stdout)["status"]["Running"]["pty"][0]

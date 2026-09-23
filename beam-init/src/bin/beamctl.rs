@@ -469,14 +469,14 @@ fn attach(client: Client, name: String) {
 
 /// Retrieve a file descriptor over the dedicated socket
 #[cfg(feature = "unstable-pty")]
-fn get_fd_from_store(fdstore_idx: u64) -> Option<std::os::fd::OwnedFd> {
+fn get_fd_from_store(ptystore_idx: u64) -> Option<std::os::fd::OwnedFd> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
     use beam_init::system::unix_socket::socket_recv_fd;
 
-    let mut socket = UnixStream::connect(beam_init_api::FD_SOCKET_PATH).unwrap();
-    socket.write_all(&u64::to_le_bytes(fdstore_idx)).unwrap();
+    let mut socket = UnixStream::connect(beam_init_api::PTY_SOCKET_PATH).unwrap();
+    socket.write_all(&u64::to_le_bytes(ptystore_idx)).unwrap();
     let (_len, fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
     fd
 }

@@ -18,8 +18,8 @@ use beam_init::system::exit_with_signal;
 mod api_impl;
 mod cli;
 mod environment;
-mod fdstore;
 mod logs;
+mod ptystore;
 mod services;
 mod signal_stream;
 mod spawn;
@@ -92,17 +92,17 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    let fdstore = if cfg!(feature = "unstable-pty") {
-        fdstore::FdStore::bind_socket().expect("failed to bind fdstore socket")
+    let ptystore = if cfg!(feature = "unstable-pty") {
+        ptystore::PtyStore::bind_socket().expect("failed to bind ptystore socket")
     } else {
-        fdstore::FdStore::no_socket()
+        ptystore::PtyStore::no_socket()
     };
 
     // Listen for API commands
     api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
 
     let mut service_manager =
-        ServiceManager::new(old_sigmask, tx_event, fdstore, cli.environment_file);
+        ServiceManager::new(old_sigmask, tx_event, ptystore, cli.environment_file);
     loop {
         match rx_event
             .recv()

@@ -1,7 +1,7 @@
 use std::ffi::{CStr, OsStr, c_int};
 use std::io;
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -10,18 +10,18 @@ use libc::{TIOCGPTPEER, TIOCSPTLCK, uid_t};
 use crate::system::cerr;
 
 #[derive(Debug)]
-pub struct Pty<T> {
-    pub master: T,
+pub struct Pty {
+    pub master: OwnedFd,
     pub path: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct PtyClient<'a, T> {
-    parent: &'a mut Pty<T>,
+pub struct PtyClient<'a> {
+    master: BorrowedFd<'a>,
 }
 
-impl<T: AsFd> Pty<T> {
-    pub fn new(map_fd: impl FnOnce(OwnedFd) -> T) -> io::Result<Self> {
+impl Pty {
+    pub fn new() -> io::Result<Self> {
         let flags = libc::O_RDWR | libc::O_NOCTTY;
 
         // SAFETY:
@@ -49,22 +49,30 @@ impl<T: AsFd> Pty<T> {
         };
 
         Ok(Pty {
-            master: map_fd(master),
+            master,
             path: pts_name.to_owned(),
         })
     }
 
-    pub fn client(&mut self) -> PtyClient<'_, T> {
-        PtyClient { parent: self }
+    pub fn client(&self) -> PtyClient<'_> {
+        PtyClient {
+            master: self.master.as_fd(),
+        }
     }
 }
 
-impl<'a, T: AsFd> PtyClient<'a, T> {
+impl AsFd for Pty {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.master.as_fd()
+    }
+}
+
+impl<'a> PtyClient<'a> {
     /// Associate the client side of the PTY to the current process
     ///
     /// The given uid will be the owner of the client side of the PTY.
     pub fn make_tty(self, uid: uid_t) -> io::Result<OwnedFd> {
-        let master = self.parent.master.as_fd();
+        let master = self.master;
 
         // Equivalent to unlockpt, but async-signal-safe
         // SAFETY: this ioctl is safe to call (and is being fed the correct file descriptor)

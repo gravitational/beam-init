@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 /// Default Unix socket path for the beam-init HTTP API.
 pub const API_SOCKET_PATH: &str = "/run/beam-init";
 
-/// Default Unix socket path used to retrieve file descriptors from beam-init.
-pub const FD_SOCKET_PATH: &str = "/run/beam-init-fds";
+/// Default Unix socket path used to retrieve PTY file descriptors from beam-init.
+pub const PTY_SOCKET_PATH: &str = "/run/beam-init-ptys";
 
 /// Request body for creating and starting a service.
 #[derive(Debug, Serialize, Deserialize)]

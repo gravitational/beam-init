@@ -1,44 +1,48 @@
 use std::collections::BTreeMap;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
+use beam_init::system::pty::{Pty, PtyClient};
 use libc::uid_t;
 use tokio::io::{AsyncReadExt, Interest};
 use tokio::net::UnixListener;
 
 use beam_init::system::unix_socket::socket_send_fd;
-use beam_init_api::FD_SOCKET_PATH;
+use beam_init_api::PTY_SOCKET_PATH;
 
-pub struct StoredFd {
+pub struct StoredPty {
     id: u64,
-    fd: Arc<OwnedFd>,
-    store: Arc<Mutex<FdStoreInner>>,
+    pty: Arc<Pty>,
+    store: Arc<Mutex<PtyStoreInner>>,
 }
 
-impl fmt::Debug for StoredFd {
+impl fmt::Debug for StoredPty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoredFd")
             .field("id", &self.id)
-            .field("fd", &self.fd)
+            .field("fd", &self.pty)
             .finish()
     }
 }
 
-impl StoredFd {
+impl StoredPty {
     pub fn id(&self) -> u64 {
         self.id
     }
-}
 
-impl AsFd for StoredFd {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+    pub fn path(&self) -> &Path {
+        &self.pty.path
+    }
+
+    pub fn client(&self) -> PtyClient<'_> {
+        self.pty.client()
     }
 }
 
-impl Drop for StoredFd {
+impl Drop for StoredPty {
     fn drop(&mut self) {
         self.store
             .lock()
@@ -53,25 +57,25 @@ impl Drop for StoredFd {
 // NOTE: This uses a sync lock to allow locking outside of async functions. As
 // such the critical section must be as short as possible and may not span an
 // await to prevent deadlocks.
-pub struct FdStore(Arc<Mutex<FdStoreInner>>);
+pub struct PtyStore(Arc<Mutex<PtyStoreInner>>);
 
 #[derive(Debug, Default)]
-struct FdStoreInner {
-    fds: BTreeMap<u64, (Arc<OwnedFd>, uid_t)>,
+struct PtyStoreInner {
+    fds: BTreeMap<u64, (Arc<Pty>, uid_t)>,
     next_id: u64,
 }
 
-impl FdStore {
+impl PtyStore {
     pub(crate) fn no_socket() -> Self {
-        FdStore(Arc::new(Mutex::new(FdStoreInner::default())))
+        PtyStore(Arc::new(Mutex::new(PtyStoreInner::default())))
     }
 
     pub(crate) fn bind_socket() -> io::Result<Self> {
-        let socket = UnixListener::bind(FD_SOCKET_PATH)?;
+        let socket = UnixListener::bind(PTY_SOCKET_PATH)?;
         let permissions = std::fs::Permissions::from_mode(0o666);
-        std::fs::set_permissions(FD_SOCKET_PATH, permissions)?;
+        std::fs::set_permissions(PTY_SOCKET_PATH, permissions)?;
 
-        let inner = Arc::new(Mutex::new(FdStoreInner::default()));
+        let inner = Arc::new(Mutex::new(PtyStoreInner::default()));
 
         let inner2 = inner.clone();
         tokio::spawn(async move {
@@ -90,7 +94,7 @@ impl FdStore {
                             let id = match stream.read_u64_le().await {
                                 Ok(id) => id,
                                 Err(err) => {
-                                    eprintln!("Failed to read fdstore id from client: {err}");
+                                    eprintln!("Failed to read ptystore id from client: {err}");
                                     return;
                                 }
                             };
@@ -125,10 +129,10 @@ impl FdStore {
             }
         });
 
-        Ok(FdStore(inner))
+        Ok(PtyStore(inner))
     }
 
-    pub(crate) fn add(&self, fd: OwnedFd, uid: uid_t) -> StoredFd {
+    pub(crate) fn add_pty(&self, fd: Pty, uid: uid_t) -> StoredPty {
         let fd = Arc::new(fd);
 
         let mut this = self.0.lock().expect("lock shouldn't be poisoned");
@@ -137,9 +141,9 @@ impl FdStore {
         assert!(this.fds.insert(id, (fd.clone(), uid)).is_none());
         this.next_id += 1;
 
-        StoredFd {
+        StoredPty {
             id,
-            fd,
+            pty: fd,
             store: self.0.clone(),
         }
     }

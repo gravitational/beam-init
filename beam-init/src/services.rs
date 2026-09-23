@@ -17,8 +17,8 @@ use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
 use crate::api_impl::Credentials;
-use crate::fdstore::{FdStore, StoredFd};
 use crate::logs::{AsyncRingBuffer, Logs};
+use crate::ptystore::{PtyStore, StoredPty};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
@@ -31,7 +31,7 @@ pub(crate) struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
-    fdstore: FdStore,
+    ptystore: PtyStore,
     user_env_files: Vec<PathBuf>,
 }
 
@@ -118,13 +118,13 @@ pub(crate) enum ServiceStatus {
     /// The service is currently running.
     Running {
         main_pid: pid_t,
-        pty: Option<Pty<StoredFd>>,
+        pty: Option<StoredPty>,
     },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
     Frozen {
         main_pid: pid_t,
-        pty: Option<Pty<StoredFd>>,
+        pty: Option<StoredPty>,
     },
 
     /// The service was stopped, but will soon be started again as part of a restart.
@@ -199,14 +199,14 @@ impl ServiceManager {
     pub fn new(
         old_sigmask: OldSigmask,
         tx_event: mpsc::Sender<Event>,
-        fdstore: FdStore,
+        ptystore: PtyStore,
         user_env_files: Vec<PathBuf>,
     ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
-            fdstore,
+            ptystore,
             user_env_files,
         }
     }
@@ -219,7 +219,8 @@ impl ServiceManager {
                     reason = "this is the only place waitpid is ok"
                 )]
                 let (pid, status) = match waitpid(-1, WNOHANG) {
-                    Ok((pid, status)) => (pid, status),
+                    Ok(Some((pid, status))) => (pid, status),
+                    Ok(None) => break,
                     Err(err) if err.raw_os_error() == Some(libc::ECHILD) => {
                         // No more zombies to wait for. While the man page of wait/waitpid only
                         // explicitly says ECHILD happens for wait when there is no child to wait
@@ -229,9 +230,6 @@ impl ServiceManager {
                     }
                     Err(err) => panic!("waitpid failed with {err:?}"),
                 };
-                if pid == 0 {
-                    return;
-                }
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
@@ -394,7 +392,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new(|fd| self.fdstore.add(fd, credentials.uid)))
+            .then(|| Pty::new().map(|pty| self.ptystore.add_pty(pty, credentials.uid)))
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
@@ -409,7 +407,7 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             add_single_log_message(
                 &service.state.logs,
-                format!("[process connected to pty: {}]", terminal.path.display()),
+                format!("[process connected to pty: {}]", terminal.path().display()),
             );
 
             Sink::PTY(terminal.client())
