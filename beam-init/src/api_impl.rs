@@ -370,12 +370,12 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             crate::services::ServiceStatus::Running { main_pid, ref pty } => {
                 ServiceStatus::Running {
                     main_pid,
-                    pty: pty.as_ref().map(|pty| (pty.id(), pty.path().to_owned())),
+                    pty: pty.as_ref().map(|pty| pty.path.clone()),
                 }
             }
             crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
                 main_pid,
-                pty: pty.as_ref().map(|pty| (pty.id(), pty.path().to_owned())),
+                pty: pty.as_ref().map(|pty| pty.path.clone()),
             },
             crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
                 ServiceStatus::Restarting {
