@@ -90,8 +90,8 @@ pub enum ServiceStatus {
         /// Process ID of the service's main process.
         main_pid: pid_t,
 
-        /// File-descriptor store ID and device path for the service's PTY, if allocated.
-        pty: Option<(u64, PathBuf)>,
+        /// Device path for the service's PTY, if allocated.
+        pty: Option<PathBuf>,
     },
 
     /// The service is paused but can be continued.
@@ -99,8 +99,8 @@ pub enum ServiceStatus {
         /// Process ID of the service's main process.
         main_pid: pid_t,
 
-        /// File-descriptor store ID and device path for the service's PTY, if allocated.
-        pty: Option<(u64, PathBuf)>,
+        /// Device path for the service's PTY, if allocated.
+        pty: Option<PathBuf>,
     },
 
     /// The service has been requested to restart and is in the process of shutting down.
@@ -149,14 +149,14 @@ impl std::fmt::Display for ServiceStatus {
             ServiceStatus::Stopped => f.write_str("stopped"),
             ServiceStatus::Running { main_pid, pty } => {
                 write!(f, "running PID={main_pid}")?;
-                if let Some((_, path)) = pty {
+                if let Some(path) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
                 Ok(())
             }
             ServiceStatus::Frozen { main_pid, pty } => {
                 write!(f, "frozen PID={main_pid}")?;
-                if let Some((_, path)) = pty {
+                if let Some(path) = pty {
                     write!(f, ", pty={}", path.display())?;
                 }
                 Ok(())
