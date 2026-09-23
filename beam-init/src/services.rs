@@ -291,6 +291,17 @@ impl ServiceManager {
         name: String,
         config: ServiceConfig,
     ) -> Result<(), ServiceError> {
+        if name.is_empty() {
+            // Not reachable through the REST API
+            return Err(ServiceError::InvalidRequest {
+                err: "Service name may not be empty".to_owned(),
+            });
+        } else if name.len() > usize::from(u8::MAX) {
+            return Err(ServiceError::InvalidRequest {
+                err: "Service name may not be longer than 255 bytes".to_owned(),
+            });
+        }
+
         config.validate()?;
 
         let logs = Logs::new();

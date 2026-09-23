@@ -38,6 +38,7 @@ pub(crate) const GIT_SHA: &str = match option_env!("GIT_SHA") {
 static DEBUG_LOGS: LazyLock<bool> =
     LazyLock::new(|| env::var("BEAM_INIT_ENABLE_DEBUG_LOGS").as_deref() == Ok("1"));
 
+#[derive(Debug)]
 enum Event {
     Command {
         command: api_impl::Command,
