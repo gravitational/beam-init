@@ -393,7 +393,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
             crate::services::ServiceStatus::Running {
                 main_pid,
-                monitor_tx: _,
+                monitor_and_event: _,
                 ref pty,
             } => ServiceStatus::Running {
                 main_pid,
@@ -401,7 +401,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
             crate::services::ServiceStatus::Frozen {
                 main_pid,
-                monitor_tx: _,
+                monitor_and_event: _,
                 ref pty,
             } => ServiceStatus::Frozen {
                 main_pid,
@@ -409,7 +409,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
             crate::services::ServiceStatus::Restarting {
                 main_pid,
-                monitor_tx: _,
+                monitor_and_event: _,
                 ref name,
             } => ServiceStatus::Restarting {
                 main_pid,
@@ -417,7 +417,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
             crate::services::ServiceStatus::Stopping {
                 main_pid,
-                monitor_tx: _,
+                monitor_and_event: _,
                 prune,
             } => ServiceStatus::Stopping { main_pid, prune },
             crate::services::ServiceStatus::Exited(exit_status) => {

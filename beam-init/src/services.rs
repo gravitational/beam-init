@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{OsString, c_int};
-use std::io;
+use std::io::{self, PipeReader};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -120,7 +120,7 @@ pub(crate) enum ServiceStatus {
     Running {
         main_pid: pid_t,
         /// Pipe of [`MonitorCommand`] values.
-        monitor_tx: Option<MonitorCommandSender>,
+        monitor_and_event: Option<(MonitorCommandSender, PipeReader)>,
         pty: Option<Pty>,
     },
 
@@ -128,7 +128,7 @@ pub(crate) enum ServiceStatus {
     Frozen {
         main_pid: pid_t,
         /// Pipe of [`MonitorCommand`] values.
-        monitor_tx: Option<MonitorCommandSender>,
+        monitor_and_event: Option<(MonitorCommandSender, PipeReader)>,
         pty: Option<Pty>,
     },
 
@@ -136,7 +136,7 @@ pub(crate) enum ServiceStatus {
     Restarting {
         main_pid: pid_t,
         /// Pipe of [`MonitorCommand`] values.
-        monitor_tx: Option<MonitorCommandSender>,
+        monitor_and_event: Option<(MonitorCommandSender, PipeReader)>,
         name: String,
     },
 
@@ -144,7 +144,7 @@ pub(crate) enum ServiceStatus {
     Stopping {
         main_pid: pid_t,
         /// Pipe of [`MonitorCommand`] values.
-        monitor_tx: Option<MonitorCommandSender>,
+        monitor_and_event: Option<(MonitorCommandSender, PipeReader)>,
         prune: bool,
     },
 
@@ -257,7 +257,7 @@ impl ServiceManager {
                         }
                         ServiceStatus::Stopping {
                             main_pid,
-                            monitor_tx: _,
+                            monitor_and_event: _,
                             prune,
                         } if main_pid == pid => {
                             service.abort_liveness_probe();
@@ -272,7 +272,7 @@ impl ServiceManager {
                         }
                         ServiceStatus::Restarting {
                             main_pid,
-                            monitor_tx: _,
+                            monitor_and_event: _,
                             ref name,
                         } if main_pid == pid => {
                             let name = name.clone();
@@ -458,10 +458,10 @@ impl ServiceManager {
         };
 
         match spawn_service(old_sigmask, &service.config, sink) {
-            Ok((child_pid, monitor_tx)) => {
+            Ok((child_pid, monitor_and_event)) => {
                 service.state.status = ServiceStatus::Running {
                     main_pid: child_pid,
-                    monitor_tx,
+                    monitor_and_event,
                     pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
@@ -501,13 +501,13 @@ impl ServiceManager {
             }
             ServiceStatus::Running {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ref mut pty,
             } => {
-                let mut monitor_tx = monitor_tx.take();
+                let mut monitor_and_event = monitor_and_event.take();
                 let pty = pty.take();
                 service.abort_liveness_probe();
-                if let Some(monitor_tx) = &mut monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = &mut monitor_and_event {
                     monitor_tx
                         .signal(SIGSTOP)
                         .expect("failed to send command on monitor pipe");
@@ -516,7 +516,7 @@ impl ServiceManager {
                 }
                 service.state.status = ServiceStatus::Frozen {
                     main_pid,
-                    monitor_tx,
+                    monitor_and_event,
                     pty,
                 };
             }
@@ -546,12 +546,12 @@ impl ServiceManager {
             }
             ServiceStatus::Frozen {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ref mut pty,
             } => {
-                let mut monitor_tx = monitor_tx.take();
+                let mut monitor_and_event = monitor_and_event.take();
                 let pty = pty.take();
-                if let Some(monitor_tx) = &mut monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = &mut monitor_and_event {
                     monitor_tx
                         .signal(SIGCONT)
                         .expect("failed to send command on monitor pipe");
@@ -560,7 +560,7 @@ impl ServiceManager {
                 }
                 service.state.status = ServiceStatus::Running {
                     main_pid,
-                    monitor_tx,
+                    monitor_and_event,
                     pty,
                 };
                 // Resume probing now that the process is running again.
@@ -590,33 +590,33 @@ impl ServiceManager {
             }
             ServiceStatus::Stopping {
                 main_pid,
-                ref mut monitor_tx,
+                monitor_and_event: ref mut monitor_tx,
                 prune: old_prune,
             } => {
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
-                    monitor_tx: monitor_tx.take(),
+                    monitor_and_event: monitor_tx.take(),
                     prune: prune || old_prune,
                 };
             }
             ServiceStatus::Running {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             }
             | ServiceStatus::Frozen {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             }
             | ServiceStatus::Restarting {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             } => {
-                let mut monitor_tx = monitor_tx.take();
+                let mut monitor_and_event = monitor_and_event.take();
                 service.abort_liveness_probe();
-                if let Some(monitor_tx) = &mut monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = &mut monitor_and_event {
                     monitor_tx
                         .signal(SIGTERM)
                         .expect("failed to send command on monitor pipe");
@@ -625,7 +625,7 @@ impl ServiceManager {
                 }
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
-                    monitor_tx,
+                    monitor_and_event,
                     prune,
                 };
             }
@@ -649,17 +649,17 @@ impl ServiceManager {
             }
             ServiceStatus::Running {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             }
             | ServiceStatus::Frozen {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             } => {
-                let mut monitor_tx = monitor_tx.take();
+                let mut monitor_and_event = monitor_and_event.take();
                 service.abort_liveness_probe();
-                if let Some(monitor_tx) = &mut monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = &mut monitor_and_event {
                     monitor_tx
                         .signal(SIGTERM)
                         .expect("failed to send command on monitor pipe");
@@ -668,7 +668,7 @@ impl ServiceManager {
                 }
                 service.state.status = ServiceStatus::Restarting {
                     main_pid,
-                    monitor_tx,
+                    monitor_and_event,
                     name: name.to_owned(),
                 };
             }
@@ -696,10 +696,10 @@ impl ServiceManager {
             }
             ServiceStatus::Stopping {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 prune: _,
             } => {
-                if let Some(monitor_tx) = monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = monitor_and_event {
                     monitor_tx
                         .signal(SIGKILL)
                         .expect("failed to send command on monitor pipe");
@@ -709,10 +709,10 @@ impl ServiceManager {
             }
             ServiceStatus::Restarting {
                 main_pid,
-                ref mut monitor_tx,
+                ref mut monitor_and_event,
                 ..
             } => {
-                if let Some(monitor_tx) = monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = monitor_and_event {
                     monitor_tx
                         .signal(SIGKILL)
                         .expect("failed to send command on monitor pipe");
@@ -723,7 +723,7 @@ impl ServiceManager {
                 // Prevent the restart, only stop this service.
                 service.state.status = ServiceStatus::Stopping {
                     main_pid,
-                    monitor_tx: monitor_tx.take(),
+                    monitor_and_event: monitor_and_event.take(),
                     prune: false,
                 };
             }
@@ -767,12 +767,28 @@ impl ServiceManager {
             .map(|(name, service)| (name, &service.state.status))
     }
 
-    pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
+    pub fn get_pty(
+        &self,
+        credentials: Credentials,
+        name: String,
+    ) -> Result<(OwnedFd, OwnedFd), ServiceError> {
         let service = self.get_service(credentials, &name)?;
         match &service.state.status {
-            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => {
+            ServiceStatus::Running {
+                pty,
+                monitor_and_event,
+                ..
+            }
+            | ServiceStatus::Frozen {
+                pty,
+                monitor_and_event,
+                ..
+            } => {
                 if let Some(pty) = pty {
-                    Ok(pty.master.try_clone().expect("dup shouldn't fail"))
+                    Ok((
+                        pty.master.try_clone().expect("dup shouldn't fail"),
+                        OwnedFd::from(monitor_and_event.as_ref().unwrap().1.try_clone().unwrap()),
+                    ))
                 } else {
                     Err(ServiceError::NoPty { name })
                 }
@@ -796,15 +812,15 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             }
             | ServiceStatus::Frozen {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             } => {
-                if let Some(monitor_tx) = monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = monitor_and_event {
                     monitor_tx
                         .foreground()
                         .expect("failed to send command on monitor pipe");
@@ -835,15 +851,15 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running {
                 main_pid: _,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             }
             | ServiceStatus::Frozen {
                 main_pid: _,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             } => {
-                if let Some(monitor_tx) = monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = monitor_and_event {
                     monitor_tx
                         .background()
                         .expect("failed to send command on monitor pipe");
@@ -882,25 +898,25 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             }
             | ServiceStatus::Frozen {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 pty: _,
             }
             | ServiceStatus::Restarting {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 name: _,
             }
             | ServiceStatus::Stopping {
                 main_pid,
-                monitor_tx,
+                monitor_and_event,
                 prune: _,
             } => {
-                if let Some(monitor_tx) = monitor_tx {
+                if let Some((monitor_tx, _event_rx)) = monitor_and_event {
                     monitor_tx
                         .signal(sig)
                         .expect("failed to send command on monitor pipe");
