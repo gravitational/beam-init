@@ -415,7 +415,7 @@ fn attach(client: Client, name: String) {
         .show_service(&name)
         .unwrap_or_else(show_error_and_exit);
 
-    let pty = match service.status {
+    let (pty, event_pipe_rx) = match service.status {
         beam_init_api::ServiceStatus::Running {
             ref pty,
             main_pid: _,
@@ -426,8 +426,8 @@ fn attach(client: Client, name: String) {
         } => {
             // FIXME do pty existence check after we fail to obtain it from the store.
             if pty.is_some() {
-                if let Some(fd) = get_pty_from_store(&name) {
-                    fd
+                if let Some((pty, event_pipe_rx)) = get_pty_from_store(&name) {
+                    (pty, event_pipe_rx)
                 } else {
                     // We raced with the process exiting
                     let service = client
@@ -451,7 +451,7 @@ fn attach(client: Client, name: String) {
     // it interferes with signal handling
     drop(client);
 
-    if let Err(err) = terminal::manage(&name, pty) {
+    if let Err(err) = terminal::manage(&name, pty, event_pipe_rx) {
         println!("pty error for service {name} ({})", err);
         process::exit(1);
     } else {
@@ -470,7 +470,8 @@ fn attach(client: Client, name: String) {
 
 /// Retrieve a file descriptor over the dedicated socket
 #[cfg(feature = "unstable-pty")]
-fn get_pty_from_store(name: &str) -> Option<std::os::fd::OwnedFd> {
+fn get_pty_from_store(name: &str) -> Option<(std::os::fd::OwnedFd, std::io::PipeReader)> {
+    use std::io::PipeReader;
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
@@ -479,8 +480,10 @@ fn get_pty_from_store(name: &str) -> Option<std::os::fd::OwnedFd> {
     let mut socket = UnixStream::connect(beam_init_api::PTY_SOCKET_PATH).unwrap();
     socket.write_all(&[name.len().try_into().unwrap()]).unwrap();
     socket.write_all(name.as_bytes()).unwrap();
-    let (_len, fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
-    fd
+
+    let (_len, pty_fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
+    let (_len, event_fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
+    pty_fd.zip(event_fd.map(PipeReader::from))
 }
 
 /// Checks whether all the values indexed by selector have the indicated values
