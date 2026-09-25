@@ -99,7 +99,8 @@ impl UserTerm {
         // SAFETY: `tt_dst` is an initialized struct obtained through tcgetattr.
         unsafe { cfmakeraw(&mut tt_dst) };
         // But we still need signals to be sent to beam-init rather than the service pty.
-        tt_dst.c_lflag |= ISIG;
+        // FIXME disable and detect backgrounding of the service process group instead
+        // tt_dst.c_lflag |= ISIG;
 
         // SAFETY: dst is a valid file descriptor and `tt_dst` is an
         // initialized struct obtained through tcgetattr; so this is safe to

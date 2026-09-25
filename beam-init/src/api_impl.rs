@@ -53,6 +53,9 @@ pub enum Command {
     NotifyPtyAttached {
         name: String,
     },
+    NotifyPtyDetached {
+        name: String,
+    },
     SendSignal {
         name: String,
         sig: c_int,
@@ -123,6 +126,10 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         .route(
             "/service/{name}/notify_pty_attached",
             post(notify_pty_attached),
+        )
+        .route(
+            "/service/{name}/notify_pty_detached",
+            post(notify_pty_detached),
         )
         .route("/service/{name}/send_signal", post(send_signal))
         .route("/version", get(version))
@@ -325,6 +332,23 @@ async fn notify_pty_attached(
     rx.await.expect("main task crashed")
 }
 
+async fn notify_pty_detached(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::Command {
+            command: Command::NotifyPtyDetached { name },
+            tx,
+            credentials,
+        })
+        .await
+        .expect("main task crashed");
+    rx.await.expect("main task crashed")
+}
+
 async fn send_signal(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
@@ -367,25 +391,35 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
         match *value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
-                ServiceStatus::Running {
-                    main_pid,
-                    pty: pty.as_ref().map(|pty| pty.path.clone()),
-                }
-            }
-            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
+            crate::services::ServiceStatus::Running {
+                main_pid,
+                monitor_and_event: _,
+                ref pty,
+            } => ServiceStatus::Running {
                 main_pid,
                 pty: pty.as_ref().map(|pty| pty.path.clone()),
             },
-            crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
-                ServiceStatus::Restarting {
-                    main_pid,
-                    name: name.to_owned(),
-                }
-            }
-            crate::services::ServiceStatus::Stopping { main_pid, prune } => {
-                ServiceStatus::Stopping { main_pid, prune }
-            }
+            crate::services::ServiceStatus::Frozen {
+                main_pid,
+                monitor_and_event: _,
+                ref pty,
+            } => ServiceStatus::Frozen {
+                main_pid,
+                pty: pty.as_ref().map(|pty| pty.path.clone()),
+            },
+            crate::services::ServiceStatus::Restarting {
+                main_pid,
+                monitor_and_event: _,
+                ref name,
+            } => ServiceStatus::Restarting {
+                main_pid,
+                name: name.to_owned(),
+            },
+            crate::services::ServiceStatus::Stopping {
+                main_pid,
+                monitor_and_event: _,
+                prune,
+            } => ServiceStatus::Stopping { main_pid, prune },
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(exit_status)
             }
@@ -530,6 +564,11 @@ pub async fn handle_api_command(
         }
         Command::NotifyPtyAttached { name } => {
             service_manager.notify_pty_attached(credentials, &name)?;
+
+            Ok(Json(()).into_response())
+        }
+        Command::NotifyPtyDetached { name } => {
+            service_manager.notify_pty_detached(credentials, &name)?;
 
             Ok(Json(()).into_response())
         }
