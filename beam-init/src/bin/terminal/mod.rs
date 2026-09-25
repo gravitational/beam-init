@@ -1,7 +1,8 @@
 use std::fs::File;
-use std::io;
+use std::io::{self, PipeReader, Read};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use beam_init::MonitorEvent;
 use beam_init::system::set_nonblocking;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
@@ -10,7 +11,7 @@ mod user_term;
 use beam_init_client::blocking::Client;
 use user_term::UserTerm;
 
-pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
+pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) -> io::Result<()> {
     let mut app = File::from(pty);
     let mut tty = UserTerm::open()?;
 
@@ -33,9 +34,11 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
     const CAN_READ_FROM_PTY: mio::Token = mio::Token(0);
     const CAN_READ_FROM_CONTROLLER: mio::Token = mio::Token(1);
     const SIGNAL_ARRIVED: mio::Token = mio::Token(2);
+    const EVENT_ARRIVED: mio::Token = mio::Token(3);
 
     set_nonblocking(&tty)?;
     set_nonblocking(&app)?;
+    set_nonblocking(&event_pipe_rx)?;
 
     reg.register(
         &mut mio::unix::SourceFd(&tty.as_raw_fd()),
@@ -52,11 +55,20 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
         SIGNAL_ARRIVED,
         mio::Interest::READABLE,
     )?;
+    reg.register(
+        &mut mio::unix::SourceFd(&event_pipe_rx.as_raw_fd()),
+        EVENT_ARRIVED,
+        mio::Interest::READABLE,
+    )?;
 
     let mut events = mio::Events::with_capacity(1024);
     loop {
         tty.sync(&app)?;
-        poller.poll(&mut events, None)?;
+        match poller.poll(&mut events, None) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
         for event in &events {
             let res = match event.token() {
                 CAN_READ_FROM_PTY => std::io::copy(&mut app, &mut tty),
@@ -71,10 +83,27 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
                         _ => unreachable!("An unexpected signal was caught"),
                     }
                 }
+                EVENT_ARRIVED => {
+                    let mut data = [0];
+                    match event_pipe_rx.read(&mut data)? {
+                        0 => continue,
+                        1 => {}
+                        _ => unreachable!(),
+                    }
+                    match MonitorEvent::de(data[0]) {
+                        MonitorEvent::Stopped => {
+                            // Detach
+                            Ok(0)
+                        }
+                    }
+                }
                 _ => continue,
             };
 
             if terminated(res)? {
+                // FIXME error handling
+                let _ = client.notify_pty_detached(name);
+
                 drop(tty); // Restore tty config
                 println!();
                 return Ok(());
