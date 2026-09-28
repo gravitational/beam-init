@@ -150,9 +150,9 @@ enum Command {
     /// Show the version of beamctl and beam-init
     Version,
     #[cfg(testing)]
-    TestingGetFdFromStore {
+    TestingGetPtyFromStore {
         #[arg(index = 1)]
-        id: u64,
+        name: String,
     },
 }
 
@@ -399,9 +399,9 @@ fn main() {
             println!("beam-init: Version: {} - SHA: {}", resp.version, resp.sha);
         }
         #[cfg(testing)]
-        Command::TestingGetFdFromStore { id } => {
-            if get_fd_from_store(id).is_none() {
-                eprintln!("fd not found in store");
+        Command::TestingGetPtyFromStore { name } => {
+            if get_pty_from_store(&name).is_none() {
+                eprintln!("pty not found in store");
                 process::exit(1);
             }
         }
@@ -424,8 +424,9 @@ fn attach(client: Client, name: String) {
             ref pty,
             main_pid: _,
         } => {
-            if let Some((index, _)) = pty {
-                if let Some(fd) = get_fd_from_store(*index) {
+            // FIXME do pty existence check after we fail to obtain it from the store.
+            if pty.is_some() {
+                if let Some(fd) = get_pty_from_store(&name) {
                     fd
                 } else {
                     // We raced with the process exiting
@@ -469,14 +470,15 @@ fn attach(client: Client, name: String) {
 
 /// Retrieve a file descriptor over the dedicated socket
 #[cfg(feature = "unstable-pty")]
-fn get_fd_from_store(ptystore_idx: u64) -> Option<std::os::fd::OwnedFd> {
+fn get_pty_from_store(name: &str) -> Option<std::os::fd::OwnedFd> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
     use beam_init::system::unix_socket::socket_recv_fd;
 
     let mut socket = UnixStream::connect(beam_init_api::PTY_SOCKET_PATH).unwrap();
-    socket.write_all(&u64::to_le_bytes(ptystore_idx)).unwrap();
+    socket.write_all(&[name.len().try_into().unwrap()]).unwrap();
+    socket.write_all(name.as_bytes()).unwrap();
     let (_len, fd) = socket_recv_fd(&socket, &mut [0]).unwrap();
     fd
 }

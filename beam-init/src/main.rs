@@ -1,6 +1,7 @@
 #![deny(clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
+use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::LazyLock;
 use std::{env, process};
@@ -43,6 +44,11 @@ enum Event {
     Command {
         command: api_impl::Command,
         tx: oneshot::Sender<Response>,
+        credentials: Credentials,
+    },
+    GetPty {
+        name: String,
+        tx: oneshot::Sender<OwnedFd>,
         credentials: Credentials,
     },
     Signal(signalfd_siginfo),
@@ -93,17 +99,14 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    let ptystore = if cfg!(feature = "unstable-pty") {
-        ptystore::PtyStore::bind_socket().expect("failed to bind ptystore socket")
-    } else {
-        ptystore::PtyStore::no_socket()
-    };
+    if cfg!(feature = "unstable-pty") {
+        ptystore::init(tx_event.clone()).expect("failed to bind ptystore socket");
+    }
 
     // Listen for API commands
     api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
 
-    let mut service_manager =
-        ServiceManager::new(old_sigmask, tx_event, ptystore, cli.environment_file);
+    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, cli.environment_file);
     loop {
         match rx_event
             .recv()
@@ -120,6 +123,16 @@ async fn main() {
                     api_impl::handle_api_command(&mut service_manager, cmd, credentials).await;
                 let _ = tx.send(res.into_response());
             }
+            Event::GetPty {
+                name,
+                tx,
+                credentials,
+            } => match service_manager.get_pty(credentials, name) {
+                Ok(res) => {
+                    let _ = tx.send(res);
+                }
+                Err(err) => eprintln!("failed to get pty: {err:?}"),
+            },
             Event::ProbeFailed { name } => {
                 if let Err(e) = api_impl::automatic_restart(&mut service_manager, &name).await {
                     if *DEBUG_LOGS {

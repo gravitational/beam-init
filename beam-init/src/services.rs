@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{OsString, c_int};
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -18,7 +19,6 @@ use tokio_stream::StreamExt;
 
 use crate::api_impl::Credentials;
 use crate::logs::{AsyncRingBuffer, Logs};
-use crate::ptystore::{PtyStore, StoredPty};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
@@ -31,7 +31,6 @@ pub(crate) struct ServiceManager {
     old_sigmask: OldSigmask,
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
-    ptystore: PtyStore,
     user_env_files: Vec<PathBuf>,
 }
 
@@ -116,16 +115,10 @@ pub(crate) enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running {
-        main_pid: pid_t,
-        pty: Option<StoredPty>,
-    },
+    Running { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen {
-        main_pid: pid_t,
-        pty: Option<StoredPty>,
-    },
+    Frozen { main_pid: pid_t, pty: Option<Pty> },
 
     /// The service was stopped, but will soon be started again as part of a restart.
     Restarting { main_pid: pid_t, name: String },
@@ -142,6 +135,7 @@ pub(crate) enum ServiceStatus {
 
 #[derive(Debug)]
 pub enum ServiceError {
+    NoPty { name: String },
     ServiceNotFound { name: String },
     ServiceExists { name: String },
     SpawnFailed { cmd: String, err: String },
@@ -155,6 +149,9 @@ pub enum ServiceError {
 impl IntoResponse for ServiceError {
     fn into_response(self) -> Response {
         match self {
+            ServiceError::NoPty { name } => {
+                (StatusCode::NOT_FOUND, format!("Service {name} has no PTY")).into_response()
+            }
             ServiceError::ServiceNotFound { name } => (
                 StatusCode::NOT_FOUND,
                 format!("Service {name} was not found"),
@@ -199,14 +196,12 @@ impl ServiceManager {
     pub fn new(
         old_sigmask: OldSigmask,
         tx_event: mpsc::Sender<Event>,
-        ptystore: PtyStore,
         user_env_files: Vec<PathBuf>,
     ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
-            ptystore,
             user_env_files,
         }
     }
@@ -403,7 +398,7 @@ impl ServiceManager {
         let mut pty = service
             .config
             .pty
-            .then(|| Pty::new().map(|pty| self.ptystore.add_pty(pty, credentials.uid)))
+            .then(Pty::new)
             .transpose()
             .map_err(|err| {
                 let err_str = err.to_string();
@@ -418,7 +413,7 @@ impl ServiceManager {
         let sink = if let Some(terminal) = &mut pty {
             add_single_log_message(
                 &service.state.logs,
-                format!("[process connected to pty: {}]", terminal.path().display()),
+                format!("[process connected to pty: {}]", terminal.path.display()),
             );
 
             Sink::PTY(terminal.client())
@@ -652,6 +647,25 @@ impl ServiceManager {
         self.services
             .iter()
             .map(|(name, service)| (name, &service.state.status))
+    }
+
+    pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
+        let service = self.get_service(credentials, &name)?;
+        match &service.state.status {
+            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => {
+                if let Some(pty) = pty {
+                    Ok(pty.master.try_clone().expect("dup shouldn't fail"))
+                } else {
+                    Err(ServiceError::NoPty { name })
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => Err(ServiceError::NoPty { name }),
+        }
     }
 
     pub fn notify_pty_attached(
