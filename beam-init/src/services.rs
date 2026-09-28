@@ -812,41 +812,6 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn send_signal(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-        sig: c_int,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        // Check that the signal is valid to avoid an expect on EINVAL
-        // Technically 32..=64 is also valid, but those are real-time signals,
-        // which are unlikely to be necessary to trigger for users.
-        if sig <= 0 || sig >= 32 {
-            return Err(ServiceError::InvalidRequest {
-                err: format!("Signal {sig} is not valid"),
-            });
-        }
-
-        match &mut service.state.status {
-            ServiceStatus::Running { process, pty: _ }
-            | ServiceStatus::Frozen { process, pty: _ }
-            | ServiceStatus::Restarting { process, name: _ }
-            | ServiceStatus::Stopping { process, prune: _ } => {
-                process.send_signal(sig);
-            }
-
-            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
-                // Nothing to do
-            }
-
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(())
-    }
-
     pub fn user_env_files(&self) -> &[PathBuf] {
         &self.user_env_files
     }

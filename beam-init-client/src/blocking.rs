@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::ffi::c_int;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -140,10 +139,6 @@ impl Client {
     /// background.
     pub fn notify_pty_detached(&self, name: &str) -> Result<(), Error> {
         self.post(&service_action_path(name, "notify_pty_detached"), ())
-    }
-
-    pub fn send_signal(&self, name: &str, sig: c_int) -> Result<(), Error> {
-        self.post(&service_action_path(name, "send_signal"), sig)
     }
 
     pub fn version(&self) -> Result<VersionResponse, Error> {
