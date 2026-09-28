@@ -37,10 +37,10 @@ assert result.returncode == 0, result.stderr
 time.sleep(0.1)
 assert process_exists("sleep"), "Sleep not started"
 
-# User B can see user A's service in the list.
+# User B cannot see user A's service in the list.
 result = beamctl(["--json", "list"], uid=UID_B, gid=GID_B)
 assert result.returncode == 0, result.stderr
-assert "sleep" in json.loads(result.stdout), result.stdout
+assert "sleep" not in json.loads(result.stdout), result.stdout
 
 # User B trying to stop it fails.
 result = beamctl(["stop", "sleep"], uid=UID_B, gid=GID_B)
