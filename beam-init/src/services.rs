@@ -643,8 +643,16 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn list_services(&self) -> impl Iterator<Item = (&String, &Service)> {
-        self.services.iter()
+    pub fn list_services(
+        &self,
+        credentials: Credentials,
+    ) -> impl Iterator<Item = (&String, &ServiceStatus)> {
+        self.services
+            .iter()
+            .filter(move |(_name, service)| {
+                credentials.uid == 0 || credentials.uid == service.config.credentials.uid
+            })
+            .map(|(name, service)| (name, &service.state.status))
     }
 
     pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
