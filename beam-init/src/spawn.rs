@@ -13,6 +13,7 @@ use libc::{
 use crate::api_impl::Credentials;
 use crate::services::ServiceConfig;
 use crate::signal_stream::OldSigmask;
+use beam_init::MonitorEvent;
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
@@ -314,8 +315,7 @@ pub(crate) fn spawn_service(
                             if pid != service_pid {
                                 // Nothing to do. Not the main process of the service.
                             } else if status.stopped_signal().is_some() {
-                                // FIXME typed event interface
-                                let _ = event_tx.write_all(&[1]);
+                                let _ = event_tx.write_all(&[MonitorEvent::Stopped.ser()]);
                             } else if let Some(code) = status.code() {
                                 _exit(code);
                             } else if let Some(signal) = status.signal() {

@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{self, PipeReader, Read};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 
+use beam_init::MonitorEvent;
 use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{cerr, signal_set::SignalSet};
 
@@ -82,14 +83,26 @@ pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) ->
                     }
                 }
                 EVENT_ARRIVED => {
-                    // FIXME handle events
-                    let _ = event_pipe_rx.read(&mut [0])?;
-                    Ok(0)
+                    let mut data = [0];
+                    match event_pipe_rx.read(&mut data)? {
+                        0 => continue,
+                        1 => {}
+                        _ => unreachable!(),
+                    }
+                    match MonitorEvent::de(data[0]) {
+                        MonitorEvent::Stopped => {
+                            // Detach
+                            Ok(0)
+                        }
+                    }
                 }
                 _ => continue,
             };
 
             if terminated(res)? {
+                // FIXME error handling
+                let _ = client.notify_pty_detached(name);
+
                 drop(tty); // Restore tty config
                 println!();
                 return Ok(());

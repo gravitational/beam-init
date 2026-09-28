@@ -729,10 +729,10 @@ impl ServiceManager {
                             process
                                 .monitor_and_event
                                 .as_ref()
-                                .unwrap()
+                                .expect("event pipe should exist when pty exists")
                                 .1
                                 .try_clone()
-                                .unwrap(),
+                                .expect("try_clone failed"),
                         ),
                     ))
                 } else {
