@@ -643,10 +643,8 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn list_services(&self) -> impl Iterator<Item = (&String, &ServiceStatus)> {
-        self.services
-            .iter()
-            .map(|(name, service)| (name, &service.state.status))
+    pub fn list_services(&self) -> impl Iterator<Item = (&String, &Service)> {
+        self.services.iter()
     }
 
     pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
