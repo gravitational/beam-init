@@ -7,8 +7,6 @@ on:
       - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
 
 permissions: {}
-env:
-  RUST_VERSION: "1.96.1"
 
 jobs:
   build:
@@ -39,9 +37,7 @@ jobs:
 
       - name: Install Rust
         shell: bash
-        run: |
-          rustup toolchain install "${RUST_VERSION}" --target ${{ matrix.target }}
-          rustup default "${RUST_VERSION}"
+        run: rustup toolchain install --target ${{ matrix.target }}
 
       - name: Build
         run: RUSTFLAGS="-Ctarget-feature=+crt-static" cargo build --locked --release --target ${{ matrix.target }}
