@@ -51,7 +51,7 @@ jobs:
         run: echo "::add-matcher::.github/problem-matchers/rust.json"
 
       - name: Clippy
-        run: cargo clippy --locked --workspace --target "${{ matrix.target }}"
+        run: cargo clippy --locked --workspace --all-features --target "${{ matrix.target }}"
 
       - name: Build release binaries
         env:

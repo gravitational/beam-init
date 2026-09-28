@@ -199,3 +199,10 @@ fn service_filtering() {
         .run("client_selectors.py")
         .wait();
 }
+
+#[test]
+fn long_service_name() {
+    Image::build("test.Dockerfile")
+        .run("long_service_name.py")
+        .wait();
+}

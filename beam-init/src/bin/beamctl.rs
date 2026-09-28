@@ -36,7 +36,7 @@ fn show_error_and_exit<T>(err: beam_init_client::Error) -> T {
     process::exit(1);
 }
 
-#[derive(clap::Parser)]
+#[derive(Debug, clap::Parser)]
 struct Cli {
     #[arg(long, global = true)]
     json: bool,

@@ -96,6 +96,7 @@ impl UserTerm {
 
         // Put user tty in raw mode to avoid double echoing of input and to let
         // the service pty handle buffering.
+        // SAFETY: `tt_dst` is an initialized struct obtained through tcgetattr.
         unsafe { cfmakeraw(&mut tt_dst) };
         // But we still need signals to be sent to beam-init rather than the service pty.
         tt_dst.c_lflag |= ISIG;

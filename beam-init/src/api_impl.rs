@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -125,6 +126,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
         )
         .route("/service/{name}/send_signal", post(send_signal))
         .route("/version", get(version))
+        .fallback(fallback_route)
         .with_state(tx_event);
 
     tokio::spawn(async move {
@@ -137,6 +139,10 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
     });
 
     Ok(())
+}
+
+async fn fallback_route() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "404 Not Found")
 }
 
 async fn create_service(
