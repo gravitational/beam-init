@@ -86,6 +86,13 @@ fn api_list_services() {
 }
 
 #[test]
+fn api_list_services_wrong_user() {
+    Image::build("test.Dockerfile")
+        .run("api_list_services_wrong_user.py")
+        .wait();
+}
+
+#[test]
 fn api_service_logs() {
     Image::build("test.Dockerfile")
         .run("api_service_logs.py")
