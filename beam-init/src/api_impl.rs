@@ -365,31 +365,33 @@ impl From<&crate::services::Service> for beam_init_api::Service {
 
 impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     fn from(value: &crate::services::ServiceStatus) -> Self {
-        match *value {
+        match value {
             crate::services::ServiceStatus::Stopped => ServiceStatus::Stopped,
-            crate::services::ServiceStatus::Running { main_pid, ref pty } => {
-                ServiceStatus::Running {
-                    main_pid,
-                    pty: pty.as_ref().map(|pty| pty.path.clone()),
-                }
-            }
-            crate::services::ServiceStatus::Frozen { main_pid, ref pty } => ServiceStatus::Frozen {
-                main_pid,
+            crate::services::ServiceStatus::Running { process, pty } => ServiceStatus::Running {
+                main_pid: process.main_pid,
                 pty: pty.as_ref().map(|pty| pty.path.clone()),
             },
-            crate::services::ServiceStatus::Restarting { main_pid, ref name } => {
+            crate::services::ServiceStatus::Frozen { process, pty } => ServiceStatus::Frozen {
+                main_pid: process.main_pid,
+                pty: pty.as_ref().map(|pty| pty.path.clone()),
+            },
+            crate::services::ServiceStatus::Restarting { process, name } => {
                 ServiceStatus::Restarting {
-                    main_pid,
+                    main_pid: process.main_pid,
                     name: name.to_owned(),
                 }
             }
-            crate::services::ServiceStatus::Stopping { main_pid, prune } => {
-                ServiceStatus::Stopping { main_pid, prune }
+            crate::services::ServiceStatus::Stopping { process, prune } => {
+                ServiceStatus::Stopping {
+                    main_pid: process.main_pid,
+                    prune: *prune,
+                }
             }
             crate::services::ServiceStatus::Exited(exit_status) => {
-                ServiceStatus::Exited(exit_status)
+                ServiceStatus::Exited(*exit_status)
             }
-            crate::services::ServiceStatus::Error(ref err) => ServiceStatus::Error(err.to_string()),
+            crate::services::ServiceStatus::Error(err) => ServiceStatus::Error(err.to_string()),
+            crate::services::ServiceStatus::Dummy => unreachable!(),
         }
     }
 }
