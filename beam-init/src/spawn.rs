@@ -1,5 +1,5 @@
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
-use std::io::{self, PipeWriter, Read, Write};
+use std::io::{self, PipeReader, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::ExitStatusExt;
@@ -26,11 +26,18 @@ unsafe extern "C" {
 }
 
 #[derive(Debug)]
-pub(crate) struct MonitorCommandSender(PipeWriter);
+pub(crate) struct MonitorCommandSender(PipeWriter, PipeReader);
 
 impl MonitorCommandSender {
     fn send(&mut self, cmd: MonitorCommand) -> io::Result<()> {
         match self.0.write_all(&[cmd.ser()]) {
+            Ok(()) => {}
+            // Monitor process exited, we will get a SIGCHLD soon
+            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(err) => return Err(err),
+        }
+        // Wait for command completion
+        match self.1.read_exact(&mut [0]) {
             Ok(()) => Ok(()),
             // Monitor process exited, we will get a SIGCHLD soon
             Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -135,11 +142,13 @@ pub(crate) fn spawn_service(
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     let (mut monitor_rx, monitor_tx) = io::pipe()?;
+    let (monitor_sync_rx, mut monitor_sync_tx) = io::pipe()?;
     let (pgid_sync_rx, pgid_sync_tx) = ipc_barrier::barrier()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
             drop(monitor_tx);
+            drop(monitor_sync_rx);
 
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
@@ -246,7 +255,7 @@ pub(crate) fn spawn_service(
 
                     if fds[0].revents & POLLIN != 0 {
                         let mut cmd = [0];
-                        expect_no_panic(monitor_rx.read(&mut cmd), "failed to read cmd pipe");
+                        expect_no_panic(monitor_rx.read_exact(&mut cmd), "failed to read cmd pipe");
                         let cmd = MonitorCommand::de(cmd[0]);
                         match cmd {
                             MonitorCommand::Signal(signal) => {
@@ -276,6 +285,10 @@ pub(crate) fn spawn_service(
                                 );
                             }
                         }
+                        expect_no_panic(
+                            monitor_sync_tx.write_all(&[0]),
+                            "failed to write to sync pipe",
+                        );
                     }
 
                     if fds[0].revents & (POLLERR | POLLHUP) != 0 {
@@ -313,6 +326,7 @@ pub(crate) fn spawn_service(
     };
     drop(err_tx);
     drop(monitor_rx);
+    drop(monitor_sync_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
@@ -321,7 +335,7 @@ pub(crate) fn spawn_service(
             pid_rx.read_exact(&mut child_pid)?;
             Ok((
                 pid_t::from_ne_bytes(child_pid),
-                has_ctty.then(|| MonitorCommandSender(monitor_tx)),
+                has_ctty.then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
             ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
