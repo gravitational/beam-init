@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{OsString, c_int};
-use std::io;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::sync::Arc;
+use std::{io, mem};
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
@@ -20,7 +20,7 @@ use tokio_stream::StreamExt;
 use crate::api_impl::Credentials;
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
-use crate::spawn::{Sink, spawn_service};
+use crate::spawn::{MonitorCommandSender, Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::pty::Pty;
@@ -115,22 +115,55 @@ pub(crate) enum ServiceStatus {
     Stopped,
 
     /// The service is currently running.
-    Running { main_pid: pid_t, pty: Option<Pty> },
+    Running {
+        process: ServiceProcess,
+        pty: Option<Pty>,
+    },
 
     /// The service is frozen (using SIGSTOP) but can be thawed (SIGCONT).
-    Frozen { main_pid: pid_t, pty: Option<Pty> },
+    Frozen {
+        process: ServiceProcess,
+        pty: Option<Pty>,
+    },
 
     /// The service was stopped, but will soon be started again as part of a restart.
-    Restarting { main_pid: pid_t, name: String },
+    Restarting {
+        process: ServiceProcess,
+        name: String,
+    },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    Stopping { main_pid: pid_t, prune: bool },
+    Stopping {
+        process: ServiceProcess,
+        prune: bool,
+    },
 
     /// The service exited with the given exit status.
     Exited(ExitStatus),
 
     /// The service failed to start with the given error.
     Error(io::Error),
+
+    /// Temporarily used inside commands that need to change the status
+    Dummy,
+}
+
+#[derive(Debug)]
+pub(crate) struct ServiceProcess {
+    pub(crate) main_pid: pid_t,
+    monitor_tx: Option<MonitorCommandSender>,
+}
+
+impl ServiceProcess {
+    fn send_signal(&mut self, signal: c_int) {
+        if let Some(monitor_tx) = &mut self.monitor_tx {
+            monitor_tx
+                .signal(signal)
+                .expect("failed to send command on monitor pipe");
+        } else {
+            kill_process_group(self.main_pid, signal).expect("process to exist");
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -228,12 +261,14 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { main_pid, .. } if main_pid == pid => {
+                        ServiceStatus::Running { ref process, .. } if process.main_pid == pid => {
                             service.state.status = ServiceStatus::Exited(status);
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { main_pid, prune } if main_pid == pid => {
+                        ServiceStatus::Stopping { ref process, prune }
+                            if process.main_pid == pid =>
+                        {
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
@@ -244,7 +279,10 @@ impl ServiceManager {
 
                             break;
                         }
-                        ServiceStatus::Restarting { main_pid, ref name } if main_pid == pid => {
+                        ServiceStatus::Restarting {
+                            ref process,
+                            ref name,
+                        } if process.main_pid == pid => {
                             let name = name.clone();
                             service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
@@ -428,9 +466,12 @@ impl ServiceManager {
         };
 
         match spawn_service(old_sigmask, &service.config, sink) {
-            Ok(child_pid) => {
+            Ok((child_pid, monitor_tx)) => {
                 service.state.status = ServiceStatus::Running {
-                    main_pid: child_pid,
+                    process: ServiceProcess {
+                        main_pid: child_pid,
+                        monitor_tx,
+                    },
                     pty,
                 };
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
@@ -457,26 +498,25 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped
+        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
+            status @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
+            | ServiceStatus::Error(_)) => {
                 // No process to freeze.
+                service.state.status = status;
             }
-            ServiceStatus::Frozen { .. } => {
+            status @ ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
+                service.state.status = status;
             }
-            ServiceStatus::Running {
-                main_pid,
-                ref mut pty,
-            } => {
-                let pty = pty.take();
+            ServiceStatus::Running { mut process, pty } => {
                 service.abort_liveness_probe();
-                kill_process_group(main_pid, SIGSTOP).expect("process to exist");
-                service.state.status = ServiceStatus::Frozen { main_pid, pty };
+                process.send_signal(SIGSTOP);
+                service.state.status = ServiceStatus::Frozen { process, pty };
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -490,27 +530,26 @@ impl ServiceManager {
         let tx_event = self.tx_event.clone();
         let service = self.get_service_mut(credentials, name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped
+        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
+            status @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
+            | ServiceStatus::Error(_)) => {
                 // No process to thaw.
+                service.state.status = status;
             }
-            ServiceStatus::Running { .. } => {
+            status @ ServiceStatus::Running { .. } => {
                 // This process is already running.
+                service.state.status = status;
             }
-            ServiceStatus::Frozen {
-                main_pid,
-                ref mut pty,
-            } => {
-                let pty = pty.take();
-                kill_process_group(main_pid, SIGCONT).expect("process to exist");
-                service.state.status = ServiceStatus::Running { main_pid, pty };
+            ServiceStatus::Frozen { mut process, pty } => {
+                process.send_signal(SIGCONT);
+                service.state.status = ServiceStatus::Running { process, pty };
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -524,31 +563,36 @@ impl ServiceManager {
     ) -> Result<bool, ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
+            status @ (ServiceStatus::Stopped
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_)) => {
                 if prune {
                     self.services.remove(name).expect("service should exist");
+                } else {
+                    service.state.status = status;
                 }
 
                 // Stopped already.
                 return Ok(true);
             }
             ServiceStatus::Stopping {
-                main_pid,
+                process,
                 prune: old_prune,
             } => {
                 service.state.status = ServiceStatus::Stopping {
-                    main_pid,
+                    process,
                     prune: prune || old_prune,
                 };
             }
-            ServiceStatus::Running { main_pid, .. }
-            | ServiceStatus::Frozen { main_pid, .. }
-            | ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Running { mut process, .. }
+            | ServiceStatus::Frozen { mut process, .. }
+            | ServiceStatus::Restarting { mut process, .. } => {
                 service.abort_liveness_probe();
-                service.state.status = ServiceStatus::Stopping { main_pid, prune };
-                kill_process_group(main_pid, SIGTERM).expect("process to exist");
+                process.send_signal(SIGTERM);
+                service.state.status = ServiceStatus::Stopping { process, prune };
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(false)
@@ -561,23 +605,27 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped
+        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
+            status @ (ServiceStatus::Stopped
             | ServiceStatus::Restarting { .. }
-            | ServiceStatus::Stopping { .. } => {
+            | ServiceStatus::Stopping { .. }) => {
                 // all good
+                service.state.status = status;
             }
-            ServiceStatus::Running { main_pid, .. } | ServiceStatus::Frozen { main_pid, .. } => {
+            ServiceStatus::Running { mut process, .. }
+            | ServiceStatus::Frozen { mut process, .. } => {
                 service.abort_liveness_probe();
+                process.send_signal(SIGTERM);
                 service.state.status = ServiceStatus::Restarting {
-                    main_pid,
+                    process,
                     name: name.to_owned(),
                 };
-                kill_process_group(main_pid, SIGTERM).expect("process to exist");
             }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+            status @ (ServiceStatus::Exited(_) | ServiceStatus::Error(_)) => {
                 // nothing to do
+                service.state.status = status;
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -590,28 +638,32 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
-        match service.state.status {
-            ServiceStatus::Stopped => {
+        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
+            status @ ServiceStatus::Stopped => {
                 // all good
+                service.state.status = status;
             }
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid, prune: _ } => {
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
+            ServiceStatus::Stopping { mut process, prune } => {
+                process.send_signal(SIGKILL);
+                service.state.status = ServiceStatus::Stopping { process, prune };
             }
-            ServiceStatus::Restarting { main_pid, .. } => {
+            ServiceStatus::Restarting { mut process, .. } => {
+                process.send_signal(SIGKILL);
+
                 // Prevent the restart, only stop this service.
                 service.state.status = ServiceStatus::Stopping {
-                    main_pid,
+                    process,
                     prune: false,
                 };
-
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
             }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
+            status @ (ServiceStatus::Exited(_) | ServiceStatus::Error(_)) => {
                 // nothing to do
+                service.state.status = status;
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -631,13 +683,18 @@ impl ServiceManager {
             ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
                 panic!("service {name} was killed without being terminated")
             }
-            ServiceStatus::Stopping { main_pid, .. }
-            | ServiceStatus::Restarting { main_pid, .. } => {
-                kill_process_group(main_pid, SIGKILL).expect("process to exist");
+            ServiceStatus::Stopping {
+                ref mut process, ..
+            }
+            | ServiceStatus::Restarting {
+                ref mut process, ..
+            } => {
+                process.send_signal(SIGKILL);
             }
             ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // nothing to do
             }
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -671,6 +728,8 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => Err(ServiceError::NoPty { name }),
+
+            ServiceStatus::Dummy => unreachable!(),
         }
     }
 
@@ -681,11 +740,13 @@ impl ServiceManager {
     ) -> Result<(), ServiceError> {
         let service = self.get_service_mut(credentials, name)?;
 
-        match &service.state.status {
-            ServiceStatus::Running { main_pid, pty } | ServiceStatus::Frozen { main_pid, pty } => {
-                if pty.is_some() {
-                    // send SIGWINCH to the application to stimulate it to redraw
-                    kill_process_group(*main_pid, libc::SIGWINCH).expect("process to exist");
+        match &mut service.state.status {
+            ServiceStatus::Running { process, pty: _ }
+            | ServiceStatus::Frozen { process, pty: _ } => {
+                if let Some(monitor_tx) = &mut process.monitor_tx {
+                    monitor_tx
+                        .foreground()
+                        .expect("failed to send command on monitor pipe");
                 }
             }
 
@@ -696,6 +757,39 @@ impl ServiceManager {
             | ServiceStatus::Error(_) => {
                 // Nothing to do
             }
+
+            ServiceStatus::Dummy => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    pub fn notify_pty_detached(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<(), ServiceError> {
+        let service = self.get_service_mut(credentials, name)?;
+
+        match &mut service.state.status {
+            ServiceStatus::Running { process, pty: _ }
+            | ServiceStatus::Frozen { process, pty: _ } => {
+                if let Some(monitor_tx) = &mut process.monitor_tx {
+                    monitor_tx
+                        .background()
+                        .expect("failed to send command on monitor pipe");
+                }
+            }
+
+            ServiceStatus::Stopped
+            | ServiceStatus::Restarting { .. }
+            | ServiceStatus::Stopping { .. }
+            | ServiceStatus::Exited(_)
+            | ServiceStatus::Error(_) => {
+                // Nothing to do
+            }
+
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
@@ -718,17 +812,19 @@ impl ServiceManager {
             });
         }
 
-        match service.state.status {
-            ServiceStatus::Running { main_pid, .. }
-            | ServiceStatus::Frozen { main_pid, .. }
-            | ServiceStatus::Restarting { main_pid, .. }
-            | ServiceStatus::Stopping { main_pid, .. } => {
-                kill_process_group(main_pid, sig).expect("process to exist");
+        match &mut service.state.status {
+            ServiceStatus::Running { process, pty: _ }
+            | ServiceStatus::Frozen { process, pty: _ }
+            | ServiceStatus::Restarting { process, name: _ }
+            | ServiceStatus::Stopping { process, prune: _ } => {
+                process.send_signal(sig);
             }
 
             ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // Nothing to do
             }
+
+            ServiceStatus::Dummy => unreachable!(),
         }
 
         Ok(())
