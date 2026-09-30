@@ -411,39 +411,20 @@ fn main() {
 /// Attach to the given service
 #[cfg(feature = "unstable-pty")]
 fn attach(client: Client, name: String) {
-    let service = client
-        .show_service(&name)
-        .unwrap_or_else(show_error_and_exit);
-
-    let pty = match service.status {
-        beam_init_api::ServiceStatus::Running {
-            ref pty,
-            main_pid: _,
-        }
-        | beam_init_api::ServiceStatus::Frozen {
-            ref pty,
-            main_pid: _,
-        } => {
-            // FIXME do pty existence check after we fail to obtain it from the store.
-            if pty.is_some() {
-                if let Some(fd) = get_pty_from_store(&name) {
-                    fd
-                } else {
-                    // We raced with the process exiting
-                    let service = client
-                        .show_service(&name)
-                        .unwrap_or_else(show_error_and_exit);
-                    println!("could not attach to {name} ({})", service.status);
-                    return;
-                }
-            } else {
+    let Some(pty) = get_pty_from_store(&name) else {
+        let service = client
+            .show_service(&name)
+            .unwrap_or_else(show_error_and_exit);
+        match service.status {
+            beam_init_api::ServiceStatus::Running { pty: None, .. }
+            | beam_init_api::ServiceStatus::Frozen { pty: None, .. } => {
                 println!("service {name} does not have a pty attached");
                 return;
             }
-        }
-        _ => {
-            println!("could not attach to {name} ({})", service.status);
-            return;
+            _ => {
+                println!("could not attach to {name} ({})", service.status);
+                return;
+            }
         }
     };
 
