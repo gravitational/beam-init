@@ -48,7 +48,7 @@ enum Event {
     },
     GetPty {
         name: String,
-        tx: oneshot::Sender<OwnedFd>,
+        tx: oneshot::Sender<(OwnedFd, OwnedFd)>,
         credentials: Credentials,
     },
     Signal(signalfd_siginfo),

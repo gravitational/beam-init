@@ -16,9 +16,9 @@ use std::{
 
 use libc::{
     ECHO, ECHOCTL, ECHOE, ECHOK, ECHOKE, ECHONL, ICANON, ICRNL, IEXTEN, IGNCR, IGNPAR, IMAXBEL,
-    INLCR, INPCK, ISIG, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR,
-    ONLRET, ONOCR, OPOST, PARMRK, PENDIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE,
-    cfmakeraw, ioctl, tcflag_t, tcgetattr, tcsetattr, termios, winsize,
+    INLCR, INPCK, ISTRIP, IUCLC, IUTF8, IXANY, IXOFF, IXON, NOFLSH, OCRNL, OLCUC, ONLCR, ONLRET,
+    ONOCR, OPOST, PARMRK, PENDIN, TCSAFLUSH, TIOCGWINSZ, TIOCSWINSZ, TOSTOP, XCASE, cfmakeraw,
+    ioctl, tcflag_t, tcgetattr, tcsetattr, termios, winsize,
 };
 
 use beam_init::system::cerr;
@@ -98,8 +98,6 @@ impl UserTerm {
         // the service pty handle buffering.
         // SAFETY: `tt_dst` is an initialized struct obtained through tcgetattr.
         unsafe { cfmakeraw(&mut tt_dst) };
-        // But we still need signals to be sent to beam-init rather than the service pty.
-        tt_dst.c_lflag |= ISIG;
 
         // SAFETY: dst is a valid file descriptor and `tt_dst` is an
         // initialized struct obtained through tcgetattr; so this is safe to
