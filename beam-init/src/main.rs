@@ -99,9 +99,7 @@ async fn main() {
     let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    if cfg!(feature = "unstable-pty") {
-        ptystore::init(tx_event.clone()).expect("failed to bind ptystore socket");
-    }
+    ptystore::init(tx_event.clone()).expect("failed to bind ptystore socket");
 
     // Listen for API commands
     api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");

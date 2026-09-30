@@ -19,7 +19,6 @@ const GIT_SHA: &str = match option_env!("GIT_SHA") {
     None => "unknown",
 };
 
-#[cfg(feature = "unstable-pty")]
 mod terminal;
 
 fn show_error_and_exit<T>(err: beam_init_client::Error) -> T {
@@ -57,7 +56,6 @@ enum Command {
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         labels: Vec<Label>,
         #[arg(long)]
-        #[cfg(feature = "unstable-pty")]
         pty: bool,
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
@@ -137,7 +135,6 @@ enum Command {
         follow: bool,
     },
     /// Attach to the PTY of a running service
-    #[cfg(feature = "unstable-pty")]
     Attach {
         #[arg(index = 1)]
         name: String,
@@ -263,12 +260,9 @@ fn main() {
             labels,
             command,
             liveness,
-            #[cfg(feature = "unstable-pty")]
             pty,
             env,
         } => {
-            #[cfg(not(feature = "unstable-pty"))]
-            let pty = false;
             let name = name.unwrap_or_else(gen_name);
             let labels = BTreeMap::from_iter(labels);
             let env = env.into_iter().collect();
@@ -287,7 +281,6 @@ fn main() {
                 .unwrap_or_else(show_error_and_exit);
             eprintln!("Started service {name}");
 
-            #[cfg(feature = "unstable-pty")]
             if pty {
                 attach(client, name);
             }
@@ -384,7 +377,6 @@ fn main() {
                 }
             }
         }
-        #[cfg(feature = "unstable-pty")]
         Command::Attach { name } => {
             let name = prefix_match(&client, name);
             attach(client, name);
@@ -409,7 +401,6 @@ fn main() {
 }
 
 /// Attach to the given service
-#[cfg(feature = "unstable-pty")]
 fn attach(client: Client, name: String) {
     let service = client
         .show_service(&name)
@@ -469,7 +460,6 @@ fn attach(client: Client, name: String) {
 }
 
 /// Retrieve a file descriptor over the dedicated socket
-#[cfg(feature = "unstable-pty")]
 fn get_pty_from_store(name: &str) -> Option<std::os::fd::OwnedFd> {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
