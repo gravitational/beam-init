@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::ffi::c_int;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -18,7 +17,7 @@ use tokio_stream::StreamExt;
 
 use crate::Event;
 use crate::environment::build_environment;
-use crate::services::{self, ServiceError, ServiceManager, StartReason};
+use crate::services::{self, ServiceError, ServiceManager, StartReason, TerminationToken};
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
 
@@ -59,6 +58,10 @@ pub enum Command {
     SendSignal {
         name: String,
         sig: c_int,
+    },
+    ForceKillService {
+        name: String,
+        token: TerminationToken,
     },
 }
 
@@ -399,18 +402,17 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
                 main_pid: process.main_pid,
                 pty: pty.as_ref().map(|pty| pty.path.clone()),
             },
-            crate::services::ServiceStatus::Restarting { process, name } => {
-                ServiceStatus::Restarting {
-                    main_pid: process.main_pid,
-                    name: name.to_owned(),
-                }
-            }
-            crate::services::ServiceStatus::Stopping { process, prune } => {
-                ServiceStatus::Stopping {
-                    main_pid: process.main_pid,
-                    prune: *prune,
-                }
-            }
+            crate::services::ServiceStatus::Stopping {
+                process,
+                prune,
+                pending_kill: _,
+                restart,
+            } => ServiceStatus::Stopping {
+                main_pid: process.main_pid,
+                prune: *prune,
+                will_restart: restart.is_some(),
+            },
+
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(*exit_status)
             }
@@ -420,40 +422,20 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
     }
 }
 
-async fn stop_service_cmd(
+pub async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
     credentials: Credentials,
     name: &str,
     prune: bool,
+    restart: Option<StartReason>,
 ) -> Result<(), ServiceError> {
-    let stopped_already = service_manager.terminate_service(credentials, name, prune)?;
+    let service = service_manager.get_service(credentials, name)?;
 
-    if stopped_already {
-        return Ok(());
-    }
-
-    // FIXME: pick a more principled duration, and potentially perform the kill
-    // below in an async way.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-
-    // Don't error if the service was stopped and pruned.
-    service_manager.kill_service(credentials, name)
-}
-
-pub async fn automatic_restart(
-    service_manager: &mut ServiceManager,
-    name: &str,
-) -> Result<(), ServiceError> {
-    let service = service_manager.get_service(Credentials::root(), name)?;
+    // We need to reset credentials here to the service's credentials as automatic restart
+    // will send root credentials.
     let credentials = service.config.credentials;
 
-    service_manager.terminate_restart_service(credentials, name)?;
-
-    // FIXME: pick a more principled duration, and potentially perform the kill
-    // below in an async way.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-
-    service_manager.kill_restart_service(credentials, name)
+    service_manager.terminate_service(credentials, name, prune, restart)
 }
 
 pub async fn handle_api_command(
@@ -470,6 +452,7 @@ pub async fn handle_api_command(
                 liveness,
                 pty,
                 labels,
+                graceful_termination_period,
             } = &service;
             let env = if name == BOOTSTRAP_NAME {
                 std::env::vars_os().collect()
@@ -491,6 +474,7 @@ pub async fn handle_api_command(
                     pty: *pty,
                     credentials,
                     labels: labels.clone(),
+                    graceful_termination_period: *graceful_termination_period,
                 },
             )?;
             service_manager.start_service(credentials, &name, StartReason::User)?;
@@ -498,13 +482,19 @@ pub async fn handle_api_command(
         }
         Command::RestartService { name } => {
             let prune = false;
-            let () = stop_service_cmd(service_manager, credentials, &name, prune).await?;
-            service_manager.start_service(credentials, &name, StartReason::User)?;
+            let () = stop_service_cmd(
+                service_manager,
+                credentials,
+                &name,
+                prune,
+                Some(StartReason::User),
+            )
+            .await?;
 
             Ok(Json(()).into_response())
         }
         Command::StopService { name, prune } => {
-            let () = stop_service_cmd(service_manager, credentials, &name, prune).await?;
+            let () = stop_service_cmd(service_manager, credentials, &name, prune, None).await?;
 
             Ok(Json(()).into_response())
         }
@@ -566,6 +556,11 @@ pub async fn handle_api_command(
         }
         Command::SendSignal { name, sig } => {
             service_manager.send_signal(credentials, &name, sig)?;
+
+            Ok(Json(()).into_response())
+        }
+        Command::ForceKillService { name, token } => {
+            service_manager.force_kill_service(credentials, &name, token);
 
             Ok(Json(()).into_response())
         }

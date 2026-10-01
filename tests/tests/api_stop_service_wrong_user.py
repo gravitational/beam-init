@@ -53,4 +53,8 @@ assert process_exists("sleep"), "Sleep was stopped by invalid user"
 result = beamctl(["stop", "sleep"], uid=UID_A, gid=GID_A)
 assert result.returncode == 0, result.stderr
 
-assert not process_exists("sleep"), "Sleep still up"
+deadline = time.monotonic() + 2.0
+while process_exists("sleep"):
+    if time.monotonic() >= deadline:
+        raise AssertionError("Sleep still up after 2 seconds")
+    time.sleep(0.1)
