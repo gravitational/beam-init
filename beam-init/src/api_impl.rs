@@ -60,6 +60,10 @@ pub enum Command {
         name: String,
         sig: c_int,
     },
+    EscalateTerm {
+        name: String,
+        token: u64,
+    },
 }
 
 use axum::serve::IncomingStream;
@@ -405,12 +409,14 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
                     name: name.to_owned(),
                 }
             }
-            crate::services::ServiceStatus::Stopping { process, prune } => {
-                ServiceStatus::Stopping {
-                    main_pid: process.main_pid,
-                    prune: *prune,
-                }
-            }
+            crate::services::ServiceStatus::Stopping {
+                process,
+                prune,
+                escalation: _,
+            } => ServiceStatus::Stopping {
+                main_pid: process.main_pid,
+                prune: *prune,
+            },
             crate::services::ServiceStatus::Exited(exit_status) => {
                 ServiceStatus::Exited(*exit_status)
             }
@@ -426,18 +432,7 @@ async fn stop_service_cmd(
     name: &str,
     prune: bool,
 ) -> Result<(), ServiceError> {
-    let stopped_already = service_manager.terminate_service(credentials, name, prune)?;
-
-    if stopped_already {
-        return Ok(());
-    }
-
-    // FIXME: pick a more principled duration, and potentially perform the kill
-    // below in an async way.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-
-    // Don't error if the service was stopped and pruned.
-    service_manager.kill_service(credentials, name)
+    service_manager.terminate_service(credentials, name, prune)
 }
 
 pub async fn automatic_restart(
@@ -470,6 +465,7 @@ pub async fn handle_api_command(
                 liveness,
                 pty,
                 labels,
+                graceful_termination_period,
             } = &service;
             let env = if name == BOOTSTRAP_NAME {
                 std::env::vars_os().collect()
@@ -491,6 +487,7 @@ pub async fn handle_api_command(
                     pty: *pty,
                     credentials,
                     labels: labels.clone(),
+                    graceful_termination_period: *graceful_termination_period,
                 },
             )?;
             service_manager.start_service(credentials, &name, StartReason::User)?;
@@ -566,6 +563,11 @@ pub async fn handle_api_command(
         }
         Command::SendSignal { name, sig } => {
             service_manager.send_signal(credentials, &name, sig)?;
+
+            Ok(Json(()).into_response())
+        }
+        Command::EscalateTerm { name, token } => {
+            service_manager.escalate_termination(credentials, &name, token);
 
             Ok(Json(()).into_response())
         }
