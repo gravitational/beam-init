@@ -41,6 +41,13 @@ pub(crate) struct Service {
 }
 
 impl Service {
+    fn check_credentials(&self, credentials: Credentials) -> Result<(), ServiceError> {
+        if credentials.uid != 0 && credentials.uid != self.config.credentials.uid {
+            return Err(ServiceError::InvalidCredentials);
+        }
+        Ok(())
+    }
+
     /// Stop the liveness probe task for a service.
     fn abort_liveness_probe(&mut self) {
         if let Some(handle) = self.state.liveness_probe.take() {
@@ -378,9 +385,7 @@ impl ServiceManager {
             });
         };
 
-        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
-            return Err(ServiceError::InvalidCredentials);
-        }
+        service.check_credentials(credentials)?;
 
         Ok(service)
     }
@@ -400,9 +405,7 @@ impl ServiceManager {
             });
         };
 
-        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
-            return Err(ServiceError::InvalidCredentials);
-        }
+        service.check_credentials(credentials)?;
 
         Ok(service)
     }
@@ -422,9 +425,7 @@ impl ServiceManager {
             .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
             })?;
-        if credentials.uid != 0 && credentials.uid != service.config.credentials.uid {
-            return Err(ServiceError::InvalidCredentials);
-        }
+        service.check_credentials(credentials)?;
 
         eprintln!("Starting service {name}");
 
@@ -706,9 +707,7 @@ impl ServiceManager {
     ) -> impl Iterator<Item = (&String, &ServiceStatus)> {
         self.services
             .iter()
-            .filter(move |(_name, service)| {
-                credentials.uid == 0 || credentials.uid == service.config.credentials.uid
-            })
+            .filter(move |(_name, service)| service.check_credentials(credentials).is_ok())
             .map(|(name, service)| (name, &service.state.status))
     }
 
