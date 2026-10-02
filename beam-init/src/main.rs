@@ -129,7 +129,11 @@ async fn main() {
                 Ok(res) => {
                     let _ = tx.send(res);
                 }
-                Err(err) => eprintln!("failed to get pty: {err:?}"),
+                Err(err) => {
+                    if *DEBUG_LOGS {
+                        eprintln!("failed to get pty: {err:?}");
+                    }
+                }
             },
             Event::ProbeFailed { name } => {
                 if let Err(e) = api_impl::automatic_restart(&mut service_manager, &name).await {
