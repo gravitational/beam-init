@@ -84,6 +84,7 @@ async fn main() {
             liveness: None,
             pty: false,
             labels: Default::default(),
+            graceful_termination_period: None,
         },
     };
     // The channel is empty, so sending always succeeds.

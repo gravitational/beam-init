@@ -63,6 +63,8 @@ enum Command {
         liveness: Option<LivenessProbe>,
         #[arg(long, value_name = "KEY=VALUE", value_parser = parse_key_value)]
         env: Vec<(String, String)>,
+        #[arg(long)]
+        graceful_termination_period: Option<u32>,
     },
     /// Stop a service
     Stop {
@@ -262,6 +264,7 @@ fn main() {
             liveness,
             pty,
             env,
+            graceful_termination_period,
         } => {
             let name = name.unwrap_or_else(gen_name);
             let labels = BTreeMap::from_iter(labels);
@@ -276,6 +279,7 @@ fn main() {
                         liveness: liveness.map(Into::into),
                         pty,
                         labels,
+                        graceful_termination_period,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);

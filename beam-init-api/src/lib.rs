@@ -36,6 +36,11 @@ pub struct CreateService {
 
     /// Labels attached to a service
     pub labels: BTreeMap<String, String>,
+
+    // The amount of time a service has to shutdown after a SIGTERM before
+    // it will be sent a SIGKILL. If unset, a SIGKILL is sent.
+    #[serde(default)]
+    pub graceful_termination_period: Option<u32>,
 }
 
 /// Configuration for an HTTP liveness probe.
