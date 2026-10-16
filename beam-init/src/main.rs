@@ -12,7 +12,7 @@ use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
 use crate::api_impl::Credentials;
-use crate::services::{ServiceManager, ServiceStatus};
+use crate::services::{ServiceManager, ServiceStatus, StartReason};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::exit_with_signal;
 
@@ -84,6 +84,7 @@ async fn main() {
             liveness: None,
             pty: false,
             labels: Default::default(),
+            graceful_termination_period: 0,
         },
     };
     // The channel is empty, so sending always succeeds.
@@ -136,7 +137,15 @@ async fn main() {
                 }
             },
             Event::ProbeFailed { name } => {
-                if let Err(e) = api_impl::automatic_restart(&mut service_manager, &name).await {
+                if let Err(e) = api_impl::stop_service_cmd(
+                    &mut service_manager,
+                    Credentials::root(),
+                    &name,
+                    false,
+                    Some(StartReason::Automatic),
+                )
+                .await
+                {
                     if *DEBUG_LOGS {
                         eprintln!("failed to automatically restart {name}: {e:?}");
                     }

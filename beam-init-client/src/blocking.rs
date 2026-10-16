@@ -31,6 +31,7 @@ use crate::Error;
 ///         labels: [("field".to_string(), "value".to_string())].into(),
 ///         liveness: None,
 ///         pty: false,
+///         graceful_termination_period: 0,
 ///     },
 /// )?;
 /// # Ok(())

@@ -63,6 +63,11 @@ enum Command {
         liveness: Option<LivenessProbe>,
         #[arg(long, value_name = "KEY=VALUE", value_parser = parse_key_value)]
         env: Vec<(String, String)>,
+
+        // The amount of time, measured in seconds, a service has to shutdown after a SIGTERM before
+        // it will be sent a SIGKILL. If unset, a SIGKILL is sent.
+        #[arg(long, default_value_t = 0)]
+        graceful_termination_period: u32,
     },
     /// Stop a service
     Stop {
@@ -262,6 +267,7 @@ fn main() {
             liveness,
             pty,
             env,
+            graceful_termination_period,
         } => {
             let name = name.unwrap_or_else(gen_name);
             let labels = BTreeMap::from_iter(labels);
@@ -276,6 +282,7 @@ fn main() {
                         liveness: liveness.map(Into::into),
                         pty,
                         labels,
+                        graceful_termination_period,
                     },
                 )
                 .unwrap_or_else(show_error_and_exit);

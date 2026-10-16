@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::pin::pin;
 use std::process::ExitStatus;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{io, mem};
 
 use axum::response::{IntoResponse, Response};
@@ -17,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
-use crate::api_impl::Credentials;
+use crate::api_impl::{Command, Credentials};
 use crate::logs::{AsyncRingBuffer, Logs};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{MonitorCommandSender, Sink, spawn_service};
@@ -80,6 +81,7 @@ pub(crate) struct ServiceConfig {
     pub(crate) liveness: Option<Probe>,
     pub(crate) pty: bool,
     pub(crate) credentials: Credentials,
+    pub(crate) graceful_termination_period: u32,
 }
 
 impl ServiceConfig {
@@ -133,16 +135,13 @@ pub(crate) enum ServiceStatus {
         pty: Option<Pty>,
     },
 
-    /// The service was stopped, but will soon be started again as part of a restart.
-    Restarting {
-        process: ServiceProcess,
-        name: String,
-    },
-
     /// The service has been requested to terminate and is in the process of shutting down.
+    /// The service will restart if the field restart is set.
     Stopping {
         process: ServiceProcess,
         prune: bool,
+        pending_kill: Option<PendingKill>,
+        restart: Option<StartReason>,
     },
 
     /// The service exited with the given exit status.
@@ -225,6 +224,7 @@ impl IntoResponse for ServiceError {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum StartReason {
     /// The user requested that this service be (re)started.
     User,
@@ -273,32 +273,32 @@ impl ServiceManager {
                             service.abort_liveness_probe();
                             break;
                         }
-                        ServiceStatus::Stopping { ref process, prune }
-                            if process.main_pid == pid =>
-                        {
+                        ServiceStatus::Stopping {
+                            ref process,
+                            prune,
+                            restart,
+                            ref mut pending_kill,
+                        } if process.main_pid == pid => {
+                            if let Some(pending_kill) = pending_kill.take() {
+                                pending_kill.abort_handle.abort();
+                            }
                             service.abort_liveness_probe();
                             if prune {
                                 let name = name.clone();
                                 self.services.remove(&name).expect("service should exist");
-                            } else {
-                                service.state.status = ServiceStatus::Stopped;
+                                break;
                             }
-
-                            break;
-                        }
-                        ServiceStatus::Restarting {
-                            ref process,
-                            ref name,
-                        } if process.main_pid == pid => {
-                            let name = name.clone();
-                            service.abort_liveness_probe();
                             // start_service will set the service status to Error when an error occurs.
                             // There is nothing else we can do with an error here, so ignore it.
-                            let credentials = service.config.credentials;
-                            let _ = self.start_service(credentials, &name, StartReason::Automatic);
+                            if let Some(restart) = restart {
+                                let name = name.clone();
+                                let credentials = service.config.credentials;
+                                let _ = self.start_service(credentials, &name, restart);
+                                break;
+                            }
+                            service.state.status = ServiceStatus::Stopped;
                             break;
                         }
-
                         _ => { /* ignore */ }
                     }
                 }
@@ -395,15 +395,23 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
     ) -> Result<&mut Service, ServiceError> {
+        Self::lookup_service_mut(&mut self.services, credentials, name)
+    }
+
+    fn lookup_service_mut<'a>(
+        services: &'a mut BTreeMap<String, Service>,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<&'a mut Service, ServiceError> {
         if name == BOOTSTRAP_NAME {
             return Err(ServiceError::BootstrapIsProtected);
         }
 
-        let Some(service) = self.services.get_mut(name) else {
-            return Err(ServiceError::ServiceNotFound {
+        let service = services
+            .get_mut(name)
+            .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
-            });
-        };
+            })?;
 
         service.check_credentials(credentials)?;
 
@@ -502,7 +510,6 @@ impl ServiceManager {
         match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
             status @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
-            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to freeze.
@@ -534,7 +541,6 @@ impl ServiceManager {
         match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
             status @ (ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
-            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to thaw.
@@ -561,8 +567,9 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
         prune: bool,
-    ) -> Result<bool, ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
+        restart: Option<StartReason>,
+    ) -> Result<(), ServiceError> {
+        let service = Self::lookup_service_mut(&mut self.services, credentials, name)?;
 
         match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
             status @ (ServiceStatus::Stopped
@@ -570,99 +577,84 @@ impl ServiceManager {
             | ServiceStatus::Error(_)) => {
                 if prune {
                     self.services.remove(name).expect("service should exist");
-                } else {
-                    service.state.status = status;
+                    return Ok(());
+                }
+                service.state.status = status;
+                if let Some(reason) = restart {
+                    return self.start_service(credentials, name, reason);
                 }
 
                 // Stopped already.
-                return Ok(true);
+                return Ok(());
             }
             ServiceStatus::Stopping {
                 process,
                 prune: old_prune,
+                pending_kill,
+                restart: old_restart,
             } => {
+                let restart = match restart {
+                    Some(StartReason::Automatic) => old_restart,
+                    user_intent => user_intent,
+                };
                 service.state.status = ServiceStatus::Stopping {
                     process,
                     prune: prune || old_prune,
+                    pending_kill,
+                    restart,
                 };
             }
-            ServiceStatus::Running { mut process, .. }
-            | ServiceStatus::Frozen { mut process, .. }
-            | ServiceStatus::Restarting { mut process, .. } => {
-                service.abort_liveness_probe();
-                process.send_signal(SIGTERM);
-                service.state.status = ServiceStatus::Stopping { process, prune };
-            }
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(false)
-    }
-
-    pub fn terminate_restart_service(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
-            status @ (ServiceStatus::Stopped
-            | ServiceStatus::Restarting { .. }
-            | ServiceStatus::Stopping { .. }) => {
-                // all good
-                service.state.status = status;
-            }
-            ServiceStatus::Running { mut process, .. }
-            | ServiceStatus::Frozen { mut process, .. } => {
-                service.abort_liveness_probe();
-                process.send_signal(SIGTERM);
-                service.state.status = ServiceStatus::Restarting {
-                    process,
-                    name: name.to_owned(),
-                };
-            }
-            status @ (ServiceStatus::Exited(_) | ServiceStatus::Error(_)) => {
-                // nothing to do
-                service.state.status = status;
-            }
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(())
-    }
-
-    pub fn kill_service(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
-            status @ ServiceStatus::Stopped => {
-                // all good
-                service.state.status = status;
-            }
-            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
-                panic!("service {name} was killed without being terminated")
-            }
-            ServiceStatus::Stopping { mut process, prune } => {
+            ServiceStatus::Frozen { mut process, .. } => {
                 process.send_signal(SIGKILL);
-                service.state.status = ServiceStatus::Stopping { process, prune };
-            }
-            ServiceStatus::Restarting { mut process, .. } => {
-                process.send_signal(SIGKILL);
-
-                // Prevent the restart, only stop this service.
                 service.state.status = ServiceStatus::Stopping {
                     process,
-                    prune: false,
+                    prune,
+                    pending_kill: None,
+                    restart,
                 };
             }
-            status @ (ServiceStatus::Exited(_) | ServiceStatus::Error(_)) => {
-                // nothing to do
-                service.state.status = status;
+            ServiceStatus::Running { mut process, .. } => {
+                service.abort_liveness_probe();
+                process.send_signal(SIGTERM);
+                let period = service.config.graceful_termination_period;
+                let pending_kill = if period == 0 {
+                    process.send_signal(SIGKILL);
+                    None
+                } else {
+                    let name = name.to_string();
+                    let cmd_handler = self.tx_event.clone();
+                    let token = TerminationToken::default();
+                    let spawn_token = token.clone();
+                    let h = tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(u64::from(period))).await;
+                        let (tx, _) = tokio::sync::oneshot::channel();
+                        if cmd_handler
+                            .send(Event::Command {
+                                command: Command::ForceKillService {
+                                    name: name.clone(),
+                                    token: spawn_token,
+                                },
+                                tx,
+                                credentials,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            eprintln!("failed to send escalate term command for service {name}");
+                        };
+                    });
+                    let abort_handle = h.abort_handle();
+                    Some(PendingKill {
+                        token,
+                        abort_handle,
+                    })
+                };
+                service.state.status = ServiceStatus::Stopping {
+                    process,
+                    prune,
+                    pending_kill,
+                    restart,
+                };
             }
             ServiceStatus::Dummy => unreachable!(),
         }
@@ -670,35 +662,32 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn kill_restart_service(
+    pub fn force_kill_service(
         &mut self,
         credentials: Credentials,
         name: &str,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
+        token: TerminationToken,
+    ) {
+        let Ok(service) = self.get_service_mut(credentials, name) else {
+            return;
+        };
 
-        match service.state.status {
-            ServiceStatus::Stopped => {
-                // all good
-            }
-            ServiceStatus::Running { .. } | ServiceStatus::Frozen { .. } => {
-                panic!("service {name} was killed without being terminated")
-            }
-            ServiceStatus::Stopping {
-                ref mut process, ..
-            }
-            | ServiceStatus::Restarting {
-                ref mut process, ..
-            } => {
-                process.send_signal(SIGKILL);
-            }
-            ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
-                // nothing to do
-            }
-            ServiceStatus::Dummy => unreachable!(),
+        let ServiceStatus::Stopping {
+            process,
+            prune: _,
+            pending_kill,
+            restart: _,
+        } = &mut service.state.status
+        else {
+            eprintln!("service {name} was not in expected Stopping state; cancelling pending kill");
+            return;
+        };
+
+        if let Some(kill) = pending_kill
+            && kill.token == token
+        {
+            process.send_signal(SIGKILL);
         }
-
-        Ok(())
     }
 
     pub fn list_services(
@@ -723,7 +712,6 @@ impl ServiceManager {
             }
 
             ServiceStatus::Stopped
-            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => Err(ServiceError::NoPty { name }),
@@ -750,7 +738,6 @@ impl ServiceManager {
             }
 
             ServiceStatus::Stopped
-            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
@@ -781,7 +768,6 @@ impl ServiceManager {
             }
 
             ServiceStatus::Stopped
-            | ServiceStatus::Restarting { .. }
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
@@ -814,8 +800,12 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running { process, pty: _ }
             | ServiceStatus::Frozen { process, pty: _ }
-            | ServiceStatus::Restarting { process, name: _ }
-            | ServiceStatus::Stopping { process, prune: _ } => {
+            | ServiceStatus::Stopping {
+                process,
+                prune: _,
+                pending_kill: _,
+                restart: _,
+            } => {
                 process.send_signal(sig);
             }
 
@@ -891,4 +881,19 @@ fn add_single_log_message(logs: &Logs, msg: String) {
     tokio::spawn(async move {
         queue.push(msg).await;
     });
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TerminationToken(Arc<()>);
+
+impl PartialEq for TerminationToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingKill {
+    token: TerminationToken,
+    abort_handle: AbortHandle,
 }

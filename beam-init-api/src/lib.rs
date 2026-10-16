@@ -36,6 +36,11 @@ pub struct CreateService {
 
     /// Labels attached to a service
     pub labels: BTreeMap<String, String>,
+
+    // The amount of time, measured in seconds, a service has to shutdown after a SIGTERM before
+    // it will be sent a SIGKILL. If unset, a SIGKILL is sent.
+    #[serde(default)]
+    pub graceful_termination_period: u32,
 }
 
 /// Configuration for an HTTP liveness probe.
@@ -103,15 +108,6 @@ pub enum ServiceStatus {
         pty: Option<PathBuf>,
     },
 
-    /// The service has been requested to restart and is in the process of shutting down.
-    Restarting {
-        /// Process ID of the service instance being stopped.
-        main_pid: pid_t,
-
-        /// Name under which the replacement service will be started.
-        name: String,
-    },
-
     /// The service has been requested to terminate and is in the process of shutting down.
     Stopping {
         /// Process ID of the service's main process.
@@ -119,6 +115,9 @@ pub enum ServiceStatus {
 
         /// Whether to remove the service after it stops.
         prune: bool,
+
+        /// Whether the service will restart after stopped.
+        will_restart: bool,
     },
 
     /// The service exited with the given exit status.
@@ -161,11 +160,15 @@ impl std::fmt::Display for ServiceStatus {
                 }
                 Ok(())
             }
-            ServiceStatus::Stopping { main_pid, prune } => {
-                write!(f, "stopping PID={main_pid} (prune={prune})")
-            }
-            ServiceStatus::Restarting { main_pid, name: _ } => {
-                write!(f, "restarting PID={main_pid}")
+            ServiceStatus::Stopping {
+                main_pid,
+                prune,
+                will_restart,
+            } => {
+                write!(
+                    f,
+                    "stopping PID={main_pid} (prune={prune}, will_restart={will_restart})"
+                )
             }
             ServiceStatus::Exited(exit_status) => {
                 if exit_status.success() {
