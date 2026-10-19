@@ -14,10 +14,13 @@ use serde::Deserialize;
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::Event;
 use crate::environment::build_environment;
-use crate::services::{self, ServiceError, ServiceManager, StartReason, TerminationToken};
+use crate::services::{
+    self, AfterStop, ServiceError, ServiceManager, StartReason, TerminationToken,
+};
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
 
@@ -107,7 +110,10 @@ impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> fo
     }
 }
 
-pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+pub fn bind_api_socket(
+    tx_event: mpsc::Sender<Event>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
     let socket = UnixListener::bind(API_SOCKET_PATH)?;
 
     // Allow all users to read from/write to this socket.
@@ -145,6 +151,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
             socket,
             router.into_make_service_with_connect_info::<Credentials>(),
         )
+        .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
         .expect("axum::serve is documented as never returning an error");
     });
@@ -446,13 +453,12 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
             crate::services::ServiceStatus::Stopping {
                 process,
-                prune,
+                after_stop,
                 pending_kill: _,
-                restart,
             } => ServiceStatus::Stopping {
                 main_pid: process.main_pid,
-                prune: *prune,
-                will_restart: restart.is_some(),
+                prune: matches!(after_stop, services::AfterStop::Prune),
+                will_restart: matches!(after_stop, services::AfterStop::Restart(_)),
             },
 
             crate::services::ServiceStatus::Exited(exit_status) => {
@@ -468,8 +474,7 @@ pub async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
     credentials: Credentials,
     name: &str,
-    prune: bool,
-    restart: Option<StartReason>,
+    after_stop: AfterStop,
 ) -> Result<(), ServiceError> {
     let service = service_manager.get_service(credentials, name)?;
 
@@ -477,7 +482,7 @@ pub async fn stop_service_cmd(
     // will send root credentials.
     let credentials = service.config.credentials;
 
-    service_manager.terminate_service(credentials, name, prune, restart)
+    service_manager.terminate_service(credentials, name, after_stop)
 }
 
 pub async fn handle_api_command(
@@ -523,20 +528,23 @@ pub async fn handle_api_command(
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
-            let prune = false;
             let () = stop_service_cmd(
                 service_manager,
                 credentials,
                 &name,
-                prune,
-                Some(StartReason::User),
+                AfterStop::Restart(StartReason::User),
             )
             .await?;
 
             Ok(Json(()).into_response())
         }
         Command::StopService { name, prune } => {
-            let () = stop_service_cmd(service_manager, credentials, &name, prune, None).await?;
+            let after_stop = if prune {
+                AfterStop::Prune
+            } else {
+                AfterStop::Stop
+            };
+            let () = stop_service_cmd(service_manager, credentials, &name, after_stop).await?;
 
             Ok(Json(()).into_response())
         }
@@ -602,7 +610,7 @@ pub async fn handle_api_command(
             Ok(Json(()).into_response())
         }
         Command::ForceKillService { name, token } => {
-            service_manager.force_kill_service(credentials, &name, token);
+            service_manager.force_kill_service(&name, token);
 
             Ok(Json(()).into_response())
         }
