@@ -35,6 +35,7 @@ async-stream = "0.3.6"
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query"] }
 tokio = { version = "1.52.1", features = ["io-util", "macros", "net", "rt", "sync"] }
 tokio-stream = "0.1.18"
+tokio-util = "0.7"
 mio = "1.2.0"
 
 

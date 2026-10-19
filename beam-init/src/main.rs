@@ -8,12 +8,12 @@ use std::{env, process};
 
 use axum::response::{IntoResponse, Response};
 use clap::Parser;
-use libc::{SIGCHLD, signalfd_siginfo};
+use libc::{SIGCHLD, SIGINT, SIGTERM, signalfd_siginfo};
 use tokio::sync::oneshot;
 use tokio::sync::watch::Receiver;
 
 use crate::api_impl::Credentials;
-use crate::services::{ServiceManager, ServiceObservation, ServiceStatus, StartReason};
+use crate::services::{ServiceManager, ServiceObservation, ServiceStatus, StartReason, StopIntent};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::exit_with_signal;
 
@@ -90,7 +90,7 @@ async fn main() {
             liveness: None,
             pty: false,
             labels: Default::default(),
-            graceful_termination_period: 0,
+            graceful_termination_period: cli.bootstrap_graceful_termination_period,
         },
     };
     // The channel is empty, so sending always succeeds.
@@ -103,15 +103,20 @@ async fn main() {
         .expect("channel should be empty");
 
     // Listen for SIGCHLD signals
-    let old_sigmask = signal_stream::init(&[SIGCHLD], tx_event.clone())
+    let old_sigmask = signal_stream::init(&[SIGCHLD, SIGTERM, SIGINT], tx_event.clone())
         .expect("failed to initialize the signal stream");
 
-    ptystore::init(tx_event.clone()).expect("failed to bind ptystore socket");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+
+    ptystore::init(tx_event.clone(), shutdown.child_token())
+        .expect("failed to bind ptystore socket");
 
     // Listen for API commands
-    api_impl::bind_api_socket(tx_event.clone()).expect("failed to bind api socket");
+    api_impl::bind_api_socket(tx_event.clone(), shutdown.child_token())
+        .expect("failed to bind api socket");
 
-    let mut service_manager = ServiceManager::new(old_sigmask, tx_event, cli.environment_file);
+    let mut service_manager =
+        ServiceManager::new(old_sigmask, tx_event, cli.environment_file, shutdown);
     loop {
         match rx_event
             .recv()
@@ -147,8 +152,7 @@ async fn main() {
                     &mut service_manager,
                     Credentials::root(),
                     &name,
-                    false,
-                    Some(StartReason::Automatic),
+                    StopIntent::Restart(StartReason::Automatic),
                 )
                 .await
                 {
@@ -173,6 +177,14 @@ async fn main() {
                 let rx = service_manager.subscribe(credentials, &name);
                 let _ = tx.send(rx);
             }
+        }
+
+        if service_manager.shutdown_complete() {
+            break;
+        }
+
+        if service_manager.shutdown_initiated() {
+            continue;
         }
 
         if let Ok(service) = service_manager.get_service(Credentials::root(), BOOTSTRAP_NAME)

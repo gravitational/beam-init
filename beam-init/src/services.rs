@@ -12,11 +12,12 @@ use std::{io, mem};
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
-use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
+use libc::{SIGCHLD, SIGCONT, SIGINT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::api_impl::{Command, Credentials};
 use crate::logs::{AsyncRingBuffer, Logs};
@@ -33,6 +34,8 @@ pub(crate) struct ServiceManager {
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
     user_env_files: Vec<PathBuf>,
+    shutdown_initiated: bool,
+    shutdown: CancellationToken,
 }
 
 #[derive(Debug)]
@@ -146,12 +149,11 @@ pub(crate) enum ServiceStatus {
     },
 
     /// The service has been requested to terminate and is in the process of shutting down.
-    /// The service will restart if the field restart is set.
+    /// The service will restart if the field after_stop is set to restart.
     Stopping {
         process: ServiceProcess,
-        prune: bool,
+        after_stop: AfterStop,
         pending_kill: Option<PendingKill>,
-        restart: Option<StartReason>,
     },
 
     /// The service exited with the given exit status.
@@ -198,6 +200,7 @@ pub enum ServiceError {
     BuildEnvironment { err: String },
     BootstrapIsProtected,
     FailedObservation,
+    ShuttingDown,
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -241,6 +244,11 @@ impl IntoResponse for ServiceError {
                 "Service was pruned before condition was met",
             )
                 .into_response(),
+            ServiceError::ShuttingDown => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "beam-init is shutting down",
+            )
+                .into_response(),
         }
     }
 }
@@ -253,17 +261,50 @@ pub(crate) enum StartReason {
     Automatic,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StopIntent {
+    Stop { prune: bool },
+    Restart(StartReason),
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AfterStop {
+    Stopped,
+    Pruned,
+    Restart(StartReason),
+}
+
+impl AfterStop {
+    fn merge(self, requested: Self) -> Self {
+        match (self, requested) {
+            // Once pruning has been requested, preserve it.
+            (AfterStop::Pruned, _) => AfterStop::Pruned,
+            (_, AfterStop::Pruned) => AfterStop::Pruned,
+
+            // An automatic restart must not override an existing user action.
+            (current, AfterStop::Restart(StartReason::Automatic)) => current,
+
+            // Explicit stop, shutdown, and user restart replace the current non-prune outcome.
+            (_, requested) => requested,
+        }
+    }
+}
+
 impl ServiceManager {
     pub fn new(
         old_sigmask: OldSigmask,
         tx_event: mpsc::Sender<Event>,
         user_env_files: Vec<PathBuf>,
+        shutdown: CancellationToken,
     ) -> Self {
         ServiceManager {
             old_sigmask,
             services: BTreeMap::new(),
             tx_event,
             user_env_files,
+            shutdown_initiated: false,
+            shutdown,
         }
     }
 
@@ -287,6 +328,17 @@ impl ServiceManager {
                     Err(err) => panic!("waitpid failed with {err:?}"),
                 };
 
+                enum ReapAction {
+                    None,
+                    Restart {
+                        name: String,
+                        credentials: Credentials,
+                        start_reason: StartReason,
+                    },
+                    Prune(String),
+                }
+
+                let mut action = ReapAction::None;
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
                         ServiceStatus::Running { ref process, .. } if process.main_pid == pid => {
@@ -296,34 +348,51 @@ impl ServiceManager {
                         }
                         ServiceStatus::Stopping {
                             ref process,
-                            prune,
-                            restart,
+                            after_stop,
                             ref mut pending_kill,
                         } if process.main_pid == pid => {
                             if let Some(pending_kill) = pending_kill.take() {
                                 pending_kill.abort_handle.abort();
                             }
                             service.abort_liveness_probe();
-                            if prune {
-                                let name = name.clone();
-                                self.services.remove(&name).expect("service should exist");
-                                break;
+                            match &after_stop {
+                                AfterStop::Stopped => service.set_status(ServiceStatus::Stopped),
+                                AfterStop::Pruned => {
+                                    action = ReapAction::Prune(name.clone());
+                                }
+                                AfterStop::Restart(start_reason) => {
+                                    action = ReapAction::Restart {
+                                        name: name.clone(),
+                                        credentials: service.config.credentials,
+                                        start_reason: *start_reason,
+                                    };
+                                }
                             }
-                            // start_service will set the service status to Error when an error occurs.
-                            // There is nothing else we can do with an error here, so ignore it.
-                            if let Some(restart) = restart {
-                                let name = name.clone();
-                                let credentials = service.config.credentials;
-                                let _ = self.start_service(credentials, &name, restart);
-                                break;
-                            }
-                            service.set_status(ServiceStatus::Stopped);
                             break;
                         }
                         _ => { /* ignore */ }
                     }
                 }
+                match action {
+                    ReapAction::None => {}
+                    ReapAction::Restart {
+                        name,
+                        credentials,
+                        start_reason: reason,
+                    } => {
+                        // start_service will set the service status to Error when an error occurs.
+                        // There is nothing else we can do with an error here, so ignore it.
+                        let _ = self.start_service(credentials, &name, reason);
+                    }
+                    ReapAction::Prune(name) => {
+                        self.services.remove(&name).expect("service should exist");
+                    }
+                }
             }
+        }
+        if info.ssi_signo == SIGTERM as u32 || info.ssi_signo == SIGINT as u32 {
+            // TODO: second signal initiates SIGKILL on all services
+            self.begin_shutdown();
         }
     }
 
@@ -352,6 +421,9 @@ impl ServiceManager {
         name: String,
         config: ServiceConfig,
     ) -> Result<(), ServiceError> {
+        if self.shutdown_initiated() {
+            return Err(ServiceError::ShuttingDown);
+        }
         if name.is_empty() {
             // Not reachable through the REST API
             return Err(ServiceError::InvalidRequest {
@@ -420,19 +492,12 @@ impl ServiceManager {
         credentials: Credentials,
         name: &str,
     ) -> Result<&mut Service, ServiceError> {
-        Self::lookup_service_mut(&mut self.services, credentials, name)
-    }
-
-    fn lookup_service_mut<'a>(
-        services: &'a mut BTreeMap<String, Service>,
-        credentials: Credentials,
-        name: &str,
-    ) -> Result<&'a mut Service, ServiceError> {
         if name == BOOTSTRAP_NAME {
             return Err(ServiceError::BootstrapIsProtected);
         }
 
-        let service = services
+        let service = self
+            .services
             .get_mut(name)
             .ok_or_else(|| ServiceError::ServiceNotFound {
                 name: name.to_owned(),
@@ -449,6 +514,9 @@ impl ServiceManager {
         name: &str,
         reason: StartReason,
     ) -> Result<(), ServiceError> {
+        if self.shutdown_initiated {
+            return Err(ServiceError::ShuttingDown);
+        }
         let old_sigmask = self.old_sigmask;
 
         let tx_event = self.tx_event.clone();
@@ -592,51 +660,74 @@ impl ServiceManager {
         &mut self,
         credentials: Credentials,
         name: &str,
-        prune: bool,
-        restart: Option<StartReason>,
+        intent: StopIntent,
     ) -> Result<(), ServiceError> {
-        let service = Self::lookup_service_mut(&mut self.services, credentials, name)?;
+        let _ = self.get_service_mut(credentials, name)?;
+
+        if self.shutdown_initiated() && matches!(intent, StopIntent::Restart(_)) {
+            return Err(ServiceError::ShuttingDown);
+        }
+
+        self.terminate_service_inner(credentials, name, intent)
+    }
+
+    fn terminate_service_inner(
+        &mut self,
+        credentials: Credentials,
+        name: &str,
+        intent: StopIntent,
+    ) -> Result<(), ServiceError> {
+        let requested_after_stop = match intent {
+            StopIntent::Stop { prune } => {
+                if prune {
+                    AfterStop::Pruned
+                } else {
+                    AfterStop::Stopped
+                }
+            }
+            StopIntent::Restart(reason) => AfterStop::Restart(reason),
+            StopIntent::Shutdown => AfterStop::Stopped,
+        };
+        let service = self
+            .services
+            .get_mut(name)
+            .ok_or_else(|| ServiceError::ServiceNotFound {
+                name: name.to_owned(),
+            })?;
 
         match mem::replace(&mut service.state.status, ServiceStatus::Dummy) {
             status @ (ServiceStatus::Stopped
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_)) => {
-                if prune {
+            | ServiceStatus::Error(_)) => match &requested_after_stop {
+                AfterStop::Stopped => {
+                    service.set_status(status);
+                    return Ok(());
+                }
+                AfterStop::Pruned => {
                     self.services.remove(name).expect("service should exist");
                     return Ok(());
                 }
-                service.set_status(status);
-                if let Some(reason) = restart {
-                    return self.start_service(credentials, name, reason);
+                AfterStop::Restart(start_reason) => {
+                    return self.start_service(credentials, name, *start_reason);
                 }
-
-                // Stopped already.
-                return Ok(());
-            }
+            },
             ServiceStatus::Stopping {
                 process,
-                prune: old_prune,
+                after_stop,
                 pending_kill,
-                restart: old_restart,
             } => {
-                let restart = match restart {
-                    Some(StartReason::Automatic) => old_restart,
-                    user_intent => user_intent,
-                };
                 service.set_status(ServiceStatus::Stopping {
                     process,
-                    prune: prune || old_prune,
                     pending_kill,
-                    restart,
+                    after_stop: after_stop.merge(requested_after_stop),
                 });
             }
             ServiceStatus::Frozen { mut process, .. } => {
                 process.send_signal(SIGKILL);
                 service.set_status(ServiceStatus::Stopping {
                     process,
-                    prune,
+                    after_stop: requested_after_stop,
                     pending_kill: None,
-                    restart,
                 });
             }
             ServiceStatus::Running { mut process, .. } => {
@@ -677,9 +768,8 @@ impl ServiceManager {
                 };
                 service.set_status(ServiceStatus::Stopping {
                     process,
-                    prune,
+                    after_stop: requested_after_stop,
                     pending_kill,
-                    restart,
                 });
             }
             ServiceStatus::Dummy => unreachable!(),
@@ -688,21 +778,15 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn force_kill_service(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-        token: TerminationToken,
-    ) {
-        let Ok(service) = self.get_service_mut(credentials, name) else {
+    pub fn force_kill_service(&mut self, name: &str, token: TerminationToken) {
+        let Some(service) = self.services.get_mut(name) else {
             return;
         };
 
         let ServiceStatus::Stopping {
             process,
-            prune: _,
+            after_stop: _,
             pending_kill,
-            restart: _,
         } = &mut service.state.status
         else {
             eprintln!("service {name} was not in expected Stopping state; cancelling pending kill");
@@ -828,9 +912,8 @@ impl ServiceManager {
             | ServiceStatus::Frozen { process, pty: _ }
             | ServiceStatus::Stopping {
                 process,
-                prune: _,
+                after_stop: _,
                 pending_kill: _,
-                restart: _,
             } => {
                 process.send_signal(sig);
             }
@@ -856,6 +939,42 @@ impl ServiceManager {
     ) -> Result<watch::Receiver<ServiceObservation>, ServiceError> {
         let service = self.get_service(credentials, name)?;
         Ok(service.state.subscription_tx.subscribe())
+    }
+
+    fn begin_shutdown(&mut self) {
+        if self.shutdown_initiated {
+            return;
+        }
+        self.shutdown_initiated = true;
+        self.shutdown.cancel();
+        self.stop_all_services();
+    }
+
+    pub fn shutdown_initiated(&self) -> bool {
+        self.shutdown_initiated
+    }
+
+    pub fn shutdown_complete(&self) -> bool {
+        self.shutdown_initiated
+            && self.services.values().all(|service| {
+                matches!(
+                    service.state.status,
+                    ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_)
+                )
+            })
+    }
+
+    fn stop_all_services(&mut self) {
+        let services: Vec<(String, Credentials)> = self
+            .services
+            .iter()
+            .map(|(k, v)| (k.to_owned(), v.config.credentials))
+            .collect();
+        for (name, credentials) in services {
+            if let Err(e) = self.terminate_service_inner(credentials, &name, StopIntent::Shutdown) {
+                eprint!("failed to stop service {name}: {e:?}");
+            }
+        }
     }
 }
 
