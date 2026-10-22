@@ -414,7 +414,7 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
 
             crate::services::ServiceStatus::Exited(exit_status) => {
-                ServiceStatus::Exited(*exit_status)
+                ServiceStatus::Exited((*exit_status).into())
             }
             crate::services::ServiceStatus::Error(err) => ServiceStatus::Error(err.to_string()),
             crate::services::ServiceStatus::Dummy => unreachable!(),

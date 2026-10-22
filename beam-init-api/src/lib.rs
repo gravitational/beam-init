@@ -4,7 +4,8 @@
 //! clients.
 
 use std::collections::BTreeMap;
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::os::unix::process::ExitStatusExt;
+use std::{path::PathBuf, process::ExitStatus as StdExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,7 @@ pub struct Service {
 
 /// Current runtime state of a service.
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
     Stopped,
@@ -121,16 +123,38 @@ pub enum ServiceStatus {
     },
 
     /// The service exited with the given exit status.
-    Exited(
-        #[serde(
-            serialize_with = "exit_status_serde::serialize",
-            deserialize_with = "exit_status_serde::deserialize"
-        )]
-        ExitStatus,
-    ),
+    Exited(ExitStatus),
 
     /// The service failed to start with the given error.
     Error(String),
+}
+
+/// The result of a service process exiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ExitStatus {
+    /// The process exited normally with the given exit code.
+    #[serde(rename = "exited")]
+    Code { code: i32 },
+
+    /// The process was terminated by the given signal number.
+    #[serde(rename = "signaled")]
+    Signal { signal: i32, core_dumped: bool },
+}
+
+impl From<StdExitStatus> for ExitStatus {
+    fn from(status: StdExitStatus) -> Self {
+        if let Some(code) = status.code() {
+            Self::Code { code }
+        } else if let Some(signal) = status.signal() {
+            Self::Signal {
+                signal,
+                core_dumped: status.core_dumped(),
+            }
+        } else {
+            unreachable!("waitpid returned a status that was neither exited nor signaled")
+        }
+    }
 }
 
 /// Version information for beam-init
@@ -140,6 +164,53 @@ pub struct VersionResponse {
     pub version: String,
     /// The commit sha beam-init was compiled from
     pub sha: String,
+}
+
+/// Returns the name of a standard Linux signal.
+///
+/// Modified from Rust's standard library implementation:
+/// https://github.com/rust-lang/rust/blob/019b59d8101bb3e141f1b880684747b4217beeb6/library/std/src/sys/process/unix/unix.rs#L1147-L1249
+fn signal_name(signal: i32) -> Option<&'static str> {
+    match signal {
+        libc::SIGHUP => Some("SIGHUP"),
+        libc::SIGINT => Some("SIGINT"),
+        libc::SIGQUIT => Some("SIGQUIT"),
+        libc::SIGILL => Some("SIGILL"),
+        libc::SIGTRAP => Some("SIGTRAP"),
+        libc::SIGABRT => Some("SIGABRT"),
+        libc::SIGBUS => Some("SIGBUS"),
+        libc::SIGFPE => Some("SIGFPE"),
+        libc::SIGKILL => Some("SIGKILL"),
+        libc::SIGUSR1 => Some("SIGUSR1"),
+        libc::SIGSEGV => Some("SIGSEGV"),
+        libc::SIGUSR2 => Some("SIGUSR2"),
+        libc::SIGPIPE => Some("SIGPIPE"),
+        libc::SIGALRM => Some("SIGALRM"),
+        libc::SIGTERM => Some("SIGTERM"),
+        libc::SIGCHLD => Some("SIGCHLD"),
+        libc::SIGCONT => Some("SIGCONT"),
+        libc::SIGSTOP => Some("SIGSTOP"),
+        libc::SIGTSTP => Some("SIGTSTP"),
+        libc::SIGTTIN => Some("SIGTTIN"),
+        libc::SIGTTOU => Some("SIGTTOU"),
+        libc::SIGURG => Some("SIGURG"),
+        libc::SIGXCPU => Some("SIGXCPU"),
+        libc::SIGXFSZ => Some("SIGXFSZ"),
+        libc::SIGVTALRM => Some("SIGVTALRM"),
+        libc::SIGPROF => Some("SIGPROF"),
+        libc::SIGWINCH => Some("SIGWINCH"),
+        libc::SIGIO => Some("SIGIO"),
+        libc::SIGSYS => Some("SIGSYS"),
+        #[cfg(any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "arm",
+            target_arch = "aarch64"
+        ))]
+        libc::SIGSTKFLT => Some("SIGSTKFLT"),
+        libc::SIGPWR => Some("SIGPWR"),
+        _ => None,
+    }
 }
 
 impl std::fmt::Display for ServiceStatus {
@@ -170,36 +241,24 @@ impl std::fmt::Display for ServiceStatus {
                     "stopping PID={main_pid} (prune={prune}, will_restart={will_restart})"
                 )
             }
-            ServiceStatus::Exited(exit_status) => {
-                if exit_status.success() {
-                    write!(f, "exited normally")
-                } else {
-                    write!(f, "failed with {exit_status}")
+            ServiceStatus::Exited(ExitStatus::Code { code: 0 }) => write!(f, "exited normally"),
+            ServiceStatus::Exited(ExitStatus::Code { code }) => {
+                write!(f, "failed with exit status: {code}")
+            }
+            ServiceStatus::Exited(ExitStatus::Signal {
+                signal,
+                core_dumped,
+            }) => {
+                write!(f, "failed with signal: {signal}")?;
+                if let Some(name) = signal_name(*signal) {
+                    write!(f, " ({name})")?;
                 }
+                if *core_dumped {
+                    f.write_str(" (core dumped)")?;
+                }
+                Ok(())
             }
             ServiceStatus::Error(err) => write!(f, "failed to start with {}", err),
         }
-    }
-}
-
-/// Functions to serialize and deserialize ExitStatus
-mod exit_status_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::os::unix::process::ExitStatusExt;
-    use std::process::ExitStatus;
-
-    pub fn serialize<S>(status: &ExitStatus, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_i32(status.into_raw())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<ExitStatus, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = i32::deserialize(deserializer)?;
-        Ok(ExitStatus::from_raw(raw))
     }
 }

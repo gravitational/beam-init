@@ -12,7 +12,7 @@ def services():
 
 def main_pid(name):
     status = services()[name]
-    assert "Running" in status, status
+    assert "running" in status, status
     return status["Running"]["main_pid"]
 
 subprocess.check_call(["beamctl", "start", "--name", "sleep", "--", "sleep", "10"])
@@ -52,20 +52,20 @@ assert result.returncode == 1, result
 assert result.stderr == b"Service slee was not found\n", result.stderr
 
 status = services()
-assert "Running" in status["sleep"], status
-assert "Running" in status["sleepy"], status
+assert "running" in status["sleep"], status
+assert "running" in status["sleepy"], status
 
 subprocess.check_call(["beamctl", "freeze", "zeb"])
 status = services()
-assert "Frozen" in status["zebra"], status
+assert "frozen" in status["zebra"], status
 
 subprocess.check_call(["beamctl", "thaw", "zeb"])
 status = services()
-assert "Running" in status["zebra"], status
+assert "running" in status["zebra"], status
 
 subprocess.check_call(["beamctl", "stop", "zeb"])
 status = services()
-assert status["zebra"] == "Stopped", status
+assert status["zebra"] == "stopped", status
 
 # A prefix that was previously ambiguous resolves when the other candidates are pruned.
 subprocess.check_call(["beamctl", "stop", "sleepy", "--prune"])
