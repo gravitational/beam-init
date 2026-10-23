@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
 use reqwest::StatusCode;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 
@@ -67,6 +67,15 @@ impl Service {
         let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event, log_queue));
         self.state.liveness_probe = Some(handle.abort_handle());
     }
+    fn set_status(&mut self, status: ServiceStatus) {
+        self.state.status = status;
+
+        let observation = ServiceObservation {
+            status: (&self.state.status).into(),
+        };
+
+        self.state.subscription_tx.send_replace(observation);
+    }
 }
 
 /// The configuration of a service.
@@ -116,6 +125,7 @@ pub(crate) struct ServiceState {
     pub(crate) logs: Logs,
     pub(crate) automatic_restart_attempts: u32,
     pub(crate) liveness_probe: Option<AbortHandle>,
+    subscription_tx: watch::Sender<ServiceObservation>,
 }
 
 #[derive(Debug)]
@@ -155,6 +165,11 @@ pub(crate) enum ServiceStatus {
 }
 
 #[derive(Debug)]
+pub(crate) struct ServiceObservation {
+    pub(crate) status: beam_init_api::ServiceStatus,
+}
+
+#[derive(Debug)]
 pub(crate) struct ServiceProcess {
     pub(crate) main_pid: pid_t,
     monitor_tx: Option<MonitorCommandSender>,
@@ -182,6 +197,7 @@ pub enum ServiceError {
     InvalidRequest { err: String },
     BuildEnvironment { err: String },
     BootstrapIsProtected,
+    FailedObservation,
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -218,6 +234,11 @@ impl IntoResponse for ServiceError {
             ServiceError::BootstrapIsProtected => (
                 StatusCode::FORBIDDEN,
                 "The \"bootstrap\" service cannot be modified",
+            )
+                .into_response(),
+            ServiceError::FailedObservation => (
+                StatusCode::GONE,
+                "Service was pruned before condition was met",
             )
                 .into_response(),
         }
@@ -269,7 +290,7 @@ impl ServiceManager {
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
                         ServiceStatus::Running { ref process, .. } if process.main_pid == pid => {
-                            service.state.status = ServiceStatus::Exited(status);
+                            service.set_status(ServiceStatus::Exited(status));
                             service.abort_liveness_probe();
                             break;
                         }
@@ -296,7 +317,7 @@ impl ServiceManager {
                                 let _ = self.start_service(credentials, &name, restart);
                                 break;
                             }
-                            service.state.status = ServiceStatus::Stopped;
+                            service.set_status(ServiceStatus::Stopped);
                             break;
                         }
                         _ => { /* ignore */ }
@@ -359,6 +380,9 @@ impl ServiceManager {
 
         match self.services.entry(name.clone()) {
             Entry::Vacant(vacant_entry) => {
+                let (subscription_tx, _) = watch::channel(ServiceObservation {
+                    status: beam_init_api::ServiceStatus::Stopped,
+                });
                 vacant_entry.insert(Service {
                     config,
                     state: ServiceState {
@@ -366,6 +390,7 @@ impl ServiceManager {
                         logs,
                         automatic_restart_attempts: 0,
                         liveness_probe: None,
+                        subscription_tx,
                     },
                 });
                 Ok(())
@@ -450,7 +475,7 @@ impl ServiceManager {
             .map_err(|err| {
                 let err_str = err.to_string();
                 println!("[{name}] Failed to create a pty: {err_str}");
-                service.state.status = ServiceStatus::Error(err);
+                service.set_status(ServiceStatus::Error(err));
                 ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
                     err: err_str,
@@ -476,13 +501,13 @@ impl ServiceManager {
 
         match spawn_service(old_sigmask, &service.config, sink) {
             Ok((child_pid, monitor_tx)) => {
-                service.state.status = ServiceStatus::Running {
+                service.set_status(ServiceStatus::Running {
                     process: ServiceProcess {
                         main_pid: child_pid,
                         monitor_tx,
                     },
                     pty,
-                };
+                });
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
             }
@@ -491,7 +516,7 @@ impl ServiceManager {
                 if *DEBUG_LOGS {
                     eprintln!("[{name}] Failed to spawn: {err_str}");
                 }
-                service.state.status = ServiceStatus::Error(err);
+                service.set_status(ServiceStatus::Error(err));
                 Err(ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
                     err: err_str,
@@ -513,16 +538,17 @@ impl ServiceManager {
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to freeze.
-                service.state.status = status;
+
+                service.set_status(status);
             }
             status @ ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
-                service.state.status = status;
+                service.set_status(status);
             }
             ServiceStatus::Running { mut process, pty } => {
                 service.abort_liveness_probe();
                 process.send_signal(SIGSTOP);
-                service.state.status = ServiceStatus::Frozen { process, pty };
+                service.set_status(ServiceStatus::Frozen { process, pty });
             }
             ServiceStatus::Dummy => unreachable!(),
         }
@@ -544,15 +570,15 @@ impl ServiceManager {
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to thaw.
-                service.state.status = status;
+                service.set_status(status);
             }
             status @ ServiceStatus::Running { .. } => {
                 // This process is already running.
-                service.state.status = status;
+                service.set_status(status);
             }
             ServiceStatus::Frozen { mut process, pty } => {
                 process.send_signal(SIGCONT);
-                service.state.status = ServiceStatus::Running { process, pty };
+                service.set_status(ServiceStatus::Running { process, pty });
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -579,7 +605,7 @@ impl ServiceManager {
                     self.services.remove(name).expect("service should exist");
                     return Ok(());
                 }
-                service.state.status = status;
+                service.set_status(status);
                 if let Some(reason) = restart {
                     return self.start_service(credentials, name, reason);
                 }
@@ -597,21 +623,21 @@ impl ServiceManager {
                     Some(StartReason::Automatic) => old_restart,
                     user_intent => user_intent,
                 };
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune: prune || old_prune,
                     pending_kill,
                     restart,
-                };
+                });
             }
             ServiceStatus::Frozen { mut process, .. } => {
                 process.send_signal(SIGKILL);
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune,
                     pending_kill: None,
                     restart,
-                };
+                });
             }
             ServiceStatus::Running { mut process, .. } => {
                 service.abort_liveness_probe();
@@ -649,12 +675,12 @@ impl ServiceManager {
                         abort_handle,
                     })
                 };
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune,
                     pending_kill,
                     restart,
-                };
+                });
             }
             ServiceStatus::Dummy => unreachable!(),
         }
@@ -821,6 +847,15 @@ impl ServiceManager {
 
     pub fn user_env_files(&self) -> &[PathBuf] {
         &self.user_env_files
+    }
+
+    pub fn subscribe(
+        &self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<watch::Receiver<ServiceObservation>, ServiceError> {
+        let service = self.get_service(credentials, name)?;
+        Ok(service.state.subscription_tx.subscribe())
     }
 }
 
