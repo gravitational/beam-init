@@ -135,6 +135,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
             post(notify_pty_detached),
         )
         .route("/service/{name}/send_signal", post(send_signal))
+        .route("/service/{name}/wait", get(wait_service))
         .route("/version", get(version))
         .fallback(fallback_route)
         .with_state(tx_event);
@@ -368,6 +369,47 @@ async fn send_signal(
         .await
         .expect("main task crashed");
     rx.await.expect("main task crashed")
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) struct WaitConditionQuery {
+    state: beam_init_api::ServiceStatusKind,
+}
+
+async fn wait_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+    Query(WaitConditionQuery { state: status_kind }): Query<WaitConditionQuery>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::WaitService {
+            name,
+            credentials,
+            tx,
+        })
+        .await
+        .expect("main task crashed");
+    let mut subscription = match rx.await.expect("main task crashed") {
+        Ok(s) => s,
+        Err(err) => return err.into_response(),
+    };
+    loop {
+        match subscription.recv().await {
+            Ok(s) if s.kind() == status_kind => return Json(s).into_response(),
+            Ok(_) => {}
+            // Error here means either the service was pruned or we lagged on reading events
+            Err(err) => match err {
+                tokio::sync::broadcast::error::RecvError::Closed => {
+                    return ServiceError::ServicePrunedWhileWaiting.into_response();
+                }
+                tokio::sync::broadcast::error::RecvError::Lagged(skipped) => {
+                    return ServiceError::ObservationLagged { skipped }.into_response();
+                }
+            },
+        }
+    }
 }
 
 async fn version() -> Response {

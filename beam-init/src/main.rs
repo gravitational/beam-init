@@ -12,6 +12,7 @@ use libc::{SIGCHLD, signalfd_siginfo};
 use tokio::sync::oneshot;
 
 use crate::api_impl::Credentials;
+use crate::services::service_status_publisher::ServiceStatusSubscription;
 use crate::services::{ServiceManager, ServiceStatus, StartReason};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::exit_with_signal;
@@ -54,6 +55,11 @@ enum Event {
     Signal(signalfd_siginfo),
     ProbeFailed {
         name: String,
+    },
+    WaitService {
+        name: String,
+        credentials: Credentials,
+        tx: oneshot::Sender<Result<ServiceStatusSubscription, services::ServiceError>>,
     },
 }
 
@@ -158,6 +164,14 @@ async fn main() {
                             .await;
                     }
                 }
+            }
+            Event::WaitService {
+                name,
+                credentials,
+                tx,
+            } => {
+                let rx = service_manager.subscribe(credentials, &name);
+                let _ = tx.send(rx);
             }
         }
 

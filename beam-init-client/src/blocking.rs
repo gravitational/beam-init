@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-use beam_init_api::{CreateService, Service, ServiceStatus, VersionResponse};
+use beam_init_api::{CreateService, Service, ServiceStatus, ServiceStatusKind, VersionResponse};
 use reqwest::{Method, StatusCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -145,6 +145,20 @@ impl Client {
 
     pub fn send_signal(&self, name: &str, sig: c_int) -> Result<(), Error> {
         self.post(&service_action_path(name, "send_signal"), sig)
+    }
+
+    pub fn wait_service_state(
+        &self,
+        name: &str,
+        state_kind: ServiceStatusKind,
+        timeout: Option<Duration>,
+    ) -> Result<ServiceStatus, Error> {
+        self.get_raw_with_timeout(
+            &format!("{}?state={}", service_action_path(name, "wait"), state_kind),
+            timeout,
+        )?
+        .json()
+        .map_err(|e| Error::Decode(e.to_string()))
     }
 
     pub fn version(&self) -> Result<VersionResponse, Error> {
