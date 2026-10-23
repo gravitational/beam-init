@@ -4,7 +4,8 @@
 //! clients.
 
 use std::collections::BTreeMap;
-use std::{path::PathBuf, process::ExitStatus, time::Duration};
+use std::os::unix::process::ExitStatusExt;
+use std::{path::PathBuf, process::ExitStatus as StdExitStatus, time::Duration};
 
 use libc::pid_t;
 use serde::{Deserialize, Serialize};
@@ -121,16 +122,33 @@ pub enum ServiceStatus {
     },
 
     /// The service exited with the given exit status.
-    Exited(
-        #[serde(
-            serialize_with = "exit_status_serde::serialize",
-            deserialize_with = "exit_status_serde::deserialize"
-        )]
-        ExitStatus,
-    ),
+    Exited(ExitStatus),
 
     /// The service failed to start with the given error.
     Error(String),
+}
+
+/// The result of a service process exiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ExitStatus {
+    /// The process exited normally with the given exit code.
+    Code { code: i32 },
+
+    /// The process was terminated by the given signal number.
+    Signal { signal: i32 },
+}
+
+impl From<StdExitStatus> for ExitStatus {
+    fn from(status: StdExitStatus) -> Self {
+        if let Some(code) = status.code() {
+            Self::Code { code }
+        } else if let Some(signal) = status.signal() {
+            Self::Signal { signal }
+        } else {
+            unreachable!("waitpid returned a status that was neither exited nor signaled")
+        }
+    }
 }
 
 /// Version information for beam-init
@@ -170,36 +188,14 @@ impl std::fmt::Display for ServiceStatus {
                     "stopping PID={main_pid} (prune={prune}, will_restart={will_restart})"
                 )
             }
-            ServiceStatus::Exited(exit_status) => {
-                if exit_status.success() {
-                    write!(f, "exited normally")
-                } else {
-                    write!(f, "failed with {exit_status}")
-                }
+            ServiceStatus::Exited(ExitStatus::Code { code: 0 }) => write!(f, "exited normally"),
+            ServiceStatus::Exited(ExitStatus::Code { code }) => {
+                write!(f, "failed with exit status: {code}")
+            }
+            ServiceStatus::Exited(ExitStatus::Signal { signal }) => {
+                write!(f, "failed with signal: {signal}")
             }
             ServiceStatus::Error(err) => write!(f, "failed to start with {}", err),
         }
-    }
-}
-
-/// Functions to serialize and deserialize ExitStatus
-mod exit_status_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::os::unix::process::ExitStatusExt;
-    use std::process::ExitStatus;
-
-    pub fn serialize<S>(status: &ExitStatus, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_i32(status.into_raw())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<ExitStatus, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = i32::deserialize(deserializer)?;
-        Ok(ExitStatus::from_raw(raw))
     }
 }
