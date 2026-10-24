@@ -206,3 +206,35 @@ fn long_service_name() {
         .run("long_service_name.py")
         .wait();
 }
+
+#[test]
+fn api_wait_service() {
+    Image::build("test.Dockerfile")
+        .run("api_wait_service.py")
+        .wait();
+}
+
+#[test]
+fn graceful_shutdown() {
+    let options = RunOptions::default()
+        .beam_init_args(["--bootstrap-graceful-termination-period", "5"].into_iter());
+
+    let output = Image::build("test.Dockerfile")
+        .run_with_options("graceful_shutdown.py", options)
+        .wait();
+
+    let stdout = str::from_utf8(&output.stdout).unwrap();
+
+    assert!(
+        stdout.contains("BOOTSTRAP_RECEIVED_SIGTERM"),
+        "bootstrap did not receive SIGTERM\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("WORKER_RECEIVED_SIGTERM"),
+        "worker did not receive SIGTERM\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("GRACEFUL_SHUTDOWN_COMPLETE"),
+        "shutdown did not complete gracefully\nstdout:\n{stdout}"
+    );
+}

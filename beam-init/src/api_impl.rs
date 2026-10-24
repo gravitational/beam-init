@@ -14,10 +14,13 @@ use serde::Deserialize;
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::Event;
 use crate::environment::build_environment;
-use crate::services::{self, ServiceError, ServiceManager, StartReason, TerminationToken};
+use crate::services::{
+    self, ServiceError, ServiceManager, StartReason, StopIntent, TerminationToken,
+};
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
 
@@ -107,7 +110,10 @@ impl axum::extract::connect_info::Connected<IncomingStream<'_, UnixListener>> fo
     }
 }
 
-pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+pub fn bind_api_socket(
+    tx_event: mpsc::Sender<Event>,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
     let socket = UnixListener::bind(API_SOCKET_PATH)?;
 
     // Allow all users to read from/write to this socket.
@@ -135,6 +141,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
             post(notify_pty_detached),
         )
         .route("/service/{name}/send_signal", post(send_signal))
+        .route("/service/{name}/wait", get(wait_service))
         .route("/version", get(version))
         .fallback(fallback_route)
         .with_state(tx_event);
@@ -144,6 +151,7 @@ pub fn bind_api_socket(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
             socket,
             router.into_make_service_with_connect_info::<Credentials>(),
         )
+        .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
         .expect("axum::serve is documented as never returning an error");
     });
@@ -370,6 +378,41 @@ async fn send_signal(
     rx.await.expect("main task crashed")
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(crate) struct WaitConditionQuery {
+    state: beam_init_api::ServiceStatusKind,
+}
+
+async fn wait_service(
+    Path(name): Path<String>,
+    State(tx_events): State<mpsc::Sender<Event>>,
+    ConnectInfo(credentials): ConnectInfo<Credentials>,
+    Query(WaitConditionQuery { state }): Query<WaitConditionQuery>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    tx_events
+        .send(Event::WaitService {
+            name,
+            credentials,
+            tx,
+        })
+        .await
+        .expect("main task crashed");
+    let observation = rx.await.expect("main task crashed");
+    match observation {
+        Ok(mut rx) => {
+            let Ok(observation) = rx
+                .wait_for(|observation| observation.status.kind() == state)
+                .await
+            else {
+                return ServiceError::FailedObservation.into_response();
+            };
+            Json(observation.status.clone()).into_response()
+        }
+        Err(err) => err.into_response(),
+    }
+}
+
 async fn version() -> Response {
     Json(VersionResponse {
         version: crate::VERSION.to_string(),
@@ -404,17 +447,17 @@ impl From<&crate::services::ServiceStatus> for beam_init_api::ServiceStatus {
             },
             crate::services::ServiceStatus::Stopping {
                 process,
-                prune,
+                after_stop,
                 pending_kill: _,
-                restart,
             } => ServiceStatus::Stopping {
                 main_pid: process.main_pid,
-                prune: *prune,
-                will_restart: restart.is_some(),
+
+                prune: matches!(after_stop, services::AfterStop::Pruned),
+                will_restart: matches!(after_stop, services::AfterStop::Restart(_)),
             },
 
             crate::services::ServiceStatus::Exited(exit_status) => {
-                ServiceStatus::Exited(*exit_status)
+                ServiceStatus::Exited((*exit_status).into())
             }
             crate::services::ServiceStatus::Error(err) => ServiceStatus::Error(err.to_string()),
             crate::services::ServiceStatus::Dummy => unreachable!(),
@@ -426,8 +469,7 @@ pub async fn stop_service_cmd(
     service_manager: &mut ServiceManager,
     credentials: Credentials,
     name: &str,
-    prune: bool,
-    restart: Option<StartReason>,
+    intent: StopIntent,
 ) -> Result<(), ServiceError> {
     let service = service_manager.get_service(credentials, name)?;
 
@@ -435,7 +477,7 @@ pub async fn stop_service_cmd(
     // will send root credentials.
     let credentials = service.config.credentials;
 
-    service_manager.terminate_service(credentials, name, prune, restart)
+    service_manager.terminate_service(credentials, name, intent)
 }
 
 pub async fn handle_api_command(
@@ -481,20 +523,24 @@ pub async fn handle_api_command(
             Ok(Json(service).into_response())
         }
         Command::RestartService { name } => {
-            let prune = false;
             let () = stop_service_cmd(
                 service_manager,
                 credentials,
                 &name,
-                prune,
-                Some(StartReason::User),
+                StopIntent::Restart(StartReason::User),
             )
             .await?;
 
             Ok(Json(()).into_response())
         }
         Command::StopService { name, prune } => {
-            let () = stop_service_cmd(service_manager, credentials, &name, prune, None).await?;
+            let () = stop_service_cmd(
+                service_manager,
+                credentials,
+                &name,
+                StopIntent::Stop { prune },
+            )
+            .await?;
 
             Ok(Json(()).into_response())
         }
@@ -560,7 +606,7 @@ pub async fn handle_api_command(
             Ok(Json(()).into_response())
         }
         Command::ForceKillService { name, token } => {
-            service_manager.force_kill_service(credentials, &name, token);
+            service_manager.force_kill_service(&name, token);
 
             Ok(Json(()).into_response())
         }
