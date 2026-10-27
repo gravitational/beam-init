@@ -33,15 +33,15 @@ assert json.loads(output) == services
 assert set(services) == {"bootstrap", "invalid", "sleep", "valid"}, services
 
 bootstrap = services["bootstrap"]
-assert "Running" in bootstrap, bootstrap
-assert isinstance(bootstrap["Running"]["main_pid"], int), bootstrap
+assert "running" in bootstrap, bootstrap
+assert isinstance(bootstrap["running"]["main_pid"], int), bootstrap
 
 sleep = services["sleep"]
-assert "Running" in sleep, sleep
-assert isinstance(sleep["Running"]["main_pid"], int), sleep
+assert "running" in sleep, sleep
+assert isinstance(sleep["running"]["main_pid"], int), sleep
 
 valid = services["valid"]
-assert valid == {"Exited": 0}, valid
+assert valid == {"exited": {"reason": "exited", "code": 0}}, valid
 
 invalid = services["invalid"]
-assert invalid == {"Exited": 256}, invalid
+assert invalid == {"exited": {"reason": "exited", "code": 1}}, invalid

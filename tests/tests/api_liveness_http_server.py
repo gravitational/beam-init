@@ -89,9 +89,9 @@ else:
 
 # All is healthy, no automatic restarts yet.
 service = show()
-assert "Running" in service["status"], service
+assert "running" in service["status"], service
 assert service["automatic_restart_attempts"] == 0, service
-first_pid = service["status"]["Running"]["main_pid"]
+first_pid = service["status"]["running"]["main_pid"]
 
 # Now mark the server as unalive.
 get("/flip-liveness")
@@ -113,7 +113,7 @@ assert restarted, f"service was not restarted by the liveness probe: {service}"
 for _ in range(100):
     service = show()
     status = service["status"]
-    if "Running" in status and status["Running"]["main_pid"] != first_pid:
+    if "running" in status and status["running"]["main_pid"] != first_pid:
         break
     time.sleep(0.1)
 else:
