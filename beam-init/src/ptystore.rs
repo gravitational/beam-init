@@ -3,92 +3,99 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 
 use tokio::io::{AsyncReadExt, Interest};
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 
 use beam_init::system::unix_socket::socket_send_fd;
 use beam_init_api::PTY_SOCKET_PATH;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::Event;
 use crate::api_impl::Credentials;
 
-pub(crate) fn init(tx_event: mpsc::Sender<Event>) -> io::Result<()> {
+pub(crate) fn init(tx_event: mpsc::Sender<Event>, shutdown: CancellationToken) -> io::Result<()> {
     let socket = UnixListener::bind(PTY_SOCKET_PATH)?;
     let permissions = std::fs::Permissions::from_mode(0o666);
     std::fs::set_permissions(PTY_SOCKET_PATH, permissions)?;
 
     tokio::spawn(async move {
         loop {
-            match socket.accept().await {
-                Ok((mut stream, _addr)) => {
-                    let tx_event2 = tx_event.clone();
-                    tokio::spawn(async move {
-                        let credentials = match stream.peer_cred() {
-                            Ok(cred) => Credentials {
-                                uid: cred.uid(),
-                                gid: cred.gid(),
-                            },
-                            Err(err) => {
-                                eprintln!("No Unix peer credentials: {err}");
-                                return;
-                            }
-                        };
-
-                        let name_len = match stream.read_u8().await {
-                            Ok(id) => usize::from(id),
-                            Err(err) => {
-                                eprintln!("Failed to read service name length from client: {err}");
-                                return;
-                            }
-                        };
-                        let mut name = vec![0; name_len];
-                        match stream.read_exact(&mut name).await {
-                            Ok(_) => {}
-                            Err(err) => {
-                                eprintln!("Failed to read service name from client: {err}");
-                                return;
-                            }
-                        };
-                        let name = match String::from_utf8(name) {
-                            Ok(name) => name,
-                            Err(err) => {
-                                eprintln!("Service name is not UTF-8: {err}");
-                                return;
-                            }
-                        };
-
-                        let (res_tx, res_rx) = oneshot::channel();
-                        tx_event2
-                            .send(Event::GetPty {
-                                name,
-                                tx: res_tx,
-                                credentials,
-                            })
-                            .await
-                            .expect("main task crashed");
-
-                        let fd = match res_rx.await {
-                            Ok(fd) => fd,
-                            Err(_) => {
-                                // An error happened, already reported by the main task
-                                return;
-                            }
-                        };
-
-                        let res = stream
-                            .async_io(Interest::WRITABLE, || {
-                                socket_send_fd(&stream, &[0], fd.as_fd())
-                            })
-                            .await;
-                        if let Err(err) = res {
-                            eprintln!("Failed to send fd to client: {err}");
+            tokio::select! {
+                accept = socket.accept() => {
+                    match accept {
+                        Ok((stream, _addr)) => {
+                            tokio::spawn(handle_connection(stream, tx_event.clone()));
                         }
-                    });
+                        Err(err) => eprintln!("Failed to accept fd socket connection: {err}"),
+                    }
                 }
-                Err(err) => eprintln!("Failed to accept fd socket connection: {err}"),
+                _ = shutdown.cancelled() => break,
             }
         }
     });
 
     Ok(())
+}
+
+async fn handle_connection(mut stream: UnixStream, tx_event: mpsc::Sender<Event>) {
+    let credentials = match stream.peer_cred() {
+        Ok(cred) => Credentials {
+            uid: cred.uid(),
+            gid: cred.gid(),
+        },
+        Err(err) => {
+            eprintln!("No Unix peer credentials: {err}");
+            return;
+        }
+    };
+
+    let name_len = match stream.read_u8().await {
+        Ok(id) => usize::from(id),
+        Err(err) => {
+            eprintln!("Failed to read service name length from client: {err}");
+            return;
+        }
+    };
+    let mut name = vec![0; name_len];
+    match stream.read_exact(&mut name).await {
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("Failed to read service name from client: {err}");
+            return;
+        }
+    };
+    let name = match String::from_utf8(name) {
+        Ok(name) => name,
+        Err(err) => {
+            eprintln!("Service name is not UTF-8: {err}");
+            return;
+        }
+    };
+
+    let (res_tx, res_rx) = oneshot::channel();
+    tx_event
+        .send(Event::GetPty {
+            name,
+            tx: res_tx,
+            credentials,
+        })
+        .await
+        .expect("main task crashed");
+
+    let fd = match res_rx.await {
+        Ok(fd) => fd,
+        Err(_) => {
+            // An error happened, already reported by the main task
+            return;
+        }
+    };
+
+    let res = stream
+        .async_io(Interest::WRITABLE, || {
+            socket_send_fd(&stream, &[0], fd.as_fd())
+        })
+        .await;
+    if let Err(err) = res {
+        eprintln!("Failed to send fd to client: {err}");
+    }
 }
