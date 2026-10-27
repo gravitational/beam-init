@@ -7,7 +7,7 @@ use clap_complete::{Shell, generate};
 
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::getrandom;
-use beam_init_api::Probe;
+use beam_init_api::{Probe, ServiceStatusKind};
 use beam_init_client::blocking::Client;
 
 const VERSION: &str = match option_env!("BEAM_VERSION") {
@@ -151,6 +151,20 @@ enum Command {
     },
     /// Show the version of beamctl and beam-init
     Version,
+    /// Wait for a service state
+    Wait {
+        /// The name of the service
+        #[arg(index = 1)]
+        name: String,
+
+        /// The service state to wait for.
+        #[arg(long)]
+        state: ServiceStatusKind,
+
+        /// Length of time in seconds to wait for.
+        #[arg(long, value_parser = parse_duration_seconds)]
+        timeout: Option<Duration>,
+    },
     #[cfg(testing)]
     TestingGetPtyFromStore {
         #[arg(index = 1)]
@@ -396,6 +410,23 @@ fn main() {
             println!("beamctl: Version: {} - SHA: {}", VERSION, GIT_SHA);
             let resp = client.version().unwrap_or_else(show_error_and_exit);
             println!("beam-init: Version: {} - SHA: {}", resp.version, resp.sha);
+        }
+        Command::Wait {
+            name,
+            state,
+            timeout,
+        } => {
+            let name = prefix_match(&client, name);
+            let status = client
+                .wait_service_state(&name, state, timeout)
+                .unwrap_or_else(show_error_and_exit);
+
+            if args.json {
+                serde_json::to_writer_pretty(std::io::stdout(), &status).unwrap();
+                println!();
+            } else {
+                println!("{name} ({status})");
+            }
         }
         #[cfg(testing)]
         Command::TestingGetPtyFromStore { name } => {

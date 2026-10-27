@@ -20,6 +20,9 @@ use tokio_stream::StreamExt;
 
 use crate::api_impl::{Command, Credentials};
 use crate::logs::{AsyncRingBuffer, Logs};
+use crate::services::service_status_publisher::{
+    ServiceStatusPublisher, ServiceStatusSubscription,
+};
 use crate::signal_stream::OldSigmask;
 use crate::spawn::{MonitorCommandSender, Sink, spawn_service};
 use crate::{DEBUG_LOGS, Event};
@@ -66,6 +69,12 @@ impl Service {
 
         let handle = tokio::spawn(run_liveness_probe(name, probe, tx_event, log_queue));
         self.state.liveness_probe = Some(handle.abort_handle());
+    }
+    fn set_status(&mut self, status: ServiceStatus) {
+        self.state
+            .service_status_publisher
+            .publish(beam_init_api::ServiceStatus::from(&status));
+        self.state.status = status;
     }
 }
 
@@ -116,6 +125,7 @@ pub(crate) struct ServiceState {
     pub(crate) logs: Logs,
     pub(crate) automatic_restart_attempts: u32,
     pub(crate) liveness_probe: Option<AbortHandle>,
+    service_status_publisher: ServiceStatusPublisher,
 }
 
 #[derive(Debug)]
@@ -182,6 +192,8 @@ pub enum ServiceError {
     InvalidRequest { err: String },
     BuildEnvironment { err: String },
     BootstrapIsProtected,
+    ServicePrunedWhileWaiting,
+    ObservationLagged { skipped: u64 },
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -218,6 +230,16 @@ impl IntoResponse for ServiceError {
             ServiceError::BootstrapIsProtected => (
                 StatusCode::FORBIDDEN,
                 "The \"bootstrap\" service cannot be modified",
+            )
+                .into_response(),
+            ServiceError::ServicePrunedWhileWaiting => (
+                StatusCode::GONE,
+                "Service was pruned before condition was met",
+            )
+                .into_response(),
+            ServiceError::ObservationLagged{ skipped }=> (
+                StatusCode::CONFLICT,
+                format!("Unable to determine if requested state occurred: missed {skipped} service status updates"),
             )
                 .into_response(),
         }
@@ -269,7 +291,7 @@ impl ServiceManager {
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
                         ServiceStatus::Running { ref process, .. } if process.main_pid == pid => {
-                            service.state.status = ServiceStatus::Exited(status);
+                            service.set_status(ServiceStatus::Exited(status));
                             service.abort_liveness_probe();
                             break;
                         }
@@ -296,7 +318,7 @@ impl ServiceManager {
                                 let _ = self.start_service(credentials, &name, restart);
                                 break;
                             }
-                            service.state.status = ServiceStatus::Stopped;
+                            service.set_status(ServiceStatus::Stopped);
                             break;
                         }
                         _ => { /* ignore */ }
@@ -366,6 +388,9 @@ impl ServiceManager {
                         logs,
                         automatic_restart_attempts: 0,
                         liveness_probe: None,
+                        service_status_publisher: ServiceStatusPublisher::new(
+                            beam_init_api::ServiceStatus::Stopped,
+                        ),
                     },
                 });
                 Ok(())
@@ -450,7 +475,7 @@ impl ServiceManager {
             .map_err(|err| {
                 let err_str = err.to_string();
                 println!("[{name}] Failed to create a pty: {err_str}");
-                service.state.status = ServiceStatus::Error(err);
+                service.set_status(ServiceStatus::Error(err));
                 ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
                     err: err_str,
@@ -476,13 +501,13 @@ impl ServiceManager {
 
         match spawn_service(old_sigmask, &service.config, sink) {
             Ok((child_pid, monitor_tx)) => {
-                service.state.status = ServiceStatus::Running {
+                service.set_status(ServiceStatus::Running {
                     process: ServiceProcess {
                         main_pid: child_pid,
                         monitor_tx,
                     },
                     pty,
-                };
+                });
                 service.spawn_liveness_probe(name.to_owned(), tx_event);
                 Ok(())
             }
@@ -491,7 +516,7 @@ impl ServiceManager {
                 if *DEBUG_LOGS {
                     eprintln!("[{name}] Failed to spawn: {err_str}");
                 }
-                service.state.status = ServiceStatus::Error(err);
+                service.set_status(ServiceStatus::Error(err));
                 Err(ServiceError::SpawnFailed {
                     cmd: service.config.cmd.clone(),
                     err: err_str,
@@ -513,16 +538,17 @@ impl ServiceManager {
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to freeze.
-                service.state.status = status;
+
+                service.set_status(status);
             }
             status @ ServiceStatus::Frozen { .. } => {
                 // This process is already frozen.
-                service.state.status = status;
+                service.set_status(status);
             }
             ServiceStatus::Running { mut process, pty } => {
                 service.abort_liveness_probe();
                 process.send_signal(SIGSTOP);
-                service.state.status = ServiceStatus::Frozen { process, pty };
+                service.set_status(ServiceStatus::Frozen { process, pty });
             }
             ServiceStatus::Dummy => unreachable!(),
         }
@@ -544,15 +570,15 @@ impl ServiceManager {
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_)) => {
                 // No process to thaw.
-                service.state.status = status;
+                service.set_status(status);
             }
             status @ ServiceStatus::Running { .. } => {
                 // This process is already running.
-                service.state.status = status;
+                service.set_status(status);
             }
             ServiceStatus::Frozen { mut process, pty } => {
                 process.send_signal(SIGCONT);
-                service.state.status = ServiceStatus::Running { process, pty };
+                service.set_status(ServiceStatus::Running { process, pty });
                 // Resume probing now that the process is running again.
                 service.spawn_liveness_probe(name.to_owned(), tx_event)
             }
@@ -579,7 +605,7 @@ impl ServiceManager {
                     self.services.remove(name).expect("service should exist");
                     return Ok(());
                 }
-                service.state.status = status;
+                service.set_status(status);
                 if let Some(reason) = restart {
                     return self.start_service(credentials, name, reason);
                 }
@@ -597,21 +623,21 @@ impl ServiceManager {
                     Some(StartReason::Automatic) => old_restart,
                     user_intent => user_intent,
                 };
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune: prune || old_prune,
                     pending_kill,
                     restart,
-                };
+                });
             }
             ServiceStatus::Frozen { mut process, .. } => {
                 process.send_signal(SIGKILL);
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune,
                     pending_kill: None,
                     restart,
-                };
+                });
             }
             ServiceStatus::Running { mut process, .. } => {
                 service.abort_liveness_probe();
@@ -649,12 +675,12 @@ impl ServiceManager {
                         abort_handle,
                     })
                 };
-                service.state.status = ServiceStatus::Stopping {
+                service.set_status(ServiceStatus::Stopping {
                     process,
                     prune,
                     pending_kill,
                     restart,
-                };
+                });
             }
             ServiceStatus::Dummy => unreachable!(),
         }
@@ -822,6 +848,15 @@ impl ServiceManager {
     pub fn user_env_files(&self) -> &[PathBuf] {
         &self.user_env_files
     }
+
+    pub fn subscribe(
+        &self,
+        credentials: Credentials,
+        name: &str,
+    ) -> Result<ServiceStatusSubscription, ServiceError> {
+        let service = self.get_service(credentials, name)?;
+        Ok(service.state.service_status_publisher.subscribe())
+    }
 }
 
 async fn run_liveness_probe(
@@ -896,4 +931,112 @@ impl PartialEq for TerminationToken {
 pub(crate) struct PendingKill {
     token: TerminationToken,
     abort_handle: AbortHandle,
+}
+
+pub(crate) mod service_status_publisher {
+    use beam_init_api::ServiceStatus;
+    use tokio::sync::broadcast;
+
+    /// Controls publishing of [ServiceStatus] updates to subscribers.
+    #[derive(Debug)]
+    pub(crate) struct ServiceStatusPublisher {
+        latest: ServiceStatus,
+        tx: broadcast::Sender<ServiceStatus>,
+    }
+
+    impl ServiceStatusPublisher {
+        pub(crate) fn new(initial: ServiceStatus) -> Self {
+            // Arbitrary size but should be large enough to avoid lagged readers
+            let (tx, _) = broadcast::channel(32);
+
+            Self {
+                latest: initial,
+                tx,
+            }
+        }
+
+        pub(crate) fn publish(&mut self, status: ServiceStatus) {
+            if self.latest == status {
+                return;
+            }
+            self.latest = status.clone();
+
+            // Errors expected when no receivers
+            let _ = self.tx.send(status);
+        }
+
+        pub(crate) fn subscribe(&self) -> ServiceStatusSubscription {
+            ServiceStatusSubscription {
+                current: Some(self.latest.clone()),
+                rx: self.tx.subscribe(),
+            }
+        }
+    }
+
+    /// Acts a receiver for [ServiceStatusPublisher] for service status updates.
+    #[derive(Debug)]
+    pub(crate) struct ServiceStatusSubscription {
+        current: Option<ServiceStatus>,
+        rx: broadcast::Receiver<ServiceStatus>,
+    }
+
+    impl ServiceStatusSubscription {
+        pub(crate) async fn recv(&mut self) -> Result<ServiceStatus, broadcast::error::RecvError> {
+            if let Some(status) = self.current.take() {
+                return Ok(status);
+            }
+            self.rx.recv().await
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn duplicate_statuses_not_observed() {
+            let mut publisher = ServiceStatusPublisher::new(ServiceStatus::Stopped);
+            let mut subscription = publisher.subscribe();
+
+            assert_eq!(
+                subscription
+                    .recv()
+                    .await
+                    .expect("first event should be initial state"),
+                ServiceStatus::Stopped
+            );
+
+            publisher.publish(ServiceStatus::Running {
+                main_pid: 100,
+                pty: None,
+            });
+            publisher.publish(ServiceStatus::Running {
+                main_pid: 100,
+                pty: None,
+            });
+            publisher.publish(ServiceStatus::Exited(beam_init_api::ExitStatus::Code {
+                code: 0,
+            }));
+
+            assert_eq!(
+                subscription
+                    .recv()
+                    .await
+                    .expect("subscription should receive next event"),
+                ServiceStatus::Running {
+                    main_pid: 100,
+                    pty: None
+                }
+            );
+
+            // Shouldn't see duplicate Running status
+            assert_eq!(
+                subscription
+                    .recv()
+                    .await
+                    .expect("subscription should receive next event"),
+                ServiceStatus::Exited(beam_init_api::ExitStatus::Code { code: 0 })
+            );
+        }
+    }
 }

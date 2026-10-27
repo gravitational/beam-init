@@ -206,3 +206,10 @@ fn long_service_name() {
         .run("long_service_name.py")
         .wait();
 }
+
+#[test]
+fn api_wait_service() {
+    Image::build("test.Dockerfile")
+        .run("api_wait_service.py")
+        .wait();
+}

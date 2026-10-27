@@ -4,7 +4,9 @@
 //! clients.
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::os::unix::process::ExitStatusExt;
+use std::str::FromStr;
 use std::{path::PathBuf, process::ExitStatus as StdExitStatus, time::Duration};
 
 use libc::pid_t;
@@ -86,7 +88,7 @@ pub struct Service {
 }
 
 /// Current runtime state of a service.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceStatus {
     /// The service was stopped by the user or hasn't been started yet.
@@ -127,6 +129,78 @@ pub enum ServiceStatus {
 
     /// The service failed to start with the given error.
     Error(String),
+}
+
+impl ServiceStatus {
+    pub fn kind(&self) -> ServiceStatusKind {
+        match self {
+            ServiceStatus::Stopped => ServiceStatusKind::Stopped,
+            ServiceStatus::Running { .. } => ServiceStatusKind::Running,
+            ServiceStatus::Frozen { .. } => ServiceStatusKind::Frozen,
+            ServiceStatus::Stopping { .. } => ServiceStatusKind::Stopping,
+            ServiceStatus::Exited(_) => ServiceStatusKind::Exited,
+            ServiceStatus::Error(_) => ServiceStatusKind::Error,
+        }
+    }
+}
+
+/// Current runtime state of a service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceStatusKind {
+    /// The service was stopped by the user or hasn't been started yet.
+    Stopped,
+    /// The service is currently running.
+    Running,
+    /// The service is paused but can be continued.
+    Frozen,
+    /// The service has been requested to terminate and is in the process of shutting down.
+    Stopping,
+    /// The service exited with the given exit status.
+    Exited,
+    /// The service failed to start with the given error.
+    Error,
+}
+
+impl Display for ServiceStatusKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ServiceStatusKind::Stopped => "stopped",
+            ServiceStatusKind::Running => "running",
+            ServiceStatusKind::Frozen => "frozen",
+            ServiceStatusKind::Stopping => "stopping",
+            ServiceStatusKind::Exited => "exited",
+            ServiceStatusKind::Error => "error",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseServiceStatusKindError;
+
+impl std::fmt::Display for ParseServiceStatusKindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown service status")
+    }
+}
+
+impl std::error::Error for ParseServiceStatusKindError {}
+
+impl FromStr for ServiceStatusKind {
+    type Err = ParseServiceStatusKindError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "stopped" => Ok(Self::Stopped),
+            "running" => Ok(Self::Running),
+            "frozen" => Ok(Self::Frozen),
+            "stopping" => Ok(Self::Stopping),
+            "exited" => Ok(Self::Exited),
+            "error" => Ok(Self::Error),
+            _ => Err(ParseServiceStatusKindError),
+        }
+    }
 }
 
 /// The result of a service process exiting.
