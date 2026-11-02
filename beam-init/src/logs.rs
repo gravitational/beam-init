@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io;
+use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
@@ -8,9 +9,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::AbortHandle;
-
-/// The number of log entries kept in the log buffer.
-const LOG_COUNT: usize = 100;
 
 /// A log store with support for multiple async readers and a single pipe writer.
 #[derive(Debug)]
@@ -26,9 +24,9 @@ pub struct AsyncRingBuffer {
 }
 
 impl AsyncRingBuffer {
-    pub fn new() -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            entries: Mutex::new(RingBuffer::default()),
+            entries: Mutex::new(RingBuffer::new(capacity)),
             next_entry: Notify::new(),
         }
     }
@@ -40,9 +38,9 @@ impl AsyncRingBuffer {
 }
 
 impl Logs {
-    pub fn new() -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            queue: Arc::new(AsyncRingBuffer::new()),
+            queue: Arc::new(AsyncRingBuffer::new(capacity)),
             abort_handle: None,
         }
     }
@@ -133,16 +131,25 @@ impl Drop for Logs {
 /// |    entries in the VecDeque
 /// first `next_idx - entries.len()` entries are gone
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct RingBuffer {
     entries: VecDeque<String>,
     next_idx: u64,
+    capacity: NonZeroUsize,
 }
 
 impl RingBuffer {
+    fn new(capacity: NonZeroUsize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            next_idx: 0,
+            capacity,
+        }
+    }
+
     fn push(&mut self, line: String) {
         self.entries.push_back(line);
-        while self.entries.len() > LOG_COUNT {
+        while self.entries.len() > self.capacity.get() {
             self.entries.pop_front();
         }
         self.next_idx += 1;
