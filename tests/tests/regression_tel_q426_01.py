@@ -13,7 +13,6 @@ time.sleep(0.1)
 
 output = subprocess.check_output(["beamctl", "show", "victim", "--json"])
 service = json.loads(output)
-print(service)
 victim = psutil.Process(service["status"]["running"]["main_pid"])
 
 # Freeze victim and then kill it
