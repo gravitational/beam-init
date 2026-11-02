@@ -963,11 +963,13 @@ async fn run_liveness_probe(
     tokio::time::sleep(probe.initial_delay).await;
 
     let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}{}", probe.port, probe.path);
+    let mut url = reqwest::Url::parse("http://localhost").expect("to know localhost");
+    url.set_port(Some(probe.port)).expect("to control the port");
+    url.set_path(&probe.path);
     let mut consecutive_failures: usize = 0;
 
     loop {
-        let healthy = match client.get(url.as_str()).timeout(probe.period).send().await {
+        let healthy = match client.get(url.clone()).timeout(probe.period).send().await {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         };
