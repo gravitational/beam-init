@@ -15,6 +15,7 @@ use tokio::task::AbortHandle;
 pub struct Logs {
     pub(crate) queue: Arc<AsyncRingBuffer>,
     abort_handle: Option<AbortHandle>,
+    max_width: NonZeroUsize,
 }
 
 #[derive(Debug)]
@@ -38,9 +39,10 @@ impl AsyncRingBuffer {
 }
 
 impl Logs {
-    pub fn new(capacity: NonZeroUsize) -> Self {
+    pub fn new(capacity: NonZeroUsize, max_width: NonZeroUsize) -> Self {
         Self {
             queue: Arc::new(AsyncRingBuffer::new(capacity)),
+            max_width,
             abort_handle: None,
         }
     }
@@ -48,6 +50,7 @@ impl Logs {
     pub fn new_writer(&mut self) -> io::Result<OwnedFd> {
         let (tx, rx) = pipe::pipe()?;
         let queue = Arc::clone(&self.queue);
+        let max_width = self.max_width.into();
 
         // Ensure we only have a single writer. There should be a single log
         // pipe per service. If a service passes the log pipe to another process
@@ -59,7 +62,7 @@ impl Logs {
 
         let handle = tokio::spawn(async move {
             let reader = BufReader::new(rx);
-            let mut lines = reader.bounded_split(b'\n', 200);
+            let mut lines = reader.bounded_split(b'\n', max_width);
             while let Some(line) = lines
                 .next_segment()
                 .await
@@ -237,11 +240,8 @@ fn sanitize(line: Vec<u8>) -> String {
         .collect()
 }
 
-trait AsyncBufReadSplitExt {
-    fn bounded_split(self, delim: u8, limit: usize) -> BoundedSplit<Self>
-    where
-        Self: Sized,
-    {
+trait AsyncBufReadSplitExt: Sized {
+    fn bounded_split(self, delim: u8, limit: usize) -> BoundedSplit<Self> {
         BoundedSplit {
             reader: self,
             delim,
@@ -263,7 +263,7 @@ impl<R: AsyncBufReadExt + Unpin> BoundedSplit<R> {
         use std::cmp::min;
         let mut vec = Vec::new();
 
-        let result = loop {
+        loop {
             let buf = match self.reader.fill_buf().await {
                 Ok(buf) => buf,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -284,16 +284,14 @@ impl<R: AsyncBufReadExt + Unpin> BoundedSplit<R> {
 
             if buf_len == 0 {
                 if vec.is_empty() {
-                    break None;
+                    return Ok(None);
                 } else {
-                    break Some(vec);
+                    return Ok(Some(vec));
                 }
             } else if num_bytes < buf_len {
-                break Some(vec);
+                return Ok(Some(vec));
             }
-        };
-
-        Ok(result)
+        }
     }
 }
 
@@ -345,11 +343,15 @@ mod tests {
         use std::io::Cursor;
         use tokio::io::BufReader;
 
-        let mut r1 = BufReader::new(Cursor::new(b"a-baa")).bounded_split(b'-', 2);
+        let mut r1 = BufReader::new(Cursor::new(b"a-baa-xxx")).bounded_split(b'-', 2);
         assert_eq!(r1.next_segment().await.unwrap().as_deref(), Some(&b"a"[..]));
         assert_eq!(
             r1.next_segment().await.unwrap().as_deref(),
             Some(&b"ba"[..])
+        );
+        assert_eq!(
+            r1.next_segment().await.unwrap().as_deref(),
+            Some(&b"xx"[..])
         );
     }
 }

@@ -134,6 +134,7 @@ async fn main() {
         tx_event,
         cli.environment_file,
         cli.log_retention_lines,
+        cli.log_width,
         shutdown,
     );
     loop {

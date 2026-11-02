@@ -16,6 +16,10 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "COUNT", default_value = "100")]
     pub(crate) log_retention_lines: NonZeroUsize,
 
+    /// Maximum width in characters of a line in the log
+    #[arg(long, value_name = "COUNT", default_value = "200")]
+    pub(crate) log_width: NonZeroUsize,
+
     /// Bootstrap command and arguments
     #[arg(trailing_var_arg = true, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
     pub(crate) command: Vec<String>,
