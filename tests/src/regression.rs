@@ -32,6 +32,13 @@ fn tel_q426_04() {
 }
 
 #[test]
+fn tel_q426_05() {
+    Image::build("test.Dockerfile")
+        .run("regression_tel_q426_05.py")
+        .wait();
+}
+
+#[test]
 fn tel_q426_06() {
     Image::build("test.Dockerfile")
         .run("regression_tel_q426_06.py")
