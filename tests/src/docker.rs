@@ -20,6 +20,7 @@ pub struct Image {
 pub struct RunOptions {
     mounts: Vec<(PathBuf, PathBuf)>,
     beam_init_args: Vec<OsString>,
+    memory: Option<String>,
 }
 
 impl RunOptions {
@@ -34,6 +35,11 @@ impl RunOptions {
         A: Into<OsString>,
     {
         self.beam_init_args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub fn memory(mut self, mem: impl ToString) -> Self {
+        self.memory = Some(mem.to_string());
         self
     }
 }
@@ -83,6 +89,9 @@ impl Image {
         let mut cmd = Command::new("docker");
 
         cmd.arg("run").arg("-i").arg("--rm");
+        if let Some(size) = options.memory {
+            cmd.arg(format!("--memory={size}"));
+        }
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
         for (src, dst) in options.mounts {
