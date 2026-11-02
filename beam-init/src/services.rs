@@ -321,7 +321,10 @@ impl ServiceManager {
 
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
-                        ServiceStatus::Running { ref process, .. } if process.main_pid == pid => {
+                        ServiceStatus::Running { ref process, .. }
+                        | ServiceStatus::Frozen { ref process, .. }
+                            if process.main_pid == pid =>
+                        {
                             service.set_status(ServiceStatus::Exited(status));
                             service.abort_liveness_probe();
                             break;
@@ -351,7 +354,18 @@ impl ServiceManager {
                             }
                             break;
                         }
-                        _ => { /* ignore */ }
+                        ServiceStatus::Running { .. }
+                        | ServiceStatus::Frozen { .. }
+                        | ServiceStatus::Stopping { .. } => {
+                            /* ignore, since the signal was not for this pid */
+                        }
+
+                        ServiceStatus::Stopped
+                        | ServiceStatus::Exited { .. }
+                        | ServiceStatus::Dummy
+                        | ServiceStatus::Error { .. } => {
+                            /* ignore, since process is not running */
+                        }
                     }
                 }
             }
