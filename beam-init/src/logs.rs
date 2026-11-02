@@ -59,7 +59,7 @@ impl Logs {
 
         let handle = tokio::spawn(async move {
             let reader = BufReader::new(rx);
-            let mut lines = reader.split(b'\n');
+            let mut lines = reader.bounded_split(b'\n', 200);
             while let Some(line) = lines
                 .next_segment()
                 .await
