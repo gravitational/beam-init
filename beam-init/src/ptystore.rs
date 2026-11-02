@@ -26,7 +26,10 @@ pub(crate) fn init(tx_event: mpsc::Sender<Event>, shutdown: CancellationToken) -
                         Ok((stream, _addr)) => {
                             tokio::spawn(handle_connection(stream, tx_event.clone()));
                         }
-                        Err(err) => eprintln!("Failed to accept fd socket connection: {err}"),
+                        Err(err) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            eprintln!("Failed to accept fd socket connection: {err}")
+                        }
                     }
                 }
                 _ = shutdown.cancelled() => break,

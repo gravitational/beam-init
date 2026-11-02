@@ -198,6 +198,7 @@ pub enum ServiceError {
     ServicePrunedWhileWaiting,
     ObservationLagged { skipped: u64 },
     ShuttingDown,
+    TooManyOpenFiles,
 }
 
 // FIXME serialize as json and deserialize and format error message inside the beamctl process?
@@ -251,6 +252,9 @@ impl IntoResponse for ServiceError {
                 "beam-init is shutting down",
             )
                 .into_response(),
+            ServiceError::TooManyOpenFiles => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Too many open files").into_response()
+            }
         }
     }
 }
@@ -785,7 +789,13 @@ impl ServiceManager {
         match &service.state.status {
             ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => {
                 if let Some(pty) = pty {
-                    Ok(pty.master.try_clone().expect("dup shouldn't fail"))
+                    match pty.master.try_clone() {
+                        Ok(fd) => Ok(fd),
+                        Err(err) if err.raw_os_error() == Some(libc::EMFILE) => {
+                            Err(ServiceError::TooManyOpenFiles)
+                        }
+                        Err(err) => panic!("Failed to dup PTY fd: {err}"),
+                    }
                 } else {
                     Err(ServiceError::NoPty { name })
                 }
