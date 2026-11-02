@@ -322,42 +322,40 @@ impl ServiceManager {
                 for (name, service) in self.services.iter_mut() {
                     match service.state.status {
                         ServiceStatus::Running { ref process, .. }
-                        | ServiceStatus::Frozen { ref process, .. }
-                            if process.main_pid == pid =>
-                        {
-                            service.set_status(ServiceStatus::Exited(status));
-                            service.abort_liveness_probe();
-                            break;
+                        | ServiceStatus::Frozen { ref process, .. } => {
+                            if process.main_pid == pid {
+                                service.set_status(ServiceStatus::Exited(status));
+                                service.abort_liveness_probe();
+                                break;
+                            }
                         }
                         ServiceStatus::Stopping {
                             ref process,
                             after_stop,
                             ref mut pending_kill,
-                        } if process.main_pid == pid => {
-                            if let Some(pending_kill) = pending_kill.take() {
-                                pending_kill.abort_handle.abort();
-                            }
-                            service.abort_liveness_probe();
-                            match after_stop {
-                                AfterStop::Stop => service.set_status(ServiceStatus::Stopped),
-                                AfterStop::Prune => {
-                                    let name = name.clone();
-                                    self.services.remove(&name).expect("service should exist");
+                        } => {
+                            if process.main_pid == pid {
+                                if let Some(pending_kill) = pending_kill.take() {
+                                    pending_kill.abort_handle.abort();
                                 }
-                                AfterStop::Restart(start_reason) => {
-                                    let name = name.clone();
-                                    let credentials = service.config.credentials;
-                                    // start_service will set the service status to Error when an error occurs.
-                                    // There is nothing else we can do with an error here, so ignore it.
-                                    let _ = self.start_service(credentials, &name, start_reason);
+                                service.abort_liveness_probe();
+                                match after_stop {
+                                    AfterStop::Stop => service.set_status(ServiceStatus::Stopped),
+                                    AfterStop::Prune => {
+                                        let name = name.clone();
+                                        self.services.remove(&name).expect("service should exist");
+                                    }
+                                    AfterStop::Restart(start_reason) => {
+                                        let name = name.clone();
+                                        let credentials = service.config.credentials;
+                                        // start_service will set the service status to Error when an error occurs.
+                                        // There is nothing else we can do with an error here, so ignore it.
+                                        let _ =
+                                            self.start_service(credentials, &name, start_reason);
+                                    }
                                 }
+                                break;
                             }
-                            break;
-                        }
-                        ServiceStatus::Running { .. }
-                        | ServiceStatus::Frozen { .. }
-                        | ServiceStatus::Stopping { .. } => {
-                            /* ignore, since the signal was not for this pid */
                         }
 
                         ServiceStatus::Stopped
