@@ -3,7 +3,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::{io, process};
 
-use libc::pid_t;
+use libc::{pid_t, rlimit};
 
 pub mod fork;
 pub mod ipc_barrier;
@@ -97,4 +97,20 @@ pub fn getrandom(mut buf: &mut [u8]) {
             Err(err) => panic!("failed to get random number: {err}"),
         }
     }
+}
+
+// Unfortunately glibc and musl disagree about the sign of the first argument of {get,set}rlimit.
+#[cfg(target_env = "gnu")]
+type ResourceId = libc::__rlimit_resource_t;
+#[cfg(target_env = "musl")]
+type ResourceId = c_int;
+
+pub fn getrlimit(resource: ResourceId, rlim: &mut rlimit) -> io::Result<()> {
+    // SAFETY: We pass a valid pointer to a writable rlimit
+    cerr(unsafe { libc::getrlimit(resource, rlim) }).map(|_| ())
+}
+
+pub fn setrlimit(resource: ResourceId, rlim: &rlimit) -> io::Result<()> {
+    // SAFETY: We pass a valid pointer to an rlimit
+    cerr(unsafe { libc::setrlimit(resource, rlim) }).map(|_| ())
 }

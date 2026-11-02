@@ -74,6 +74,21 @@ async fn main() {
         libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1);
     }
 
+    // Skip RLIMIT_NOFILE increase during testing to make the tel_q426_06 fd exhaustion test faster
+    #[cfg(not(testing))]
+    {
+        use beam_init::system::{getrlimit, setrlimit};
+
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        getrlimit(libc::RLIMIT_NOFILE, &mut limit).expect("getrlimit should always succeed");
+        limit.rlim_cur = limit.rlim_max;
+        setrlimit(libc::RLIMIT_NOFILE, &limit)
+            .expect("setrlimit without hard limit increase should always succeed");
+    }
+
     // FIXME what is a reasonable channel capacity?
     let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(10);
 
