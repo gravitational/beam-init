@@ -235,6 +235,66 @@ fn sanitize(line: Vec<u8>) -> String {
         .collect()
 }
 
+trait AsyncBufReadSplitExt {
+    fn bounded_split(self, delim: u8, limit: usize) -> BoundedSplit<Self>
+    where
+        Self: Sized,
+    {
+        BoundedSplit {
+            reader: self,
+            delim,
+            limit,
+        }
+    }
+}
+
+impl<T: AsyncBufReadExt> AsyncBufReadSplitExt for T {}
+
+struct BoundedSplit<R> {
+    reader: R,
+    delim: u8,
+    limit: usize,
+}
+
+impl<R: AsyncBufReadExt + Unpin> BoundedSplit<R> {
+    pub async fn next_segment(&mut self) -> tokio::io::Result<Option<Vec<u8>>> {
+        use std::cmp::min;
+        let mut vec = Vec::new();
+
+        let result = loop {
+            let buf = match self.reader.fill_buf().await {
+                Ok(buf) => buf,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => Err(e)?,
+            };
+            let buf_len = buf.len();
+
+            // To cut down on a lot of case analysis, we flatten to one piece of
+            // info which is simply "how many bytes to consume".
+            // num_bytes == buf.len() indicates no delimiter has been found;
+            // num_bytes == 0 indicates EOF
+            let num_bytes = buf.iter().position(|b| *b == self.delim).unwrap_or(buf_len);
+
+            vec.extend_from_slice(&buf[..min(num_bytes, self.limit - vec.len())]);
+
+            // we skip one extra to include the delimiter
+            self.reader.consume(min(buf_len, num_bytes + 1));
+
+            if buf_len == 0 {
+                if vec.is_empty() {
+                    break None;
+                } else {
+                    break Some(vec);
+                }
+            } else if num_bytes < buf_len {
+                break Some(vec);
+            }
+        };
+
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::sanitize;
@@ -255,5 +315,39 @@ mod tests {
         assert_eq!(sanitize(b"he\t\rllo".to_vec()), "he\t\u{240D}llo");
         assert_eq!(sanitize(b"he\x7Fllo".to_vec()), "he⍰llo");
         assert_eq!(sanitize(b"he\xA0llo".to_vec()), "he\u{FFFD}llo");
+    }
+
+    #[tokio::test]
+    async fn bounded_split_is_compatible_with_split() {
+        use super::AsyncBufReadSplitExt;
+        use std::io::Cursor;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        for test in ["", "hello", "hello-world", "-hello-world", "hello-world-"] {
+            let mut r1 = BufReader::new(Cursor::new(test.as_bytes())).bounded_split(b'-', 255);
+            let mut r2 = BufReader::new(Cursor::new(test.as_bytes())).split(b'-');
+            loop {
+                let a = r1.next_segment().await.unwrap();
+                let b = r2.next_segment().await.unwrap();
+                assert_eq!(a, b);
+                if a.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_split_bounds_result() {
+        use super::AsyncBufReadSplitExt;
+        use std::io::Cursor;
+        use tokio::io::BufReader;
+
+        let mut r1 = BufReader::new(Cursor::new(b"a-baa")).bounded_split(b'-', 2);
+        assert_eq!(r1.next_segment().await.unwrap().as_deref(), Some(&b"a"[..]));
+        assert_eq!(
+            r1.next_segment().await.unwrap().as_deref(),
+            Some(&b"ba"[..])
+        );
     }
 }
