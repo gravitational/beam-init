@@ -8,7 +8,7 @@ fn tel_q426_01() {
 }
 
 #[test]
-fn bound_log_memory() {
+fn tel_q426_03() {
     Image::build("test.Dockerfile")
         .run("regression_tel_q426_03.py")
         .wait();
