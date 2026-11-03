@@ -7,7 +7,7 @@ pub mod system;
 /// Convert the input to UTF-8 and replace Control codes
 pub fn sanitize(line: String, allow_whitespace: bool) -> String {
     let is_filtered_control = if allow_whitespace {
-        |ch: char| ch.is_control() && !ch.is_whitespace()
+        |ch: char| ch.is_control() && !"\t\n".contains(ch)
     } else {
         |ch: char| ch.is_control() || ch.is_whitespace()
     };
