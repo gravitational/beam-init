@@ -14,6 +14,7 @@ use crate::api_impl::Credentials;
 use crate::services::ServiceConfig;
 use crate::signal_stream::OldSigmask;
 use beam_init::system::fork::unsafe_fork;
+use beam_init::system::ipc_barrier::IpcBarrierNotify;
 use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
@@ -165,24 +166,16 @@ pub(crate) fn spawn_service(
                 // controlling tty to the session when opening a file that happens
                 // to be a tty.
 
-                let service_pid = expect_no_panic(
-                    unsafe_fork!({
-                        // Create a new process group led by this process.
-                        // Uses the current PID as the PGID of the new process group.
-                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
-
-                        // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(
-                            &cmd,
-                            &args,
-                            &mut envp,
-                            &config.credentials,
-                            err_tx,
-                        )
-                    }),
-                    "failed to fork",
+                // SAFETY: args is a NULL terminated list of C strings.
+                let service_pid = fork_and_exec_with_creds_and_err_pipe(
+                    &cmd,
+                    &args,
+                    &mut envp,
+                    &config.credentials,
+                    err_tx,
+                    None,
+                    pgid_sync_tx,
                 );
-                drop(err_tx);
 
                 expect_no_panic(
                     pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
@@ -197,29 +190,16 @@ pub(crate) fn spawn_service(
                 let mut signals =
                     expect_no_panic(SignalFd::new(&sigset), "failed to create signalfd");
 
-                let service_pid = expect_no_panic(
-                    unsafe_fork!({
-                        expect_no_panic(old_sigset.set_mask(), "failed to unblock SIGCHLD");
-
-                        // Create a new process group led by this process.
-                        // Uses the current PID as the PGID of the new process group.
-                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
-
-                        drop(pgid_sync_tx);
-
-                        // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(
-                            &cmd,
-                            &args,
-                            &mut envp,
-                            &config.credentials,
-                            err_tx,
-                        )
-                    }),
-                    "failed to fork",
+                // SAFETY: args is a NULL terminated list of C strings.
+                let service_pid = fork_and_exec_with_creds_and_err_pipe(
+                    &cmd,
+                    &args,
+                    &mut envp,
+                    &config.credentials,
+                    err_tx,
+                    Some(old_sigset),
+                    pgid_sync_tx,
                 );
-                drop(err_tx);
-                drop(pgid_sync_tx);
 
                 // FIXME user should probably see child pid
                 let self_pid = getpid();
@@ -387,39 +367,55 @@ impl Sink<'_> {
 ///
 /// `args` must be a NULL terminated list of C strings.
 /// `envp` must be a NULL terminated list of C strings.
-unsafe fn exec_with_creds_and_err_pipe(
+unsafe fn fork_and_exec_with_creds_and_err_pipe(
     cmd: &CStr,
     args: &[*const c_char],
     envp: &mut [*mut c_char],
     credentials: &Credentials,
     mut err_tx: PipeWriter,
-) -> ! {
-    // Using raw syscall as musl doesn't have a close_range() wrapper.
-    expect_no_panic(
-        close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
-        "failed to `close_range",
-    );
+    old_sigset: Option<SignalSet>,
+    pgid_sync_tx: IpcBarrierNotify,
+) -> pid_t {
+    let child = move || {
+        if let Some(old_sigset) = old_sigset {
+            expect_no_panic(old_sigset.set_mask(), "failed to unblock SIGCHLD");
+        }
 
-    // Set the group and user ID (derived from socket) as well as an empty
-    // supplementary group list.
-    expect_no_panic(credentials.set_creds(), "failed to set process credentials");
+        // Create a new process group led by this process.
+        // Uses the current PID as the PGID of the new process group.
+        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
-    // SAFETY: Per the safety requirements of this function, args and env is a NULL
-    // terminated lists of C strings.
-    unsafe {
-        environ = envp.as_mut_ptr();
-        libc::execvp(cmd.as_ptr(), args.as_ptr())
+        drop(pgid_sync_tx);
+
+        // Using raw syscall as musl doesn't have a close_range() wrapper.
+        expect_no_panic(
+            close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
+            "failed to `close_range",
+        );
+
+        // Set the group and user ID (derived from socket) as well as an empty
+        // supplementary group list.
+        expect_no_panic(credentials.set_creds(), "failed to set process credentials");
+
+        // SAFETY: Per the safety requirements of this function, args and env is a NULL
+        // terminated lists of C strings.
+        unsafe {
+            environ = envp.as_mut_ptr();
+            libc::execvp(cmd.as_ptr(), args.as_ptr())
+        };
+
+        // If we reach this point, the exec failed.
+        let Some(err) = io::Error::last_os_error().raw_os_error() else {
+            eprintln!("last_os_error didn't return OS error");
+            _exit(101);
+        };
+
+        expect_no_panic(
+            err_tx.write_all(&i32::to_ne_bytes(err)),
+            "failed to write error code",
+        );
+        _exit(1);
     };
 
-    // If we reach this point, the exec failed.
-    let Some(err) = io::Error::last_os_error().raw_os_error() else {
-        eprintln!("last_os_error didn't return OS error");
-        _exit(101);
-    };
-
-    expect_no_panic(
-        err_tx.write_all(&i32::to_ne_bytes(err)),
-        "failed to write error code",
-    );
-    _exit(1);
+    unsafe { expect_no_panic(unsafe_fork!({ child() }), "failed to fork") }
 }
