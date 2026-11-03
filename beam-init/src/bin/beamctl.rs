@@ -5,8 +5,8 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser};
 use clap_complete::{Shell, generate};
 
-use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::getrandom;
+use beam_init::{BOOTSTRAP_NAME, sanitize};
 use beam_init_api::{Probe, ServiceStatusKind};
 use beam_init_client::blocking::Client;
 
@@ -361,16 +361,20 @@ fn main() {
                 println!();
             } else {
                 // Handle formatting if there are no arguments.
-                let mut args = service.args;
-                args.insert(0, service.cmd);
-
                 let labels = if service.labels.is_empty() {
                     format_args!("")
                 } else {
-                    format_args!(" [{}]", display_labels(&service.labels))
+                    format_args!(" [{}]", display_labels(service.labels))
                 };
 
-                println!("{name}{labels} ({}): {}", service.status, args.join(" "));
+                let name = sanitize(name, false);
+                let commandline = std::iter::once(service.cmd)
+                    .chain(service.args)
+                    .map(|arg| sanitize(arg, false))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                println!("{name}{labels} ({}): {commandline}", service.status);
             }
         }
         Command::List { selector } => {
@@ -394,6 +398,7 @@ fn main() {
                 println!();
             } else {
                 for (name, status) in services {
+                    let name = sanitize(name, false);
                     println!("{name} ({status})");
                 }
             }
@@ -577,14 +582,18 @@ where
     alternated.take(if len == 0 { 0 } else { 2 * len - 1 })
 }
 
-fn display_labels(labels: &BTreeMap<String, String>) -> String {
+fn display_labels(labels: BTreeMap<String, String>) -> String {
     if labels.is_empty() {
         return String::new();
     }
 
     intersperse(
         ",",
-        labels.iter().map(|(key, value)| format!("{key}={value}")),
+        labels.into_iter().map(|(key, value)| {
+            let key = sanitize(key, false);
+            let value = sanitize(value, false);
+            format!("{key}={value}")
+        }),
     )
     .collect()
 }
