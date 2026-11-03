@@ -26,7 +26,7 @@ use crate::services::service_status_publisher::{
     ServiceStatusPublisher, ServiceStatusSubscription,
 };
 use crate::signal_stream::OldSigmask;
-use crate::spawn::{MonitorCommandSender, Sink, spawn_service};
+use crate::spawn::{MonitorCommandSender, spawn_service};
 use crate::{DEBUG_LOGS, Event};
 use beam_init::BOOTSTRAP_NAME;
 use beam_init::system::pty::Pty;
@@ -531,24 +531,22 @@ impl ServiceManager {
                 }
             })?;
 
-        let sink = if let Some(terminal) = &mut pty {
+        let log_writer = service
+            .state
+            .logs
+            .new_writer()
+            .expect("failed to create log writer");
+
+        let pty_client = pty.as_mut().map(|terminal| {
             add_single_log_message(
                 &service.state.logs,
                 format!("[process connected to pty: {}]", terminal.path.display()),
             );
 
-            Sink::PTY(terminal.client())
-        } else {
-            let log_writer = service
-                .state
-                .logs
-                .new_writer()
-                .expect("failed to create log writer");
+            terminal.client()
+        });
 
-            Sink::Log(log_writer)
-        };
-
-        match spawn_service(old_sigmask, &service.config, sink) {
+        match spawn_service(old_sigmask, &service.config, log_writer, pty_client) {
             Ok((child_pid, monitor_tx)) => {
                 service.set_status(ServiceStatus::Running {
                     process: ServiceProcess {

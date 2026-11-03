@@ -7,7 +7,7 @@ use std::ptr;
 
 use libc::{
     POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, killpg, pid_t,
-    poll, pollfd, tcsetpgrp, uid_t,
+    poll, pollfd, tcsetpgrp,
 };
 
 use crate::api_impl::Credentials;
@@ -88,12 +88,6 @@ impl MonitorCommand {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
-pub(crate) enum Sink<'a> {
-    Log(OwnedFd),
-    PTY(PtyClient<'a>),
-}
-
 fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
     match res {
         Ok(x) => x,
@@ -107,7 +101,8 @@ fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
 pub(crate) fn spawn_service(
     old_sigmask: OldSigmask,
     config: &ServiceConfig,
-    sink: Sink,
+    log_writer: OwnedFd,
+    pty: Option<PtyClient<'_>>,
 ) -> io::Result<(pid_t, Option<MonitorCommandSender>)> {
     let cmd = CString::new(config.cmd.clone())?;
 
@@ -138,8 +133,6 @@ pub(crate) fn spawn_service(
         .chain(Some(ptr::null_mut()))
         .collect::<Box<[_]>>();
 
-    let has_ctty = matches!(sink, Sink::PTY(_));
-
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     let (mut monitor_rx, monitor_tx) = io::pipe()?;
@@ -151,6 +144,18 @@ pub(crate) fn spawn_service(
             drop(monitor_tx);
             drop(monitor_sync_rx);
 
+            // Set the log pipe as stdout and stderr
+            expect_no_panic(
+                // SAFETY: as above
+                cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO)),
+                "failed to set stdout",
+            );
+            expect_no_panic(
+                // SAFETY: as above
+                cerr(libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO)),
+                "failed to set stderr",
+            );
+
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
             // Create a new session and process group led by this process.
@@ -159,31 +164,27 @@ pub(crate) fn spawn_service(
             // hang if the container has a tty attached.
             expect_no_panic(setsid(), "failed to setsid");
 
-            sink.set_stdioe(config.credentials.uid);
-
-            if !has_ctty {
-                // Double fork to ensure the service can't accidentally attach a
-                // controlling tty to the session when opening a file that happens
-                // to be a tty.
-
-                // SAFETY: args is a NULL terminated list of C strings.
-                let service_pid = fork_and_exec_with_creds_and_err_pipe(
-                    &cmd,
-                    &args,
-                    &mut envp,
-                    &config.credentials,
-                    err_tx,
-                    None,
-                    pgid_sync_tx,
+            if let Some(pty) = pty {
+                let pty_fd = expect_no_panic(
+                    pty.make_tty(config.credentials.uid),
+                    "could not make the pty the controlling terminal",
                 );
 
+                // FIXME set in service fork
+                // Set the pseudoterminal as stdin, stdout and stderr
                 expect_no_panic(
-                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
-                    "failed to write pid",
+                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                        .into_iter()
+                        .try_for_each(|fd| {
+                            // SAFETY: dup2 is memory safe to call. This technically violates
+                            // IO-safety, but nothing accessed after this point depends on
+                            // stdout/stderr pointing to a particular fd.
+                            cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
+                            Ok(())
+                        }),
+                    "failed to attach pty",
                 );
 
-                _exit(0);
-            } else {
                 let sigset =
                     expect_no_panic(SignalSet::new(&[SIGCHLD]), "failed to create signal set");
                 let old_sigset = expect_no_panic(sigset.block(), "failed to block SIGCHLD");
@@ -301,6 +302,28 @@ pub(crate) fn spawn_service(
                         }
                     }
                 }
+            } else {
+                // Double fork to ensure the service can't accidentally attach a
+                // controlling tty to the session when opening a file that happens
+                // to be a tty.
+
+                // SAFETY: args is a NULL terminated list of C strings.
+                let service_pid = fork_and_exec_with_creds_and_err_pipe(
+                    &cmd,
+                    &args,
+                    &mut envp,
+                    &config.credentials,
+                    err_tx,
+                    None,
+                    pgid_sync_tx,
+                );
+
+                expect_no_panic(
+                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                    "failed to write pid",
+                );
+
+                _exit(0);
             }
         })?
     };
@@ -315,51 +338,12 @@ pub(crate) fn spawn_service(
             pid_rx.read_exact(&mut child_pid)?;
             Ok((
                 pid_t::from_ne_bytes(child_pid),
-                has_ctty.then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
+                pty.is_some()
+                    .then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
             ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
         Err(err) => Err(err),
-    }
-}
-
-impl Sink<'_> {
-    fn set_stdioe(self, uid: uid_t) {
-        match self {
-            Sink::PTY(pty) => {
-                let pty_fd = expect_no_panic(
-                    pty.make_tty(uid),
-                    "could not make the pty the controlling terminal",
-                );
-
-                // Set the pseudoterminal as stdin, stdout and stderr
-                expect_no_panic(
-                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                        .into_iter()
-                        .try_for_each(|fd| {
-                            // SAFETY: dup2 is memory safe to call. This technically violates
-                            // IO-safety, but nothing accessed after this point depends on
-                            // stdout/stderr pointing to a particular fd.
-                            cerr(unsafe { libc::dup2(pty_fd.as_raw_fd(), fd) })?;
-                            Ok(())
-                        }),
-                    "failed to attach pty",
-                );
-            }
-            Sink::Log(log_writer) => {
-                // Set the log pipe as stdout and stderr
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
-                    "failed to set stdout",
-                );
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
-                    "failed to set stderr",
-                );
-            }
-        }
     }
 }
 
