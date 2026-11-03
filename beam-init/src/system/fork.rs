@@ -26,7 +26,7 @@ macro_rules! unsafe_fork {
                 let _bomb = $crate::system::fork::DropBomb;
 
                 // Ensure that the provided block diverges.
-                let _: std::convert::Infallible = { $f };
+                match $f {}
             }
             Ok(pid) => Ok(pid),
             Err(err) => Err(err),
