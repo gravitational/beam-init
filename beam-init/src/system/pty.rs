@@ -110,6 +110,11 @@ impl<'a> PtyClient<'a> {
             cerr(libc::fchown(client.as_raw_fd(), uid, stat.st_gid))?;
         }
 
+        // SAFETY: this ioctl is safe to call (and is being fed the correct file descriptor)
+        unsafe {
+            cerr(libc::ioctl(client.as_raw_fd(), libc::TIOCSCTTY, 0))?;
+        }
+
         Ok(client)
     }
 }
