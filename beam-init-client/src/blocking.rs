@@ -44,6 +44,14 @@ pub struct Client {
 
 const THIRTY_SECONDS: Duration = Duration::from_secs(30);
 
+/// This macro builds a path to a service combined with an action. The service name is validated at runtime, but the action is
+/// always  under our full control. This macro enforces that at compile-time by demanding that it be a literal.
+macro_rules! service_action_path {
+    ($name: expr, $action: literal) => {
+        service_path($name).map(|service| format!("{service}/{}", $action))
+    };
+}
+
 impl Client {
     /// Creates a client connected to the default beam-init API socket.
     pub fn new() -> Result<Self, Error> {
@@ -72,7 +80,7 @@ impl Client {
         name: &str,
         service: CreateService,
     ) -> Result<CreateService, Error> {
-        self.post(&service_path(name), service)
+        self.post(&service_path(name)?, service)
     }
 
     /// Returns the current status of every registered service, keyed by name.
@@ -83,35 +91,35 @@ impl Client {
     /// Stops the service. When `prune` is `true`, the service is removed after it stops.
     pub fn stop_service(&self, name: &str, prune: bool) -> Result<(), Error> {
         if prune {
-            self.delete(&service_path(name))
+            self.delete(&service_path(name)?)
         } else {
-            self.post(&service_action_path(name, "stop"), ())
+            self.post(&service_action_path!(name, "stop")?, ())
         }
     }
 
     /// Stops and starts the service.
     pub fn restart_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "restart"), ())
+        self.post(&service_action_path!(name, "restart")?, ())
     }
 
     /// Returns the configuration and current state of the service.
     pub fn show_service(&self, name: &str) -> Result<Service, Error> {
-        self.post(&service_action_path(name, "show"), ())
+        self.post(&service_action_path!(name, "show")?, ())
     }
 
     /// Pauses the process for the service.
     pub fn freeze_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "freeze"), ())
+        self.post(&service_action_path!(name, "freeze")?, ())
     }
 
     /// Resumes the paused process for the service.
     pub fn thaw_service(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "thaw"), ())
+        self.post(&service_action_path!(name, "thaw")?, ())
     }
 
     /// Returns the buffered logs for the service.
     pub fn logs(&self, name: &str) -> Result<String, Error> {
-        let path = format!("{}?follow=false", service_action_path(name, "logs"));
+        let path = format!("{}?follow=false", service_action_path!(name, "logs")?);
         let resp: reqwest::blocking::Response = self.get_raw(&path)?;
         resp.text().map_err(|e| Error::Decode(e.to_string()))
     }
@@ -123,7 +131,7 @@ impl Client {
     pub fn follow_logs(&self, name: &str) -> Result<impl Read, Error> {
         // Other requests have a timeout of 30s, but this request should not time out.
         let timeout = None;
-        let path = format!("{}?follow=true", service_action_path(name, "logs"));
+        let path = format!("{}?follow=true", service_action_path!(name, "logs")?);
         self.get_raw_with_timeout(&path, timeout)
     }
 
@@ -132,7 +140,7 @@ impl Client {
     /// This will instruct beam-init to send the service process group to the
     /// foreground.
     pub fn notify_pty_attached(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "notify_pty_attached"), ())
+        self.post(&service_action_path!(name, "notify_pty_attached")?, ())
     }
 
     /// Used to notify beam-init that this client has detached from the pty of a service.
@@ -140,11 +148,11 @@ impl Client {
     /// This will instruct beam-init to send the service process group to the
     /// background.
     pub fn notify_pty_detached(&self, name: &str) -> Result<(), Error> {
-        self.post(&service_action_path(name, "notify_pty_detached"), ())
+        self.post(&service_action_path!(name, "notify_pty_detached")?, ())
     }
 
     pub fn send_signal(&self, name: &str, sig: c_int) -> Result<(), Error> {
-        self.post(&service_action_path(name, "send_signal"), sig)
+        self.post(&service_action_path!(name, "send_signal")?, sig)
     }
 
     pub fn wait_service_state(
@@ -154,7 +162,11 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<ServiceStatus, Error> {
         self.get_raw_with_timeout(
-            &format!("{}?state={}", service_action_path(name, "wait"), state_kind),
+            &format!(
+                "{}?state={}",
+                service_action_path!(name, "wait")?,
+                state_kind
+            ),
             timeout,
         )?
         .json()
@@ -225,10 +237,11 @@ impl Client {
     }
 }
 
-fn service_action_path(name: &str, action: &str) -> String {
-    format!("{}/{action}", service_path(name))
-}
-
-fn service_path(name: &str) -> String {
-    format!("/service/{name}")
+fn service_path(name: &str) -> Result<String, Error> {
+    let is_clean = |ch: char| ch.is_ascii_alphanumeric() || "._-".contains(ch);
+    if name.chars().all(is_clean) {
+        Ok(format!("/service/{name}"))
+    } else {
+        Err(Error::Transport("Invalid service name".to_string()))
+    }
 }
