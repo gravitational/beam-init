@@ -29,7 +29,9 @@ post(path="dummy", body=json.dumps({"cmd":"/bin/sleep","args":["3600"],"liveness
 
 time.sleep(0.1)
 
-output = subprocess.check_output(["beamctl", "show", "dummy"])
-
-# Check that there are no escape characters in the output
-assert b"\x1b[" not in output, "User can control the formatting of beamctl list"
+# This call should simply fail since the label is in valid, so dummy doesn't exist
+try:
+    subprocess.check_output(["beamctl", "show", "dummy"])
+    assert False, "User can create funky labels"
+except:
+    pass
