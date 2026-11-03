@@ -410,17 +410,7 @@ impl ServiceManager {
         if self.shutdown_initiated() {
             return Err(ServiceError::ShuttingDown);
         }
-        if name.is_empty() {
-            // Not reachable through the REST API
-            return Err(ServiceError::InvalidRequest {
-                err: "Service name may not be empty".to_owned(),
-            });
-        } else if name.len() > usize::from(u8::MAX) {
-            return Err(ServiceError::InvalidRequest {
-                err: "Service name may not be longer than 255 bytes".to_owned(),
-            });
-        }
-
+        let name = validate_service_name(name)?;
         config.validate()?;
 
         let logs = Logs::new(self.log_retention_lines);
@@ -1028,6 +1018,29 @@ impl PartialEq for TerminationToken {
 pub(crate) struct PendingKill {
     token: TerminationToken,
     abort_handle: AbortHandle,
+}
+
+// We can consider introducing a "SanitizedString" type, and then this function
+// would be the constructor for it.
+fn validate_service_name(name: String) -> Result<String, ServiceError> {
+    let is_valid_char = |ch: char| ch.is_ascii_alphanumeric() || "._-".contains(ch);
+
+    if name.is_empty() {
+        // Not reachable through the REST API
+        return Err(ServiceError::InvalidRequest {
+            err: "Service name may not be empty".to_owned(),
+        });
+    } else if name.len() > usize::from(u8::MAX) {
+        return Err(ServiceError::InvalidRequest {
+            err: "Service name may not be longer than 255 bytes".to_owned(),
+        });
+    } else if !name.chars().all(is_valid_char) {
+        return Err(ServiceError::InvalidRequest {
+            err: "Service name contains invalid characters".to_owned(),
+        });
+    }
+
+    Ok(name)
 }
 
 pub(crate) mod service_status_publisher {
