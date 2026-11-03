@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::ExitStatusExt;
 use std::ptr;
@@ -170,21 +170,6 @@ pub(crate) fn spawn_service(
                     "could not make the pty the controlling terminal",
                 );
 
-                // FIXME set in service fork
-                // Set the pseudoterminal as stdin, stdout and stderr
-                expect_no_panic(
-                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                        .into_iter()
-                        .try_for_each(|fd| {
-                            // SAFETY: dup2 is memory safe to call. This technically violates
-                            // IO-safety, but nothing accessed after this point depends on
-                            // stdout/stderr pointing to a particular fd.
-                            cerr(libc::dup2(pty_fd.as_raw_fd(), fd))?;
-                            Ok(())
-                        }),
-                    "failed to attach pty",
-                );
-
                 let sigset =
                     expect_no_panic(SignalSet::new(&[SIGCHLD]), "failed to create signal set");
                 let old_sigset = expect_no_panic(sigset.block(), "failed to block SIGCHLD");
@@ -197,6 +182,7 @@ pub(crate) fn spawn_service(
                     &args,
                     &mut envp,
                     &config.credentials,
+                    Some(pty_fd.as_fd()),
                     err_tx,
                     Some(old_sigset),
                     pgid_sync_tx,
@@ -247,7 +233,7 @@ pub(crate) fn spawn_service(
                             }
                             MonitorCommand::Foreground => {
                                 expect_no_panic(
-                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, service_pid)),
+                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), service_pid)),
                                     "failed to `tcsetpgrp`",
                                 );
                                 expect_no_panic(
@@ -261,7 +247,7 @@ pub(crate) fn spawn_service(
                                     "failed to send SIGTSTP",
                                 );
                                 expect_no_panic(
-                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, self_pid)),
+                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), self_pid)),
                                     "failed to `tcsetpgrp`",
                                 );
                             }
@@ -313,6 +299,7 @@ pub(crate) fn spawn_service(
                     &args,
                     &mut envp,
                     &config.credentials,
+                    None,
                     err_tx,
                     None,
                     pgid_sync_tx,
@@ -356,6 +343,7 @@ unsafe fn fork_and_exec_with_creds_and_err_pipe(
     args: &[*const c_char],
     envp: &mut [*mut c_char],
     credentials: &Credentials,
+    stdioe: Option<BorrowedFd<'_>>,
     mut err_tx: PipeWriter,
     old_sigset: Option<SignalSet>,
     pgid_sync_tx: IpcBarrierNotify,
@@ -370,6 +358,22 @@ unsafe fn fork_and_exec_with_creds_and_err_pipe(
         expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
 
         drop(pgid_sync_tx);
+
+        if let Some(stdioe) = stdioe {
+            // Set the pseudoterminal as stdin, stdout and stderr
+            expect_no_panic(
+                [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                    .into_iter()
+                    .try_for_each(|fd| {
+                        // SAFETY: dup2 is memory safe to call. This technically violates
+                        // IO-safety, but nothing accessed after this point depends on
+                        // stdout/stderr pointing to a particular fd.
+                        cerr(unsafe { libc::dup2(stdioe.as_raw_fd(), fd) })?;
+                        Ok(())
+                    }),
+                "failed to attach pty",
+            );
+        }
 
         // Using raw syscall as musl doesn't have a close_range() wrapper.
         expect_no_panic(
