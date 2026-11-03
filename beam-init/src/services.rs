@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{OsString, c_int};
+use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -37,6 +38,7 @@ pub(crate) struct ServiceManager {
     services: BTreeMap<String, Service>,
     tx_event: mpsc::Sender<Event>,
     user_env_files: Vec<PathBuf>,
+    log_retention_lines: NonZeroUsize,
     shutdown: CancellationToken,
 }
 
@@ -288,6 +290,7 @@ impl ServiceManager {
         old_sigmask: OldSigmask,
         tx_event: mpsc::Sender<Event>,
         user_env_files: Vec<PathBuf>,
+        log_retention_lines: NonZeroUsize,
         shutdown: CancellationToken,
     ) -> Self {
         ServiceManager {
@@ -295,6 +298,7 @@ impl ServiceManager {
             services: BTreeMap::new(),
             tx_event,
             user_env_files,
+            log_retention_lines,
             shutdown,
         }
     }
@@ -403,7 +407,7 @@ impl ServiceManager {
 
         config.validate()?;
 
-        let logs = Logs::new();
+        let logs = Logs::new(self.log_retention_lines);
 
         if *DEBUG_LOGS {
             let reader = logs.new_reader();

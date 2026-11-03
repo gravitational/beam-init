@@ -114,8 +114,13 @@ async fn main() {
     api_impl::bind_api_socket(tx_event.clone(), shutdown.clone())
         .expect("failed to bind api socket");
 
-    let mut service_manager =
-        ServiceManager::new(old_sigmask, tx_event, cli.environment_file, shutdown);
+    let mut service_manager = ServiceManager::new(
+        old_sigmask,
+        tx_event,
+        cli.environment_file,
+        cli.log_retention_lines,
+        shutdown,
+    );
     loop {
         match rx_event
             .recv()
