@@ -68,7 +68,7 @@ impl Logs {
                 .expect("failed to read from pipe")
             {
                 let line = String::from_utf8_lossy_owned(line);
-                let line = beam_init::sanitize(line, true);
+                let line = beam_init::sanitize_with_whitespace(line);
                 queue.push(line).await;
             }
 

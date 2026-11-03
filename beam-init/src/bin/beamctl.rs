@@ -367,10 +367,10 @@ fn main() {
                     format_args!(" [{}]", display_labels(service.labels))
                 };
 
-                let name = sanitize(name, false);
+                let name = sanitize(name);
                 let commandline = std::iter::once(service.cmd)
                     .chain(service.args)
-                    .map(|arg| sanitize(arg, false))
+                    .map(sanitize)
                     .collect::<Vec<_>>()
                     .join(" ");
 
@@ -398,7 +398,7 @@ fn main() {
                 println!();
             } else {
                 for (name, status) in services {
-                    let name = sanitize(name, false);
+                    let name = sanitize(name);
                     println!("{name} ({status})");
                 }
             }
@@ -590,8 +590,8 @@ fn display_labels(labels: BTreeMap<String, String>) -> String {
     intersperse(
         ",",
         labels.into_iter().map(|(key, value)| {
-            let key = sanitize(key, false);
-            let value = sanitize(value, false);
+            let key = sanitize(key);
+            let value = sanitize(value);
             format!("{key}={value}")
         }),
     )

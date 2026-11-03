@@ -4,8 +4,17 @@ pub const BOOTSTRAP_NAME: &str = "bootstrap";
 
 pub mod system;
 
-/// Convert the input to UTF-8 and replace Control codes
-pub fn sanitize(line: String, allow_whitespace: bool) -> String {
+/// Replace control codes and whitespace with Unicode pictures
+pub fn sanitize(line: String) -> String {
+    sanitize_impl(line, false)
+}
+
+/// Replace control codes only with Unicode pictures
+pub fn sanitize_with_whitespace(line: String) -> String {
+    sanitize_impl(line, true)
+}
+
+fn sanitize_impl(line: String, allow_whitespace: bool) -> String {
     let is_filtered_control = if allow_whitespace {
         |ch: char| ch.is_control() && !"\t\n".contains(ch)
     } else {
@@ -38,22 +47,26 @@ pub fn sanitize(line: String, allow_whitespace: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize;
-
     #[test]
-    fn log_sanitizer() {
+    fn sanitizer() {
+        let sanitize = super::sanitize_with_whitespace;
+
         let hello = "hello".to_string();
         let p = hello.as_ptr();
-        let hello = sanitize(hello, true);
+        let hello = sanitize(hello);
         let q = hello.as_ptr();
         assert_eq!(p, q);
 
-        assert_eq!(sanitize("hello".to_string(), true), "hello");
-        assert_eq!(sanitize("he\tllo".to_string(), true), "he\tllo");
-        assert_eq!(sanitize("he\nllo".to_string(), true), "he\nllo");
-        assert_eq!(sanitize("he\rllo".to_string(), true), "he\u{240D}llo");
-        assert_eq!(sanitize("he\n\x7Fllo".to_string(), true), "he\n⍰llo");
-        assert_eq!(sanitize("he\t\rllo".to_string(), true), "he\t\u{240D}llo");
-        assert_eq!(sanitize("he\x7Fllo".to_string(), true), "he⍰llo");
+        assert_eq!(sanitize("hello".to_string()), "hello");
+        assert_eq!(sanitize("he\tllo".to_string()), "he\tllo");
+        assert_eq!(sanitize("he\nllo".to_string()), "he\nllo");
+        assert_eq!(sanitize("he\rllo".to_string()), "he\u{240D}llo");
+        assert_eq!(sanitize("he\n\x7Fllo".to_string()), "he\n⍰llo");
+        assert_eq!(sanitize("he\x7Fllo".to_string()), "he⍰llo");
+        assert_eq!(sanitize("he\t\r\n llo".to_string()), "he\t\u{240D}\n llo");
+        assert_eq!(
+            super::sanitize("he\t\r\n llo".to_string()),
+            "he\u{2409}\u{240D}\u{240A}\u{2420}llo"
+        );
     }
 }
