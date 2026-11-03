@@ -115,7 +115,7 @@ impl ServiceConfig {
                     err: "environment key/value may not contain NUL".to_string(),
                 });
             }
-         }
+        }
 
         for (k, v) in &self.labels {
             validate_string(k)?;
