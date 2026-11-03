@@ -86,6 +86,8 @@ impl Logs {
             let mut next_entry_notified = queue.next_entry.notified();
 
             loop {
+                let entry = 0;
+                // Do not inline the above to ensure the lock is not held over yield points.
                 match queue.entries.lock().await.get(&mut reader) {
                     RingBufferEntry::Line(line) => {
                         yield line;
