@@ -83,6 +83,7 @@ impl Image {
         let mut cmd = Command::new("docker");
 
         cmd.arg("run").arg("-i").arg("--rm");
+        cmd.arg("--memory=20m");
         cmd.arg("-v")
             .arg(format!("{script_path}:/mnt/script.py:ro"));
         for (src, dst) in options.mounts {
