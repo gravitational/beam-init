@@ -4,14 +4,12 @@ import json, socket, subprocess, sys, time
 NAME = sys.argv[1] if len(sys.argv) > 1 else "wedge1"
 SOCK = "/run/beam-init"
 
-def c(t=6):
+def http(path, method="GET", t=6):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(t)
     s.connect(SOCK)
+    s.sendall(f"{method} {path} HTTP/1.1\r\nHost: b\r\nConnection: close\r\n\r\n".encode())
     return s
-
-def get(s, path):
-    s.sendall(f"GET {path} HTTP/1.1\r\nHost: b\r\nConnection: close\r\n\r\n".encode())
 
 def beamctl_list(tag):
     try:
@@ -25,15 +23,13 @@ def beamctl_list(tag):
 
 subprocess.check_call([
     "beamctl", "start", "--name", NAME, "--",
-    "sh", "-c", f"while :; do echo { "A" * 200 }; done",
+    "sh", "-c", "while :; do echo A; done",
 ])
 beamctl_list("BEFORE")
 
-hold = c()
-get(hold, "/service/" + NAME + "/logs?follow=true")
+hold = http("/service/" + NAME + "/logs?follow=true")
 time.sleep(3)
-trigger = c()
-get(trigger, "/service/" + NAME + "/logs")
+trigger = http("/service/" + NAME + "/logs")
 frozen = not beamctl_list("DURING")
 
 hold.close()
@@ -41,8 +37,7 @@ trigger.close()
 time.sleep(2)
 back = beamctl_list("AFTER")
 
-d = c()
-d.sendall(f"DELETE /service/{NAME} HTTP/1.1\r\nHost: b\r\nConnection: close\r\n\r\n".encode())
+d = http("/service/" + NAME, method="DELETE")
 print("cleanup delete ->", d.recv(200).decode(errors="replace").splitlines()[0])
 d.close()
 

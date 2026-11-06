@@ -89,6 +89,7 @@ impl Image {
             cmd.arg("-v")
                 .arg(format!("{}:{}:ro", src.display(), dst.display()));
         }
+        cmd.arg("--env=PYTHONUNBUFFERED=1");
 
         cmd.arg(&self.tag);
         cmd.args(options.beam_init_args);
