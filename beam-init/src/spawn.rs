@@ -1,3 +1,4 @@
+use std::cmp;
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -18,7 +19,8 @@ use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{
-    _exit, cerr, close_range, exit_with_signal, getpid, ipc_barrier, setpgid, setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, getpid, getrlimit, ipc_barrier, setpgid, setrlimit,
+    setsid, waitpid,
 };
 
 unsafe extern "C" {
@@ -394,6 +396,24 @@ unsafe fn exec_with_creds_and_err_pipe(
     credentials: &Credentials,
     mut err_tx: PipeWriter,
 ) -> ! {
+    // Set RLIMIT_NOFILE soft limit to 1024 for compatibility with apps that
+    // use the legacy select libc call, while still allowing them to increase
+    // the soft limit themself when they need to by keeping the hard limit
+    // relatively high. This matches the behavior of systemd.
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    expect_no_panic(
+        getrlimit(libc::RLIMIT_NOFILE, &mut limit),
+        "failed to getrlimit",
+    );
+    limit.rlim_cur = cmp::min(limit.rlim_max, 1024);
+    expect_no_panic(
+        setrlimit(libc::RLIMIT_NOFILE, &limit),
+        "failed to setrlimit",
+    );
+
     // Using raw syscall as musl doesn't have a close_range() wrapper.
     expect_no_panic(
         close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
