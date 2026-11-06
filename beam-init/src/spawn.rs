@@ -1,3 +1,4 @@
+use std::cmp;
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -407,7 +408,7 @@ unsafe fn exec_with_creds_and_err_pipe(
         getrlimit(libc::RLIMIT_NOFILE, &mut limit),
         "failed to getrlimit",
     );
-    limit.rlim_cur = 1024;
+    limit.rlim_cur = cmp::min(limit.rlim_max, 1024);
     expect_no_panic(
         setrlimit(libc::RLIMIT_NOFILE, &limit),
         "failed to setrlimit",
