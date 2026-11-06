@@ -23,7 +23,7 @@ def beamctl_list(tag):
 
 subprocess.check_call([
     "beamctl", "start", "--name", NAME, "--",
-    "sh", "-c", "while :; do echo A; done",
+    "sh", "-c", "sleep .5; for i in $(seq 1 10000); do echo A; done; sleep 4; for i in 1; do echo A; done",
 ])
 beamctl_list("BEFORE")
 
