@@ -40,7 +40,7 @@ impl MonitorCommandSender {
         match self.1.read_exact(&mut [0]) {
             Ok(()) => Ok(()),
             // Monitor process exited, we will get a SIGCHLD soon
-            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
             Err(err) => Err(err),
         }
     }
