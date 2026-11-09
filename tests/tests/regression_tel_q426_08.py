@@ -29,7 +29,7 @@ post(path="dummy", body=json.dumps({"cmd":"/bin/sleep","args":["3600"],"liveness
 
 time.sleep(0.1)
 
-# This call should simply fail since the label is in valid, so dummy doesn't exist
+# This call should simply fail since the label is invalid, so dummy doesn't exist
 try:
     subprocess.check_output(["beamctl", "show", "dummy"])
     assert False, "User can create funky labels"
