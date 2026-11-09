@@ -39,6 +39,7 @@ pub(crate) struct ServiceManager {
     tx_event: mpsc::Sender<Event>,
     user_env_files: Vec<PathBuf>,
     log_retention_lines: NonZeroUsize,
+    log_width: NonZeroUsize,
     shutdown: CancellationToken,
 }
 
@@ -295,6 +296,7 @@ impl ServiceManager {
         tx_event: mpsc::Sender<Event>,
         user_env_files: Vec<PathBuf>,
         log_retention_lines: NonZeroUsize,
+        log_width: NonZeroUsize,
         shutdown: CancellationToken,
     ) -> Self {
         ServiceManager {
@@ -303,6 +305,7 @@ impl ServiceManager {
             tx_event,
             user_env_files,
             log_retention_lines,
+            log_width,
             shutdown,
         }
     }
@@ -423,7 +426,7 @@ impl ServiceManager {
 
         config.validate()?;
 
-        let logs = Logs::new(self.log_retention_lines);
+        let logs = Logs::new(self.log_retention_lines, self.log_width);
 
         if *DEBUG_LOGS {
             let reader = logs.new_reader();
