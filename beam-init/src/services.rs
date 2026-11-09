@@ -120,8 +120,8 @@ impl ServiceConfig {
         }
 
         for (k, v) in &self.labels {
-            validate_string(k)?;
-            validate_string(v)?;
+            validate_string(k, "Label name")?;
+            validate_string(v, "Label value")?;
         }
         Ok(())
     }
@@ -415,7 +415,7 @@ impl ServiceManager {
         if self.shutdown_initiated() {
             return Err(ServiceError::ShuttingDown);
         }
-        validate_string(&name)?;
+        validate_string(&name, "Service name")?;
         config.validate()?;
 
         let logs = Logs::new(self.log_retention_lines);
@@ -1027,21 +1027,21 @@ pub(crate) struct PendingKill {
 
 // We can consider introducing a "SanitizedString" type, and then this function
 // would be the constructor for it.
-fn validate_string(name: &dyn AsRef<[u8]>) -> Result<(), ServiceError> {
+fn validate_string(name: &dyn AsRef<[u8]>, category: &str) -> Result<(), ServiceError> {
     let is_valid_char = |ch: u8| ch.is_ascii_alphanumeric() || b"._-".contains(&ch);
 
     let name = name.as_ref();
     if name.is_empty() {
         return Err(ServiceError::InvalidRequest {
-            err: "Service name may not be empty".to_owned(),
+            err: format!("{category} may not be empty"),
         });
     } else if name.len() > usize::from(u8::MAX) {
         return Err(ServiceError::InvalidRequest {
-            err: "Service name may not be longer than 255 bytes".to_owned(),
+            err: format!("{category} may not be longer than 255 bytes"),
         });
     } else if !name.iter().copied().all(is_valid_char) {
         return Err(ServiceError::InvalidRequest {
-            err: "Service name contains invalid characters".to_owned(),
+            err: format!("{category} contains invalid characters"),
         });
     }
 
