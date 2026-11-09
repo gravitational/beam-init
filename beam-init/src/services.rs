@@ -1032,7 +1032,6 @@ fn validate_string(name: &dyn AsRef<[u8]>) -> Result<(), ServiceError> {
 
     let name = name.as_ref();
     if name.is_empty() {
-        // Not reachable through the REST API
         return Err(ServiceError::InvalidRequest {
             err: "Service name may not be empty".to_owned(),
         });
