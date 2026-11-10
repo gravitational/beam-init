@@ -124,6 +124,20 @@ impl ServiceConfig {
             validate_string(k, "Label name")?;
             validate_string(v, "Label value")?;
         }
+
+        if let Some(probe) = &self.liveness {
+            // perform a check against funky paths at service creation time
+            let naive_url = format!("http://localhost:{}{}", probe.port, probe.path);
+            let mut url = reqwest::Url::parse("http://localhost").expect("to know localhost");
+            url.set_port(Some(probe.port)).expect("to control the port");
+            url.set_path(&probe.path);
+            if Ok(url) != reqwest::Url::parse(&naive_url) {
+                return Err(ServiceError::InvalidRequest {
+                    err: "invalid path for liveness probe".to_string(),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -1051,6 +1065,40 @@ fn validate_string(name: &dyn AsRef<[u8]>, category: &str) -> Result<(), Service
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn validate_url() {
+        let mut config = ServiceConfig {
+            cmd: "foo".to_string(),
+            args: vec![],
+            env: BTreeMap::default(),
+            labels: BTreeMap::default(),
+            liveness: None,
+            pty: false,
+            credentials: Credentials::root(),
+            graceful_termination_period: 5,
+        };
+        let mut probe = Probe {
+            path: "/livez".into(),
+            port: 80,
+            failure_threshold: 0,
+            max_retries: 0,
+            period: Default::default(),
+            initial_delay: Default::default(),
+        };
+        assert!(config.validate().is_ok());
+        config.liveness = Some(probe.clone());
+        assert!(config.validate().is_ok());
+        for invalid in ["foo", "@foo", ":80@foo"] {
+            probe.path = invalid.into();
+            config.liveness = Some(probe.clone());
+            assert!(config.validate().is_err(), "accepted: {invalid}");
+        }
+    }
 }
 
 pub(crate) mod service_status_publisher {
