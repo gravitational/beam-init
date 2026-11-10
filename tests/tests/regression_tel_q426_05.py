@@ -38,16 +38,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("0.0.0.0", {PORT}), Handler).serve_forever()
 """
 
-# Start a simple listener, but with a funky path that should still route to localhost
-subprocess.check_call(["beamctl", "start", "--name", "listen",
+# Try start a simple listener with beamctl, but with a funky path -- this will faill
+result = subprocess.run(["beamctl", "start", "--name", "listen",
                        "--liveness-initial-delay-seconds", "1",
                        "--liveness-period-seconds", "1",
                        "--liveness-path", "@localhost:80/livez",
                        "--liveness-port", str(PORT),
                        "--liveness-max-retries", "3",
                        "--", "python3", "-c", server])
+assert result.returncode != 0, "User can create funky labels"
 
-time.sleep(1.2)
+time.sleep(0.5)
+
+# Try start a simple listener with beamctl, but with a unambiguous path
+subprocess.check_call(["beamctl", "start", "--name", "listen",
+                       "--liveness-initial-delay-seconds", "1",
+                       "--liveness-period-seconds", "1",
+                       "--liveness-path", "/@localhost:80/livez",
+                       "--liveness-port", str(PORT),
+                       "--liveness-max-retries", "3",
+                       "--", "python3", "-c", server])
+
+subprocess.check_call(["beamctl", "wait", "--state=exited", "--timeout=5", "listen"])
 
 # The server should have exited after the first probe
 output = subprocess.check_output(["beamctl", "show", "listen", "--json"])
