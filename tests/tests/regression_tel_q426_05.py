@@ -38,7 +38,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(("0.0.0.0", {PORT}), Handler).serve_forever()
 """
 
-# Try start a simple listener with beamctl, but with a funky path -- this will faill
+# Try start a simple listener with beamctl, but with a funky path -- this will fail
 result = subprocess.run(["beamctl", "start", "--name", "listen",
                        "--liveness-initial-delay-seconds", "1",
                        "--liveness-period-seconds", "1",
@@ -46,7 +46,7 @@ result = subprocess.run(["beamctl", "start", "--name", "listen",
                        "--liveness-port", str(PORT),
                        "--liveness-max-retries", "3",
                        "--", "python3", "-c", server])
-assert result.returncode != 0, "User can create funky labels"
+assert result.returncode != 0, "User can create services with funky paths"
 
 time.sleep(0.5)
 
