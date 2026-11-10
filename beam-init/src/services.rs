@@ -14,7 +14,7 @@ use std::{io, mem};
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, SIGCONT, SIGINT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
-use reqwest::StatusCode;
+use reqwest::{StatusCode, redirect};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
@@ -976,7 +976,10 @@ async fn run_liveness_probe(
 ) {
     tokio::time::sleep(probe.initial_delay).await;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::ClientBuilder::new()
+        .redirect(redirect::Policy::none())
+        .build()
+        .expect("Client::new()");
     let mut url = reqwest::Url::parse("http://localhost").expect("to know localhost");
     url.set_port(Some(probe.port)).expect("to control the port");
     url.set_path(&probe.path);
