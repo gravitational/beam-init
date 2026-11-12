@@ -14,7 +14,7 @@ use std::{io, mem};
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use libc::{SIGCHLD, SIGCONT, SIGINT, SIGKILL, SIGSTOP, SIGTERM, WNOHANG, pid_t, signalfd_siginfo};
-use reqwest::StatusCode;
+use reqwest::{StatusCode, redirect};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
@@ -124,6 +124,15 @@ impl ServiceConfig {
             validate_string(k, "Label name")?;
             validate_string(v, "Label value")?;
         }
+
+        if let Some(probe) = &self.liveness
+            && let Err(e) = url_from_probe(probe)
+        {
+            return Err(ServiceError::InvalidRequest {
+                err: format!("invalid path for liveness probe: {e}"),
+            });
+        }
+
         Ok(())
     }
 }
@@ -962,12 +971,16 @@ async fn run_liveness_probe(
 ) {
     tokio::time::sleep(probe.initial_delay).await;
 
-    let client = reqwest::Client::new();
-    let url = format!("http://localhost:{}{}", probe.port, probe.path);
+    let client = reqwest::ClientBuilder::new()
+        .redirect(redirect::Policy::none())
+        .build()
+        .expect("Client::new()");
+
+    let url = url_from_probe(&probe).expect("url validated on creation");
     let mut consecutive_failures: usize = 0;
 
     loop {
-        let healthy = match client.get(url.as_str()).timeout(probe.period).send().await {
+        let healthy = match client.get(url.clone()).timeout(probe.period).send().await {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         };
@@ -1004,6 +1017,22 @@ async fn run_liveness_probe(
 
         tokio::time::sleep(probe.period).await;
     }
+}
+
+fn url_from_probe(probe: &Probe) -> Result<reqwest::Url, &'static str> {
+    let mut url = reqwest::Url::parse("http://localhost").expect("to know localhost");
+    url.set_port(Some(probe.port)).expect("to control the port");
+    if !probe.path.starts_with('/') {
+        return Err("path must start with '/'");
+    }
+    let (path, query) = match probe.path.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (probe.path.as_str(), None),
+    };
+    url.set_path(path);
+    url.set_query(query);
+
+    Ok(url)
 }
 
 fn add_single_log_message(logs: &Logs, msg: String) {
@@ -1049,6 +1078,81 @@ fn validate_string(name: &dyn AsRef<[u8]>, category: &str) -> Result<(), Service
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn validate_url() {
+        let mut config = ServiceConfig {
+            cmd: "foo".to_string(),
+            args: vec![],
+            env: BTreeMap::default(),
+            labels: BTreeMap::default(),
+            liveness: None,
+            pty: false,
+            credentials: Credentials::root(),
+            graceful_termination_period: 5,
+        };
+        let mut probe = Probe {
+            path: "/livez".into(),
+            port: 80,
+            failure_threshold: 0,
+            max_retries: 0,
+            period: Default::default(),
+            initial_delay: Default::default(),
+        };
+        assert!(config.validate().is_ok());
+        config.liveness = Some(probe.clone());
+        assert!(config.validate().is_ok());
+        for invalid in ["foo", "@foo", ":80@foo"] {
+            probe.path = invalid.into();
+            config.liveness = Some(probe.clone());
+            assert!(config.validate().is_err(), "accepted: {invalid}");
+        }
+    }
+
+    #[test]
+    fn valid_path() -> Result<(), Box<dyn std::error::Error>> {
+        let base = Probe {
+            path: "/livez".into(),
+            port: 80,
+            failure_threshold: 0,
+            max_retries: 0,
+            period: Default::default(),
+            initial_delay: Default::default(),
+        };
+
+        let url = url_from_probe(&base)?;
+        assert_eq!(url.as_str(), "http://localhost/livez", "base case");
+
+        let mut probe = base.clone();
+        probe.port = 8080;
+
+        let url = url_from_probe(&probe)?;
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:8080/livez",
+            "non-standard port"
+        );
+
+        let mut probe = base.clone();
+        probe.path = "/livez?verbose=true".into();
+
+        let url = url_from_probe(&probe)?;
+        assert_eq!(
+            url.as_str(),
+            "http://localhost/livez?verbose=true",
+            "query params maintained"
+        );
+
+        let mut probe = base.clone();
+        probe.path = "livez".into();
+        assert!(url_from_probe(&probe).is_err(), "path must start with '/'");
+
+        Ok(())
+    }
 }
 
 pub(crate) mod service_status_publisher {
