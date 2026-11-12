@@ -119,6 +119,11 @@ impl ServiceConfig {
                 });
             }
         }
+
+        for (k, v) in &self.labels {
+            validate_string(k, "Label name")?;
+            validate_string(v, "Label value")?;
+        }
         Ok(())
     }
 }
@@ -413,17 +418,7 @@ impl ServiceManager {
         if self.shutdown_initiated() {
             return Err(ServiceError::ShuttingDown);
         }
-        if name.is_empty() {
-            // Not reachable through the REST API
-            return Err(ServiceError::InvalidRequest {
-                err: "Service name may not be empty".to_owned(),
-            });
-        } else if name.len() > usize::from(u8::MAX) {
-            return Err(ServiceError::InvalidRequest {
-                err: "Service name may not be longer than 255 bytes".to_owned(),
-            });
-        }
-
+        validate_string(&name, "Service name")?;
         config.validate()?;
 
         let logs = Logs::new(self.log_retention_lines, self.log_width);
@@ -1031,6 +1026,29 @@ impl PartialEq for TerminationToken {
 pub(crate) struct PendingKill {
     token: TerminationToken,
     abort_handle: AbortHandle,
+}
+
+// We can consider introducing a "SanitizedString" type, and then this function
+// would be the constructor for it.
+fn validate_string(name: &dyn AsRef<[u8]>, category: &str) -> Result<(), ServiceError> {
+    let is_valid_char = |ch: u8| ch.is_ascii_alphanumeric() || b"._-".contains(&ch);
+
+    let name = name.as_ref();
+    if name.is_empty() {
+        return Err(ServiceError::InvalidRequest {
+            err: format!("{category} may not be empty"),
+        });
+    } else if name.len() > usize::from(u8::MAX) {
+        return Err(ServiceError::InvalidRequest {
+            err: format!("{category} may not be longer than 255 bytes"),
+        });
+    } else if !name.iter().copied().all(is_valid_char) {
+        return Err(ServiceError::InvalidRequest {
+            err: format!("{category} contains invalid characters"),
+        });
+    }
+
+    Ok(())
 }
 
 pub(crate) mod service_status_publisher {
