@@ -6,7 +6,6 @@ use std::os::unix::process::ExitStatusExt;
 use std::sync::LazyLock;
 use std::{env, process};
 
-use axum::response::{IntoResponse, Response};
 use clap::Parser;
 use libc::{SIGCHLD, SIGINT, SIGTERM, signalfd_siginfo};
 use tokio::sync::oneshot;
@@ -44,7 +43,6 @@ static DEBUG_LOGS: LazyLock<bool> =
 enum Event {
     Command {
         command: api_impl::Command,
-        tx: oneshot::Sender<Response>,
         credentials: Credentials,
     },
     GetPty {
@@ -107,12 +105,12 @@ async fn main() {
             labels: Default::default(),
             graceful_termination_period: cli.bootstrap_graceful_termination_period,
         },
+        reply: oneshot::channel().0,
     };
     // The channel is empty, so sending always succeeds.
     tx_event
         .try_send(Event::Command {
             command: init_cmd,
-            tx: oneshot::channel().0,
             credentials: Credentials::root(),
         })
         .expect("channel should be empty");
@@ -146,12 +144,9 @@ async fn main() {
             Event::Signal(info) => service_manager.handle_signal(info),
             Event::Command {
                 command: cmd,
-                tx,
                 credentials,
             } => {
-                let res =
-                    api_impl::handle_api_command(&mut service_manager, cmd, credentials).await;
-                let _ = tx.send(res.into_response());
+                api_impl::handle_api_command(&mut service_manager, cmd, credentials).await;
             }
             Event::GetPty {
                 name,

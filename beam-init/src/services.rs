@@ -731,8 +731,8 @@ impl ServiceManager {
                                 command: Command::ForceKillService {
                                     name: name.clone(),
                                     token: spawn_token,
+                                    reply: tx,
                                 },
-                                tx,
                                 credentials,
                             })
                             .await

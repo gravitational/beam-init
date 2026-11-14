@@ -69,7 +69,7 @@ pub struct Probe {
 }
 
 /// Description and current state of a service.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
     /// Executable configured for the service.
     pub cmd: String,
