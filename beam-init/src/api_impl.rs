@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Event;
 use crate::environment::build_environment;
+use crate::services::service_status_publisher::ServiceStatusSubscription;
 use crate::services::{
     self, AfterStop, ServiceError, ServiceManager, StartReason, TerminationToken,
 };
@@ -93,6 +94,11 @@ pub enum Command {
         name: String,
         token: TerminationToken,
         reply: Reply<()>,
+    },
+    WaitService {
+        name: String,
+        credentials: Credentials,
+        reply: Reply<ServiceStatusSubscription>,
     },
 }
 
@@ -457,10 +463,13 @@ async fn wait_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::WaitService {
-            name,
+        .send(Event::Command {
+            command: Command::WaitService {
+                name,
+                credentials,
+                reply: tx,
+            },
             credentials,
-            tx,
         })
         .await
         .expect("main task crashed");
@@ -679,6 +688,13 @@ pub async fn handle_api_command(
         Command::ForceKillService { name, token, reply } => {
             service_manager.force_kill_service(&name, token);
             let _ = reply.send(Ok(()));
+        }
+        Command::WaitService {
+            name,
+            credentials,
+            reply: tx,
+        } => {
+            let _ = tx.send(service_manager.subscribe(credentials, &name));
         }
     }
 }
