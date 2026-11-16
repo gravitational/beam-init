@@ -69,7 +69,8 @@ cargo test
 For manual testing you can use:
 
 ```shell
-docker run -it --rm $(docker build -q -f test.Dockerfile .) bash
+docker run -d -it --rm --name beam-init-test $(docker build -q -f test.Dockerfile .) sleep infinity
+docker exec -it beam-init-test bash
 ```
 
 # License
