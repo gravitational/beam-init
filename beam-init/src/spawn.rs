@@ -1,7 +1,7 @@
 use std::cmp;
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::ExitStatusExt;
 use std::ptr;
@@ -371,12 +371,16 @@ impl Sink<'_> {
             Sink::Log(log_writer) => {
                 let null_fd = expect_no_panic(
                     // SAFETY: open is async-signal-safe. CStr is valid and nul-terminated.
-                    cerr(unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) }),
+                    cerr(unsafe {
+                        libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
+                    }),
                     "failed to get /dev/null fd",
                 );
+                // SAFETY: fd is valid and we are the sole owner
+                let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
                 expect_no_panic(
                     // SAFETY: as above
-                    cerr(unsafe { libc::dup2(null_fd, libc::STDIN_FILENO) }),
+                    cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
                     "failed to redirect stdin",
                 );
                 // Set the log pipe as stdout and stderr
