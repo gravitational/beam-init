@@ -349,34 +349,36 @@ impl Sink<'_> {
                 );
             }
             Sink::Log(log_writer) => {
-                let null_fd = expect_no_panic(
-                    // SAFETY: open is async-signal-safe. CStr is valid and nul-terminated.
-                    cerr(unsafe {
-                        libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
-                    }),
-                    "failed to get /dev/null fd",
-                );
-                // SAFETY: fd is valid and we are the sole owner
-                let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
-                    "failed to redirect stdin",
-                );
-                // Set the log pipe as stdout and stderr
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
-                    "failed to set stdout",
-                );
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
-                    "failed to set stderr",
-                );
+                set_log_stdioe(log_writer);
             }
         }
     }
+}
+
+fn set_log_stdioe(log_writer: OwnedFd) {
+    let null_fd = expect_no_panic(
+        // SAFETY: open is async-signal-safe. CStr is valid and nul-terminated.
+        cerr(unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) }),
+        "failed to get /dev/null fd",
+    );
+    // SAFETY: fd is valid and we are the sole owner
+    let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
+    expect_no_panic(
+        // SAFETY: as above
+        cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
+        "failed to redirect stdin",
+    );
+    // Set the log pipe as stdout and stderr
+    expect_no_panic(
+        // SAFETY: as above
+        cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
+        "failed to set stdout",
+    );
+    expect_no_panic(
+        // SAFETY: as above
+        cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
+        "failed to set stderr",
+    );
 }
 
 /// # Safety
