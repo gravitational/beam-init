@@ -20,8 +20,8 @@ use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{
-    _exit, cerr, close_range, exit_with_signal, getpid, getrlimit, ipc_barrier, setpgid, setrlimit,
-    setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, getpid, getrlimit, ipc_barrier, set_blocking,
+    set_nonblocking, setpgid, setrlimit, setsid, waitpid,
 };
 
 unsafe extern "C" {
@@ -145,6 +145,16 @@ pub(crate) fn spawn_service(
         unsafe_fork!({
             drop(monitor_tx);
             drop(monitor_sync_rx);
+
+            // Make sure we don't block when writing an error, even if the
+            // log pipe is full. Otherwise the main process and the monitor
+            // will deadlock until the monitor is killed. Not blocking may
+            // cause us to lose part of the error message, but that is
+            // better than a deadlock.
+            expect_no_panic(
+                set_nonblocking(&log_writer),
+                "failed to set log pipe as non-blocking",
+            );
 
             set_log_stdioe(log_writer);
 
@@ -415,7 +425,6 @@ unsafe fn fork_and_exec_with_creds_and_err_pipe(
             );
         }
 
-        // Using raw syscall as musl doesn't have a close_range() wrapper.
         expect_no_panic(
             close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
             "failed to `close_range",
@@ -425,6 +434,13 @@ unsafe fn fork_and_exec_with_creds_and_err_pipe(
         // supplementary group list.
         expect_no_panic(credentials.set_creds(), "failed to set process credentials");
 
+        // WARNING: touching stdioe and thus expect_no_panic is no longer allowed after this point
+        // to prevent potential deadlocks.
+        expect_no_panic(
+            set_blocking(&std::io::stderr()),
+            "failed to set log pipe as blocking",
+        );
+
         // SAFETY: Per the safety requirements of this function, args and env is a NULL
         // terminated lists of C strings.
         unsafe {
@@ -433,15 +449,11 @@ unsafe fn fork_and_exec_with_creds_and_err_pipe(
         };
 
         // If we reach this point, the exec failed.
-        let Some(err) = io::Error::last_os_error().raw_os_error() else {
-            eprintln!("last_os_error didn't return OS error");
-            _exit(101);
-        };
+        // SAFETY: __errno_location() returns a pointer that can be dereferenced on the current
+        // thread without causing data races.
+        let err = unsafe { *libc::__errno_location() };
 
-        expect_no_panic(
-            err_tx.write_all(&i32::to_ne_bytes(err)),
-            "failed to write error code",
-        );
+        let _ = err_tx.write_all(&i32::to_ne_bytes(err));
         _exit(1);
     };
 

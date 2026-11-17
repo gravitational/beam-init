@@ -1,4 +1,5 @@
 use std::ffi::{c_int, c_uint};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::{io, process};
@@ -75,6 +76,7 @@ pub fn setpgid(pid: pid_t, pgid: pid_t) -> io::Result<()> {
 }
 
 pub fn close_range(first: c_uint, last: c_uint, flags: c_int) -> io::Result<()> {
+    // Using raw syscall as musl doesn't have a close_range() wrapper.
     // SAFETY: SYS_close_range with CLOSE_RANGE_CLOEXEC doesn't violate IO safety.
     cerr(unsafe { libc::syscall(libc::SYS_close_range, first, last, flags) as c_int }).map(|_| ())
 }
@@ -113,4 +115,36 @@ pub fn getrlimit(resource: ResourceId, rlim: &mut rlimit) -> io::Result<()> {
 pub fn setrlimit(resource: ResourceId, rlim: &rlimit) -> io::Result<()> {
     // SAFETY: We pass a valid pointer to an rlimit
     cerr(unsafe { libc::setrlimit(resource, rlim) }).map(|_| ())
+}
+
+pub fn set_nonblocking(fd: &impl AsFd) -> io::Result<()> {
+    let raw_fd = fd.as_fd().as_raw_fd();
+
+    // SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
+    // guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
+    // follow the correct forms.
+    unsafe {
+        let flags = cerr(libc::fcntl(raw_fd, libc::F_GETFL))?;
+        cerr(libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK))?;
+    }
+
+    Ok(())
+}
+
+pub fn set_blocking(fd: &impl AsFd) -> io::Result<()> {
+    let raw_fd = fd.as_fd().as_raw_fd();
+
+    // SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
+    // guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
+    // follow the correct forms.
+    unsafe {
+        let flags = cerr(libc::fcntl(raw_fd, libc::F_GETFL))?;
+        cerr(libc::fcntl(
+            raw_fd,
+            libc::F_SETFL,
+            flags & !libc::O_NONBLOCK,
+        ))?;
+    }
+
+    Ok(())
 }
