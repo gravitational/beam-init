@@ -345,7 +345,9 @@ fn set_log_stdioe(log_writer: OwnedFd) {
     // SAFETY: fd is valid and we are the sole owner
     let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
     expect_no_panic(
-        // SAFETY: as above
+        // SAFETY: dup2 is memory safe to call. This technically violates
+        // IO-safety, but nothing accessed after this point depends on
+        // stdout/stderr pointing to a particular fd.
         cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
         "failed to redirect stdin",
     );
