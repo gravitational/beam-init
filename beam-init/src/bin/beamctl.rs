@@ -37,6 +37,7 @@ fn show_error_and_exit<T>(err: beam_init_client::Error) -> T {
 
 #[derive(Debug, clap::Parser)]
 struct Cli {
+    /// Format output as json, if available
     #[arg(long, global = true)]
     json: bool,
 
@@ -55,12 +56,19 @@ enum Command {
         /// Tag to associate this service with
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         labels: Vec<Label>,
+
+        /// Start the service with a dedicated pseudoterminal and automatically attach to it
         #[arg(long)]
         pty: bool,
+
+        /// The command followed by its arguments to be started by beam-init
         #[arg(trailing_var_arg = true, index = 1, required = true, num_args = 1.., value_hint = clap::ValueHint::CommandWithArguments)]
         command: Vec<String>,
+
         #[command(flatten)]
         liveness: Option<LivenessProbe>,
+
+        /// Set environment variables for the service
         #[arg(long, value_name = "KEY=VALUE", value_parser = parse_key_value)]
         env: Vec<(String, String)>,
 
@@ -71,13 +79,14 @@ enum Command {
     },
     /// Stop a service
     Stop {
+        /// Name of the service to stop
         #[arg(
             index = 1,
             required_unless_present("selector"),
             conflicts_with("selector")
         )]
         name: Option<String>,
-        /// Lookup service by selector
+        /// Lookup service matching all comma-separated KEY=VALUE labels
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
         /// Remove this service from the list of services.
@@ -86,53 +95,58 @@ enum Command {
     },
     /// Stop a service if currently running and start it again.
     Restart {
+        /// Name of the service to restart
         #[arg(
             index = 1,
             required_unless_present("selector"),
             conflicts_with("selector")
         )]
         name: Option<String>,
-        /// Lookup service by selector
+        /// Lookup service matching all comma-separated KEY=VALUE labels
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
     },
     /// Freeze all processes of a service
     Freeze {
+        /// Name of the service to freeze
         #[arg(
             index = 1,
             required_unless_present("selector"),
             conflicts_with("selector")
         )]
         name: Option<String>,
-        /// Lookup service by selector
+        /// Lookup service matching all comma-separated KEY=VALUE labels
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
     },
     /// Resume all processes of a service
     Thaw {
+        /// Name of the service to thaw
         #[arg(
             index = 1,
             required_unless_present("selector"),
             conflicts_with("selector")
         )]
         name: Option<String>,
-        /// Lookup service by selector
+        /// Lookup service matching all comma-separated KEY=VALUE labels
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
     },
     /// Show information about a service
     Show {
+        /// Name of the service to show
         #[arg(index = 1)]
         name: String,
     },
     /// List all services
     List {
-        /// Lookup service by selector
+        /// Lookup service matching all comma-separated KEY=VALUE labels
         #[arg(long, value_delimiter=',', value_parser = parse_label)]
         selector: Vec<Label>,
     },
     /// Show logs of a service
     Logs {
+        /// Name of the service to fetch logs from
         #[arg(index = 1)]
         name: String,
         /// Follow logs as they are produced. If not enabled a snapshot of the logs will be shown.
@@ -141,6 +155,7 @@ enum Command {
     },
     /// Attach to the PTY of a running service
     Attach {
+        /// Name of the service to attach to
         #[arg(index = 1)]
         name: String,
     },
@@ -184,9 +199,11 @@ struct LivenessProbe {
     #[arg(long = "liveness-port", required = false)]
     port: u16,
 
+    /// HTTP request path for the liveness probe
     #[arg(long = "liveness-path", default_value = "/livez", requires = "port")]
     path: String,
 
+    /// Maximum retries after consecutive failed probes before probing stops
     #[arg(
         long = "liveness-max-retries",
         default_value = "1024",
@@ -194,12 +211,15 @@ struct LivenessProbe {
     )]
     max_retries: usize,
 
+    /// Delay before the first probe, in seconds
     #[arg(long = "liveness-initial-delay-seconds", value_parser = parse_duration_seconds, default_value = "0", requires = "port")]
     initial_delay: Duration,
 
+    /// Request timeout and delay between probe attempts, in seconds
     #[arg(long = "liveness-period-seconds", value_parser = parse_duration_seconds, default_value = "10", requires = "port")]
     period: Duration,
 
+    /// Consecutive probe failures required to restart the service
     #[arg(
         long = "liveness-failure-threshold",
         default_value_t = 3,
