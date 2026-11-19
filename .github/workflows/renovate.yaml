@@ -1,0 +1,134 @@
+name: Update dependencies with Renovate
+
+on:
+  pull_request:
+    paths:
+      - .github/renovate.jsonc
+      - .github/workflows/renovate.yaml
+  schedule:
+    - cron: "42 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Dry-run mode. Only the default branch may create/update PRs."
+        type: choice
+        default: full
+        options:
+          - "false"
+          - extract
+          - lookup
+          - full
+      log-level:
+        description: Log severity level
+        type: choice
+        default: debug
+        options:
+          - error
+          - warn
+          - info
+          - debug
+
+permissions: {}
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
+  RENOVATE_VERSION: 44.194.0
+
+jobs:
+  validate:
+    name: Validate Renovate configuration
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # This job has no App credentials and only validates; it never runs Renovate
+      # against PR-controlled configuration with a privileged token.
+      - name: Validate configuration
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            --entrypoint renovate-config-validator \
+            "ghcr.io/renovatebot/renovate:${RENOVATE_VERSION}" \
+            --strict .github/renovate.jsonc
+
+  run-renovate:
+    name: Update repository dependencies
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: renovate
+    permissions:
+      contents: read
+      id-token: write # env-kvstore uses GitHub OIDC to retrieve App credentials.
+    steps:
+      - name: Select run mode
+        id: setup
+        env:
+          CURRENT_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REQUESTED_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+        run: |
+          if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            echo "Non-default branch: forcing a full dry-run"
+            echo "dry-run=full" >> "$GITHUB_OUTPUT"
+            echo "base-branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry-run=$REQUESTED_DRY_RUN" >> "$GITHUB_OUTPUT"
+            echo "base-branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Get GitHub App credentials from kvstore
+        # The action derives its binary release from this tag; a SHA ref breaks it.
+        uses: gravitational/shared-workflows/tools/env-kvstore@tools/env-kvstore/v1.0.3 # zizmor: ignore[unpinned-uses]
+        with:
+          cognito-identity-pool-id: "us-west-2:da53389e-a459-4a28-bd54-43eeb8e4b579"
+          cognito-role-arn: "arn:aws:iam::247230412011:role/github-actions-cognito-oidc"
+          values: |
+            APP_ID,variable
+            PRIVATE_KEY,secret
+      - name: Generate repository-scoped App token
+        id: generate-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ env.APP_ID }}
+          private-key: ${{ env.PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+          permission-checks: read
+          permission-statuses: read
+      - name: Clear App private key
+        run: echo "PRIVATE_KEY=" >> "$GITHUB_ENV"
+      # No checkout is necessary: Renovate fetches the target repository itself.
+      - name: Renovate
+        uses: renovatebot/github-action@a63d9a7bc606f7336fd20b47f2f32259a35e6213 # v46.3.9
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_DRY_RUN: ${{ steps.setup.outputs.dry-run }}
+          RENOVATE_BASE_BRANCHES: ${{ steps.setup.outputs.base-branch }}
+          # Read the selected branch's config during manual branch dry-runs.
+          RENOVATE_USE_BASE_BRANCH_CONFIG: merge
+          LOG_LEVEL: ${{ inputs.log-level || 'debug' }}
+          RENOVATE_REPORT_TYPE: file
+          RENOVATE_REPORT_PATH: /tmp/renovate/report.json
+        with:
+          renovate-version: ${{ env.RENOVATE_VERSION }}
+          token: ${{ steps.generate-token.outputs.token }}
+          env-regex: '^(?:RENOVATE_\w+|LOG_LEVEL)$'
+      - name: Upload Renovate report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renovate-report-${{ github.run_id }}
+          path: /tmp/renovate/report.json
+          if-no-files-found: warn
+          retention-days: 30

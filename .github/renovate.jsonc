@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices"
+  ],
+  "semanticCommits": "enabled",
+  "minimumReleaseAge": "7 days",
+  "schedule": [
+    "* * 1 * *"
+  ],
+  "prConcurrentLimit": 5,
+  "labels": [
+    "renovate"
+  ],
+  "dependencyDashboardLabels": [
+    "renovate"
+  ],
+  "enabledManagers": [
+    "cargo",
+    "rust-toolchain",
+    "github-actions",
+    "dockerfile",
+    "custom.regex"
+  ],
+  // Include the tests workspace member instead of inheriting :ignoreModulesAndTests.
+  "ignorePaths": [],
+  "packageRules": [
+    {
+      "description": "Update Cargo manifests and the committed lockfile together",
+      "matchManagers": [
+        "cargo"
+      ],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Keep env-kvstore on a named release, which also selects its binary version",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "gravitational/shared-workflows"
+      ],
+      "pinDigests": false
+    },
+    {
+      "description": "Allow image updates when a registry does not publish release timestamps",
+      "matchDatasources": [
+        "docker"
+      ],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the Renovate runner image version",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/renovate\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+RENOVATE_VERSION: (?<currentValue>\\S+)"
+      ]
+    }
+  ]
+}
