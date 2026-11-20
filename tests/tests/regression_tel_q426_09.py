@@ -35,4 +35,14 @@ req(
 
 time.sleep(0.5)
 
+# Previously this would cause beam-init to hang due to the following sequence of events:
+# 1. the service moves to a new session
+# 2. the service causes writes to the pty to block by turning off output and then filling the
+#    pty buffer
+# 3. send a request to beam-init
+# 4. beam-init forwards the request to the monitor
+# 5. the monitor fails to perform the request as the service moved to a different session
+# 6. the monitor tries to write an error to the pty, which blocks
+# 7. beam-init blocks until the monitor completes the command and thus blocks on the pty output to
+#    be turned on again.
 req(path = "/service/foo/notify_pty_attached")
