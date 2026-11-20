@@ -1,26 +1,27 @@
 use std::cmp;
 use std::ffi::{CStr, CString, NulError, c_char, c_int, c_uint};
 use std::io::{self, PipeReader, PipeWriter, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::ExitStatusExt;
 use std::ptr;
 
 use libc::{
     POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, killpg, pid_t,
-    poll, pollfd, tcsetpgrp, uid_t,
+    poll, pollfd, tcsetpgrp,
 };
 
 use crate::api_impl::Credentials;
 use crate::services::ServiceConfig;
 use crate::signal_stream::OldSigmask;
 use beam_init::system::fork::unsafe_fork;
+use beam_init::system::ipc_barrier::IpcBarrierNotify;
 use beam_init::system::pty::PtyClient;
 use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
 use beam_init::system::{
-    _exit, cerr, close_range, exit_with_signal, getpid, getrlimit, ipc_barrier, setpgid, setrlimit,
-    setsid, waitpid,
+    _exit, cerr, close_range, exit_with_signal, getpid, getrlimit, ipc_barrier, set_blocking,
+    set_nonblocking, setpgid, setrlimit, setsid, waitpid,
 };
 
 unsafe extern "C" {
@@ -89,12 +90,6 @@ impl MonitorCommand {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
-pub(crate) enum Sink<'a> {
-    Log(OwnedFd),
-    PTY(PtyClient<'a>),
-}
-
 fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
     match res {
         Ok(x) => x,
@@ -108,7 +103,8 @@ fn expect_no_panic<T>(res: io::Result<T>, msg: &'static str) -> T {
 pub(crate) fn spawn_service(
     old_sigmask: OldSigmask,
     config: &ServiceConfig,
-    sink: Sink,
+    log_writer: OwnedFd,
+    pty: Option<PtyClient<'_>>,
 ) -> io::Result<(pid_t, Option<MonitorCommandSender>)> {
     let cmd = CString::new(config.cmd.clone())?;
 
@@ -139,8 +135,6 @@ pub(crate) fn spawn_service(
         .chain(Some(ptr::null_mut()))
         .collect::<Box<[_]>>();
 
-    let has_ctty = matches!(sink, Sink::PTY(_));
-
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
     let (mut monitor_rx, monitor_tx) = io::pipe()?;
@@ -152,6 +146,18 @@ pub(crate) fn spawn_service(
             drop(monitor_tx);
             drop(monitor_sync_rx);
 
+            // Make sure we don't block when writing an error, even if the
+            // log pipe is full. Otherwise the main process and the monitor
+            // will deadlock until the monitor is killed. Not blocking may
+            // cause us to lose part of the error message, but that is
+            // better than a deadlock.
+            expect_no_panic(
+                set_nonblocking(&log_writer),
+                "failed to set log pipe as non-blocking",
+            );
+
+            set_log_stdioe(log_writer);
+
             expect_no_panic(old_sigmask.restore_sigmask(), "failed to restore sigmask");
 
             // Create a new session and process group led by this process.
@@ -160,68 +166,29 @@ pub(crate) fn spawn_service(
             // hang if the container has a tty attached.
             expect_no_panic(setsid(), "failed to setsid");
 
-            sink.set_stdioe(config.credentials.uid);
-
-            if !has_ctty {
-                // Double fork to ensure the service can't accidentally attach a
-                // controlling tty to the session when opening a file that happens
-                // to be a tty.
-
-                let service_pid = expect_no_panic(
-                    unsafe_fork!({
-                        // Create a new process group led by this process.
-                        // Uses the current PID as the PGID of the new process group.
-                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
-
-                        // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(
-                            &cmd,
-                            &args,
-                            &mut envp,
-                            &config.credentials,
-                            err_tx,
-                        )
-                    }),
-                    "failed to fork",
-                );
-                drop(err_tx);
-
-                expect_no_panic(
-                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
-                    "failed to write pid",
+            if let Some(pty) = pty {
+                let pty_fd = expect_no_panic(
+                    pty.make_tty(config.credentials.uid),
+                    "could not make the pty the controlling terminal",
                 );
 
-                _exit(0);
-            } else {
                 let sigset =
                     expect_no_panic(SignalSet::new(&[SIGCHLD]), "failed to create signal set");
                 let old_sigset = expect_no_panic(sigset.block(), "failed to block SIGCHLD");
                 let mut signals =
                     expect_no_panic(SignalFd::new(&sigset), "failed to create signalfd");
 
-                let service_pid = expect_no_panic(
-                    unsafe_fork!({
-                        expect_no_panic(old_sigset.set_mask(), "failed to unblock SIGCHLD");
-
-                        // Create a new process group led by this process.
-                        // Uses the current PID as the PGID of the new process group.
-                        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
-
-                        drop(pgid_sync_tx);
-
-                        // SAFETY: args is a NULL terminated list of C strings.
-                        exec_with_creds_and_err_pipe(
-                            &cmd,
-                            &args,
-                            &mut envp,
-                            &config.credentials,
-                            err_tx,
-                        )
-                    }),
-                    "failed to fork",
+                // SAFETY: args is a NULL terminated list of C strings.
+                let service_pid = fork_and_exec_with_creds_and_err_pipe(
+                    &cmd,
+                    &args,
+                    &mut envp,
+                    &config.credentials,
+                    Some(pty_fd.as_fd()),
+                    err_tx,
+                    Some(old_sigset),
+                    pgid_sync_tx,
                 );
-                drop(err_tx);
-                drop(pgid_sync_tx);
 
                 // FIXME user should probably see child pid
                 let self_pid = getpid();
@@ -268,7 +235,7 @@ pub(crate) fn spawn_service(
                             }
                             MonitorCommand::Foreground => {
                                 expect_no_panic(
-                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, service_pid)),
+                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), service_pid)),
                                     "failed to `tcsetpgrp`",
                                 );
                                 expect_no_panic(
@@ -282,7 +249,7 @@ pub(crate) fn spawn_service(
                                     "failed to send SIGTSTP",
                                 );
                                 expect_no_panic(
-                                    cerr(tcsetpgrp(libc::STDOUT_FILENO, self_pid)),
+                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), self_pid)),
                                     "failed to `tcsetpgrp`",
                                 );
                             }
@@ -323,6 +290,29 @@ pub(crate) fn spawn_service(
                         }
                     }
                 }
+            } else {
+                // Double fork to ensure the service can't accidentally attach a
+                // controlling tty to the session when opening a file that happens
+                // to be a tty.
+
+                // SAFETY: args is a NULL terminated list of C strings.
+                let service_pid = fork_and_exec_with_creds_and_err_pipe(
+                    &cmd,
+                    &args,
+                    &mut envp,
+                    &config.credentials,
+                    None,
+                    err_tx,
+                    None,
+                    pgid_sync_tx,
+                );
+
+                expect_no_panic(
+                    pid_tx.write_all(&pid_t::to_ne_bytes(service_pid)),
+                    "failed to write pid",
+                );
+
+                _exit(0);
             }
         })?
     };
@@ -337,7 +327,8 @@ pub(crate) fn spawn_service(
             pid_rx.read_exact(&mut child_pid)?;
             Ok((
                 pid_t::from_ne_bytes(child_pid),
-                has_ctty.then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
+                pty.is_some()
+                    .then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
             ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),
@@ -345,115 +336,129 @@ pub(crate) fn spawn_service(
     }
 }
 
-impl Sink<'_> {
-    fn set_stdioe(self, uid: uid_t) {
-        match self {
-            Sink::PTY(pty) => {
-                let pty_fd = expect_no_panic(
-                    pty.make_tty(uid),
-                    "could not make the pty the controlling terminal",
-                );
-
-                // Set the pseudoterminal as stdin, stdout and stderr
-                expect_no_panic(
-                    [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
-                        .into_iter()
-                        .try_for_each(|fd| {
-                            // SAFETY: dup2 is memory safe to call. This technically violates
-                            // IO-safety, but nothing accessed after this point depends on
-                            // stdout/stderr pointing to a particular fd.
-                            cerr(unsafe { libc::dup2(pty_fd.as_raw_fd(), fd) })?;
-                            Ok(())
-                        }),
-                    "failed to attach pty",
-                );
-            }
-            Sink::Log(log_writer) => {
-                let null_fd = expect_no_panic(
-                    // SAFETY: open is async-signal-safe. CStr is valid and nul-terminated.
-                    cerr(unsafe {
-                        libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC)
-                    }),
-                    "failed to get /dev/null fd",
-                );
-                // SAFETY: fd is valid and we are the sole owner
-                let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
-                    "failed to redirect stdin",
-                );
-                // Set the log pipe as stdout and stderr
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
-                    "failed to set stdout",
-                );
-                expect_no_panic(
-                    // SAFETY: as above
-                    cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
-                    "failed to set stderr",
-                );
-            }
-        }
-    }
+fn set_log_stdioe(log_writer: OwnedFd) {
+    let null_fd = expect_no_panic(
+        // SAFETY: open is async-signal-safe. CStr is valid and nul-terminated.
+        cerr(unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) }),
+        "failed to get /dev/null fd",
+    );
+    // SAFETY: fd is valid and we are the sole owner
+    let null_fd = unsafe { OwnedFd::from_raw_fd(null_fd) };
+    expect_no_panic(
+        // SAFETY: dup2 is memory safe to call. This technically violates
+        // IO-safety, but nothing accessed after this point depends on
+        // stdout/stderr pointing to a particular fd.
+        cerr(unsafe { libc::dup2(null_fd.as_raw_fd(), libc::STDIN_FILENO) }),
+        "failed to redirect stdin",
+    );
+    // Set the log pipe as stdout and stderr
+    expect_no_panic(
+        // SAFETY: as above
+        cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDOUT_FILENO) }),
+        "failed to set stdout",
+    );
+    expect_no_panic(
+        // SAFETY: as above
+        cerr(unsafe { libc::dup2(log_writer.as_raw_fd(), libc::STDERR_FILENO) }),
+        "failed to set stderr",
+    );
 }
 
 /// # Safety
 ///
 /// `args` must be a NULL terminated list of C strings.
 /// `envp` must be a NULL terminated list of C strings.
-unsafe fn exec_with_creds_and_err_pipe(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "function inherently manipulates a lot of process state"
+)]
+unsafe fn fork_and_exec_with_creds_and_err_pipe(
     cmd: &CStr,
     args: &[*const c_char],
     envp: &mut [*mut c_char],
     credentials: &Credentials,
+    stdioe: Option<BorrowedFd<'_>>,
     mut err_tx: PipeWriter,
-) -> ! {
-    // Set RLIMIT_NOFILE soft limit to 1024 for compatibility with apps that
-    // use the legacy select libc call, while still allowing them to increase
-    // the soft limit themself when they need to by keeping the hard limit
-    // relatively high. This matches the behavior of systemd.
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
+    old_sigset: Option<SignalSet>,
+    pgid_sync_tx: IpcBarrierNotify,
+) -> pid_t {
+    let child = move || {
+        if let Some(old_sigset) = old_sigset {
+            expect_no_panic(old_sigset.set_mask(), "failed to unblock SIGCHLD");
+        }
+
+        // Set RLIMIT_NOFILE soft limit to 1024 for compatibility with apps that
+        // use the legacy select libc call, while still allowing them to increase
+        // the soft limit themself when they need to by keeping the hard limit
+        // relatively high. This matches the behavior of systemd.
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        expect_no_panic(
+            getrlimit(libc::RLIMIT_NOFILE, &mut limit),
+            "failed to getrlimit",
+        );
+        limit.rlim_cur = cmp::min(limit.rlim_max, 1024);
+        expect_no_panic(
+            setrlimit(libc::RLIMIT_NOFILE, &limit),
+            "failed to setrlimit",
+        );
+
+        // Create a new process group led by this process.
+        // Uses the current PID as the PGID of the new process group.
+        expect_no_panic(setpgid(0, 0), "failed to `setpgid`");
+
+        drop(pgid_sync_tx);
+
+        if let Some(stdioe) = stdioe {
+            // Set the pseudoterminal as stdin, stdout and stderr
+            expect_no_panic(
+                [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+                    .into_iter()
+                    .try_for_each(|fd| {
+                        // SAFETY: dup2 is memory safe to call. This technically violates
+                        // IO-safety, but nothing accessed after this point depends on
+                        // stdout/stderr pointing to a particular fd.
+                        cerr(unsafe { libc::dup2(stdioe.as_raw_fd(), fd) })?;
+                        Ok(())
+                    }),
+                "failed to attach pty",
+            );
+        }
+
+        expect_no_panic(
+            close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
+            "failed to `close_range",
+        );
+
+        // Set the group and user ID (derived from socket) as well as an empty
+        // supplementary group list.
+        expect_no_panic(credentials.set_creds(), "failed to set process credentials");
+
+        // WARNING: touching stdioe and thus expect_no_panic is no longer allowed after this point
+        // to prevent potential deadlocks.
+        expect_no_panic(
+            set_blocking(&std::io::stderr()),
+            "failed to set log pipe as blocking",
+        );
+
+        // SAFETY: Per the safety requirements of this function, args and env is a NULL
+        // terminated lists of C strings.
+        unsafe {
+            environ = envp.as_mut_ptr();
+            libc::execvp(cmd.as_ptr(), args.as_ptr())
+        };
+
+        // If we reach this point, the exec failed.
+        // SAFETY: __errno_location() returns a pointer that can be dereferenced on the current
+        // thread without causing data races.
+        let err = unsafe { *libc::__errno_location() };
+
+        let _ = err_tx.write_all(&i32::to_ne_bytes(err));
+        _exit(1);
     };
-    expect_no_panic(
-        getrlimit(libc::RLIMIT_NOFILE, &mut limit),
-        "failed to getrlimit",
-    );
-    limit.rlim_cur = cmp::min(limit.rlim_max, 1024);
-    expect_no_panic(
-        setrlimit(libc::RLIMIT_NOFILE, &limit),
-        "failed to setrlimit",
-    );
 
-    // Using raw syscall as musl doesn't have a close_range() wrapper.
-    expect_no_panic(
-        close_range(3, c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC.cast_signed()),
-        "failed to `close_range",
-    );
-
-    // Set the group and user ID (derived from socket) as well as an empty
-    // supplementary group list.
-    expect_no_panic(credentials.set_creds(), "failed to set process credentials");
-
-    // SAFETY: Per the safety requirements of this function, args and env is a NULL
-    // terminated lists of C strings.
-    unsafe {
-        environ = envp.as_mut_ptr();
-        libc::execvp(cmd.as_ptr(), args.as_ptr())
-    };
-
-    // If we reach this point, the exec failed.
-    let Some(err) = io::Error::last_os_error().raw_os_error() else {
-        eprintln!("last_os_error didn't return OS error");
-        _exit(101);
-    };
-
-    expect_no_panic(
-        err_tx.write_all(&i32::to_ne_bytes(err)),
-        "failed to write error code",
-    );
-    _exit(1);
+    // SAFETY: We only run async-signal-safe functions inside the child process.
+    unsafe { expect_no_panic(unsafe_fork!({ child() }), "failed to fork") }
 }

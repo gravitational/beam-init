@@ -1,9 +1,10 @@
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use beam_init::system::set_nonblocking;
+use beam_init::system::signal_set::SignalSet;
 use beam_init::system::signalfd::SignalFd;
-use beam_init::system::{cerr, signal_set::SignalSet};
 
 mod user_term;
 use beam_init_client::blocking::Client;
@@ -90,20 +91,6 @@ pub(super) fn manage(name: &str, pty: OwnedFd) -> io::Result<()> {
             }
         }
     }
-}
-
-fn set_nonblocking(fd: &impl AsFd) -> io::Result<()> {
-    let raw_fd = fd.as_fd().as_raw_fd();
-
-    // SAFETY: see man fcntl(2): it is passed a correct fd (since we lean on the
-    // guarantees a type that implements AsFd must have), and the calls for F_GETFL and F_SETFL
-    // follow the correct forms.
-    unsafe {
-        let flags = cerr(libc::fcntl(raw_fd, libc::F_GETFL))?;
-        cerr(libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK))?;
-    }
-
-    Ok(())
 }
 
 fn terminated<T>(result: io::Result<T>) -> io::Result<bool> {
