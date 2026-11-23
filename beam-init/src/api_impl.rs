@@ -433,6 +433,7 @@ impl From<&crate::services::Service> for beam_init_api::Service {
             cmd: value.config.cmd.clone(),
             args: value.config.args.clone(),
             status: (&value.state.status).into(),
+            liveness: value.config.liveness.clone(),
             automatic_restart_attempts: value.state.automatic_restart_attempts,
             labels: value.config.labels.clone(),
         }

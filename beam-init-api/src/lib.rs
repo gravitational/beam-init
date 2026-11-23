@@ -80,6 +80,9 @@ pub struct Service {
     /// Current runtime status of the service.
     pub status: ServiceStatus,
 
+    /// Optional HTTP liveness probe configuration.
+    pub liveness: Option<Probe>,
+
     /// Number of automatic restart attempts since start.
     pub automatic_restart_attempts: u32,
 
