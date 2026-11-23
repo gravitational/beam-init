@@ -83,6 +83,8 @@ pub struct Service {
     /// Optional HTTP liveness probe configuration.
     pub liveness: Option<Probe>,
 
+    // FIXME liveness probe state
+
     /// Number of automatic restart attempts since start.
     pub automatic_restart_attempts: u32,
 
