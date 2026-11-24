@@ -3,6 +3,7 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_core::Stream;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -22,6 +23,7 @@ pub struct Logs {
 pub struct AsyncRingBuffer {
     entries: Mutex<RingBuffer>,
     next_entry: Notify,
+    closed: AtomicBool,
 }
 
 impl AsyncRingBuffer {
@@ -29,11 +31,19 @@ impl AsyncRingBuffer {
         Self {
             entries: Mutex::new(RingBuffer::new(capacity)),
             next_entry: Notify::new(),
+            closed: AtomicBool::new(false),
         }
     }
 
     pub async fn push(&self, line: String) {
         self.entries.lock().await.push(line);
+        self.next_entry.notify_waiters();
+    }
+
+    /// Wake every reader. `notify_waiters` does not store a permit, so `closed`
+    /// is set first and readers observe it after they wake.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         self.next_entry.notify_waiters();
     }
 }
@@ -101,7 +111,12 @@ impl Logs {
                         yield "[log entries lost]".to_owned();
                         continue;
                     }
-                    RingBufferEntry::Empty => {},
+                    RingBufferEntry::Empty => {
+                        // The service was pruned: Logs is gone and no further lines will arrive.
+                        if queue.closed.load(Ordering::Acquire) {
+                            break;
+                        }
+                    }
                 }
 
                 next_entry_notified.await;
@@ -118,6 +133,9 @@ impl Logs {
 
 impl Drop for Logs {
     fn drop(&mut self) {
+        // Readers keep their own Arc, so dropping the service does not drop the buffer.
+        // Without this, `logs --follow` waits forever after a prune.
+        self.queue.close();
         if let Some(handle) = self.abort_handle.take() {
             handle.abort();
         }
@@ -298,6 +316,30 @@ mod tests {
         assert_eq!(
             r1.next_segment().await.unwrap().as_deref(),
             Some(&b"xx"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_finishes_when_logs_are_dropped() {
+        use std::num::NonZeroUsize;
+        use std::time::Duration;
+
+        use tokio_stream::StreamExt;
+
+        let logs = super::Logs::new(
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(80).unwrap(),
+        );
+        logs.queue.push("hello".to_owned()).await;
+        let mut reader = std::pin::pin!(logs.new_reader());
+        assert_eq!(reader.next().await.as_deref(), Some("hello"));
+        drop(logs);
+        let ended = tokio::time::timeout(Duration::from_millis(500), reader.next()).await;
+        assert_eq!(
+            ended
+                .expect("reader should finish when logs are dropped")
+                .as_deref(),
+            None
         );
     }
 }
