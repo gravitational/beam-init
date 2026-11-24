@@ -64,6 +64,21 @@ impl Service {
         }
     }
 
+    /// Record that the main process exited, without closing its PTY master.
+    fn mark_exited(&mut self, status: ExitStatus) {
+        let previous = mem::replace(&mut self.state.status, ServiceStatus::Dummy);
+        let pty = match previous {
+            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => pty,
+            other => {
+                self.state.status = other;
+                return;
+            }
+        };
+        self.state.retained_pty = pty;
+        self.set_status(ServiceStatus::Exited(status));
+        self.abort_liveness_probe();
+    }
+
     /// (Re)start the liveness probe task for a service.
     fn spawn_liveness_probe(&mut self, name: String, tx_event: mpsc::Sender<Event>) {
         let Some(probe) = self.config.liveness.clone() else {
@@ -142,6 +157,9 @@ impl ServiceConfig {
 pub(crate) struct ServiceState {
     pub(crate) status: ServiceStatus,
     pub(crate) logs: Logs,
+    /// PTY master kept after the service exits so a late attach can still read
+    /// output that was written before the process was reaped.
+    pub(crate) retained_pty: Option<Pty>,
     pub(crate) automatic_restart_attempts: u32,
     pub(crate) liveness_probe: Option<AbortHandle>,
     service_status_publisher: ServiceStatusPublisher,
@@ -349,8 +367,7 @@ impl ServiceManager {
                         ServiceStatus::Running { ref process, .. }
                         | ServiceStatus::Frozen { ref process, .. } => {
                             if process.main_pid == pid {
-                                service.set_status(ServiceStatus::Exited(status));
-                                service.abort_liveness_probe();
+                                service.mark_exited(status);
                                 break;
                             }
                         }
@@ -450,6 +467,7 @@ impl ServiceManager {
                     state: ServiceState {
                         status: ServiceStatus::Stopped,
                         logs,
+                        retained_pty: None,
                         automatic_restart_attempts: 0,
                         liveness_probe: None,
                         service_status_publisher: ServiceStatusPublisher::new(
@@ -519,6 +537,7 @@ impl ServiceManager {
                 name: name.to_owned(),
             })?;
         service.check_credentials(credentials)?;
+        service.state.retained_pty = None;
 
         eprintln!("Starting service {name}");
 
@@ -791,27 +810,24 @@ impl ServiceManager {
 
     pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
         let service = self.get_service(credentials, &name)?;
-        match &service.state.status {
-            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => {
-                if let Some(pty) = pty {
-                    match pty.master.try_clone() {
-                        Ok(fd) => Ok(fd),
-                        Err(err) if err.raw_os_error() == Some(libc::EMFILE) => {
-                            Err(ServiceError::TooManyOpenFiles)
-                        }
-                        Err(err) => panic!("Failed to dup PTY fd: {err}"),
-                    }
-                } else {
-                    Err(ServiceError::NoPty { name })
-                }
-            }
-
+        let pty = match &service.state.status {
+            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => pty.as_ref(),
             ServiceStatus::Stopped
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => Err(ServiceError::NoPty { name }),
-
+            | ServiceStatus::Error(_) => service.state.retained_pty.as_ref(),
             ServiceStatus::Dummy => unreachable!(),
+        };
+
+        let Some(pty) = pty else {
+            return Err(ServiceError::NoPty { name });
+        };
+        match pty.master.try_clone() {
+            Ok(fd) => Ok(fd),
+            Err(err) if err.raw_os_error() == Some(libc::EMFILE) => {
+                Err(ServiceError::TooManyOpenFiles)
+            }
+            Err(err) => panic!("Failed to dup PTY fd: {err}"),
         }
     }
 
@@ -1150,6 +1166,132 @@ mod tests {
         assert!(url_from_probe(&probe).is_err(), "path must start with '/'");
 
         Ok(())
+    }
+
+    #[test]
+    fn pty_output_readable_after_service_exit() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::time::{Duration, Instant};
+
+        let pty = Pty::new().expect("pty");
+        let unlocked: libc::c_int = 0;
+        // SAFETY: TIOCSPTLCK unlocks this pty master. The pointer is a valid c_int.
+        let rc = unsafe { libc::ioctl(pty.master.as_raw_fd(), libc::TIOCSPTLCK, &unlocked) };
+        assert_eq!(rc, 0, "unlockpt: {}", std::io::Error::last_os_error());
+
+        let slave = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pty.path)
+            .expect("open slave");
+        let slave_fd = slave.as_raw_fd();
+
+        // SAFETY: the child only writes to the slave and _exit, both async-signal-safe.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            let msg = b"hello-from-pty\n";
+            // SAFETY: slave_fd is the inherited pty slave; write length matches msg.
+            unsafe {
+                libc::write(slave_fd, msg.as_ptr().cast(), msg.len());
+                libc::_exit(0);
+            }
+        }
+        assert!(pid > 0, "fork failed");
+        drop(slave);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut zombie = false;
+        while Instant::now() < deadline {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            if let Some(end) = stat.rfind(')') {
+                let state = stat[end + 1..].trim_start();
+                if state.starts_with('Z') {
+                    zombie = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(zombie, "child {pid} did not become a zombie");
+
+        let (tx_event, _rx) = mpsc::channel(1);
+        let mut manager = ServiceManager::new(
+            crate::signal_stream::OldSigmask::for_test(),
+            tx_event,
+            Vec::new(),
+            NonZeroUsize::new(8).unwrap(),
+            NonZeroUsize::new(1024).unwrap(),
+            CancellationToken::new(),
+        );
+        manager.services.insert(
+            "fast".to_owned(),
+            Service {
+                config: ServiceConfig {
+                    cmd: "echo".to_owned(),
+                    args: vec!["hello-from-pty".to_owned()],
+                    env: BTreeMap::new(),
+                    labels: BTreeMap::new(),
+                    liveness: None,
+                    pty: true,
+                    credentials: Credentials::root(),
+                    graceful_termination_period: 5,
+                },
+                state: ServiceState {
+                    status: ServiceStatus::Running {
+                        process: ServiceProcess {
+                            main_pid: pid,
+                            monitor_tx: None,
+                        },
+                        pty: Some(pty),
+                    },
+                    logs: Logs::new(
+                        NonZeroUsize::new(8).unwrap(),
+                        NonZeroUsize::new(1024).unwrap(),
+                    ),
+                    retained_pty: None,
+                    automatic_restart_attempts: 0,
+                    liveness_probe: None,
+                    service_status_publisher: ServiceStatusPublisher::new(
+                        beam_init_api::ServiceStatus::Running {
+                            main_pid: pid,
+                            pty: None,
+                        },
+                    ),
+                },
+            },
+        );
+
+        // SAFETY: signalfd_siginfo is a plain C struct; only ssi_signo is read.
+        let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+        info.ssi_signo = libc::SIGCHLD as u32;
+        manager.handle_signal(info);
+
+        match &manager.services["fast"].state.status {
+            ServiceStatus::Exited(_) => {}
+            other => panic!("expected Exited after SIGCHLD, got {other:?}"),
+        }
+
+        let fd = manager
+            .get_pty(Credentials::root(), "fast".to_owned())
+            .expect("pty master must stay readable after the service exits");
+        let mut file = std::fs::File::from(fd);
+        let mut output = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buf[..n]),
+                Err(err) if err.raw_os_error() == Some(libc::EIO) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => panic!("read pty: {err}"),
+            }
+        }
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("hello-from-pty"),
+            "missing service output in retained pty: {text:?}"
+        );
     }
 }
 

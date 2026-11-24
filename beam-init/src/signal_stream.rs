@@ -37,4 +37,9 @@ impl OldSigmask {
         self.0.set_mask()?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self(SignalSet::new(&[]).expect("empty signal set"))
+    }
 }
