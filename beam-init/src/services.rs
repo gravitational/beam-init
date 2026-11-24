@@ -185,15 +185,15 @@ pub(crate) enum ServiceStatus {
 #[derive(Debug)]
 pub(crate) struct ServiceProcess {
     pub(crate) main_pid: pid_t,
-    monitor_tx: Option<MonitorCommandSender>,
+    cmd_tx: Option<MonitorCommandSender>,
 }
 
 impl ServiceProcess {
     fn send_signal(&mut self, signal: c_int) {
-        if let Some(monitor_tx) = &mut self.monitor_tx {
-            monitor_tx
+        if let Some(cmd_tx) = &mut self.cmd_tx {
+            cmd_tx
                 .signal(signal)
-                .expect("failed to send command on monitor pipe");
+                .expect("failed to send command on monitor cmd pipe");
         } else {
             kill_process_group(self.main_pid, signal).expect("process to exist");
         }
@@ -558,11 +558,11 @@ impl ServiceManager {
         });
 
         match spawn_service(old_sigmask, &service.config, log_writer, pty_client) {
-            Ok((child_pid, monitor_tx)) => {
+            Ok((child_pid, cmd_tx)) => {
                 service.set_status(ServiceStatus::Running {
                     process: ServiceProcess {
                         main_pid: child_pid,
-                        monitor_tx,
+                        cmd_tx,
                     },
                     pty,
                 });
@@ -825,10 +825,10 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running { process, pty: _ }
             | ServiceStatus::Frozen { process, pty: _ } => {
-                if let Some(monitor_tx) = &mut process.monitor_tx {
-                    monitor_tx
+                if let Some(cmd_tx) = &mut process.cmd_tx {
+                    cmd_tx
                         .foreground()
-                        .expect("failed to send command on monitor pipe");
+                        .expect("failed to send command on monitor cmd pipe");
                 }
             }
 
@@ -855,10 +855,10 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running { process, pty: _ }
             | ServiceStatus::Frozen { process, pty: _ } => {
-                if let Some(monitor_tx) = &mut process.monitor_tx {
-                    monitor_tx
+                if let Some(cmd_tx) = &mut process.cmd_tx {
+                    cmd_tx
                         .background()
-                        .expect("failed to send command on monitor pipe");
+                        .expect("failed to send command on monitor cmd pipe");
                 }
             }
 
