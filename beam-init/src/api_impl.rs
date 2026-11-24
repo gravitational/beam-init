@@ -29,7 +29,7 @@ use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionRespon
 
 pub type Reply<T> = oneshot::Sender<Result<T, ServiceError>>;
 
-pub struct LogStream(Pin<Box<dyn Stream<Item = String> + Send + 'static>>);
+pub struct LogStream(Pin<Box<dyn Stream<Item = String> + Send>>);
 
 impl std::fmt::Debug for LogStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -97,7 +97,6 @@ pub enum Command {
     },
     WaitService {
         name: String,
-        credentials: Credentials,
         reply: Reply<ServiceStatusSubscription>,
     },
 }
@@ -348,7 +347,7 @@ async fn service_logs(
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
     query: Query<ServiceLogsQuery>,
-) -> Response {
+) -> Result<Response, ServiceError> {
     if query.follow {
         let (tx, rx) = oneshot::channel();
         let cmd = Command::FollowLogs { name, reply: tx };
@@ -359,17 +358,13 @@ async fn service_logs(
             })
             .await
             .expect("main task crashed");
-        match rx.await.expect("main task crashed") {
-            Ok(LogStream(stream)) => {
-                let body = Body::from_stream(stream.map(|mut line| {
-                    line.push('\n');
-                    Ok::<_, std::convert::Infallible>(line)
-                }));
+        let LogStream(stream) = rx.await.expect("main task crashed")?;
+        let body = Body::from_stream(stream.map(|mut line| {
+            line.push('\n');
+            Ok::<_, std::convert::Infallible>(line)
+        }));
 
-                ([(axum::http::header::CONTENT_TYPE, "text/plain")], body).into_response()
-            }
-            Err(e) => e.into_response(),
-        }
+        Ok(([(axum::http::header::CONTENT_TYPE, "text/plain")], body).into_response())
     } else {
         let (tx, rx) = oneshot::channel();
         let cmd = Command::ServiceLogs { name, reply: tx };
@@ -380,17 +375,15 @@ async fn service_logs(
             })
             .await
             .expect("main task crashed");
-        match rx.await.expect("main task crashed") {
-            Ok(logs) => logs
-                .into_iter()
-                .map(|mut line| {
-                    line.push('\n');
-                    line
-                })
-                .collect::<String>()
-                .into_response(),
-            Err(e) => e.into_response(),
-        }
+        let logs = rx.await.expect("main task crashed")?;
+        Ok(logs
+            .into_iter()
+            .map(|mut line| {
+                line.push('\n');
+                line
+            })
+            .collect::<String>()
+            .into_response())
     }
 }
 
@@ -461,11 +454,7 @@ async fn wait_service(
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::WaitService {
-                name,
-                credentials,
-                reply: tx,
-            },
+            command: Command::WaitService { name, reply: tx },
             credentials,
         })
         .await
@@ -680,11 +669,7 @@ pub async fn handle_api_command(
             service_manager.force_kill_service(&name, token);
             let _ = reply.send(Ok(()));
         }
-        Command::WaitService {
-            name,
-            credentials,
-            reply: tx,
-        } => {
+        Command::WaitService { name, reply: tx } => {
             let _ = tx.send(service_manager.subscribe(credentials, &name));
         }
     }
