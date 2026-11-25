@@ -7,8 +7,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::ptr;
 
 use libc::{
-    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, WUNTRACED,
-    killpg, pid_t, poll, pollfd, tcsetpgrp,
+    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTTOU, WNOHANG, WUNTRACED, killpg,
+    pid_t, poll, pollfd, tcsetpgrp,
 };
 
 use crate::api_impl::Credentials;
@@ -56,17 +56,12 @@ impl MonitorCommandSender {
     pub(crate) fn foreground(&mut self) -> io::Result<()> {
         self.send(MonitorCommand::Foreground)
     }
-
-    pub(crate) fn background(&mut self) -> io::Result<()> {
-        self.send(MonitorCommand::Background)
-    }
 }
 
 #[derive(Debug)]
 enum MonitorCommand {
     Signal(c_int),
     Foreground,
-    Background,
 }
 
 impl MonitorCommand {
@@ -76,7 +71,6 @@ impl MonitorCommand {
                 (sig.cast_unsigned()).try_into().expect("invalid signal")
             }
             MonitorCommand::Foreground => -1i8,
-            MonitorCommand::Background => -2,
         }
         .cast_unsigned()
     }
@@ -84,7 +78,6 @@ impl MonitorCommand {
     fn de(b: u8) -> MonitorCommand {
         match b.cast_signed() {
             -1 => MonitorCommand::Foreground,
-            -2 => MonitorCommand::Background,
             b if b >= 0 => MonitorCommand::Signal(b.into()),
             _ => unreachable!(),
         }
@@ -244,16 +237,6 @@ pub(crate) fn spawn_service(
                                 expect_no_panic(
                                     cerr(killpg(service_pid, SIGCONT)),
                                     "failed to send SIGCONT",
-                                );
-                            }
-                            MonitorCommand::Background => {
-                                expect_no_panic(
-                                    cerr(killpg(service_pid, SIGTSTP)),
-                                    "failed to send SIGTSTP",
-                                );
-                                expect_no_panic(
-                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), self_pid)),
-                                    "failed to `tcsetpgrp`",
                                 );
                             }
                         }

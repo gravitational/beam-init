@@ -80,10 +80,6 @@ pub enum Command {
         name: String,
         reply: Reply<()>,
     },
-    NotifyPtyDetached {
-        name: String,
-        reply: Reply<()>,
-    },
     ForceKillService {
         name: String,
         token: TerminationToken,
@@ -162,10 +158,6 @@ pub fn bind_api_socket(
         .route(
             "/service/{name}/notify_pty_attached",
             post(notify_pty_attached),
-        )
-        .route(
-            "/service/{name}/notify_pty_detached",
-            post(notify_pty_detached),
         )
         .route("/service/{name}/wait", get(wait_service))
         .route("/version", get(version))
@@ -396,22 +388,6 @@ async fn notify_pty_attached(
     rx.await.expect("main task crashed").map(Json)
 }
 
-async fn notify_pty_detached(
-    Path(name): Path<String>,
-    State(tx_events): State<mpsc::Sender<Event>>,
-    ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Result<Json<()>, ServiceError> {
-    let (tx, rx) = oneshot::channel();
-    tx_events
-        .send(Event::Command {
-            command: Command::NotifyPtyDetached { name, reply: tx },
-            credentials,
-        })
-        .await
-        .expect("main task crashed");
-    rx.await.expect("main task crashed").map(Json)
-}
-
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub(crate) struct WaitConditionQuery {
     state: beam_init_api::ServiceStatusKind,
@@ -630,9 +606,6 @@ pub async fn handle_api_command(
         }
         Command::NotifyPtyAttached { name, reply } => {
             let _ = reply.send(service_manager.notify_pty_attached(credentials, &name));
-        }
-        Command::NotifyPtyDetached { name, reply } => {
-            let _ = reply.send(service_manager.notify_pty_detached(credentials, &name));
         }
         Command::ForceKillService { name, token, reply } => {
             service_manager.force_kill_service(&name, token);

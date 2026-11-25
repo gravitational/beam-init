@@ -866,36 +866,6 @@ impl ServiceManager {
         Ok(())
     }
 
-    pub fn notify_pty_detached(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        match &mut service.state.status {
-            ServiceStatus::Running { process, pty: _ }
-            | ServiceStatus::Frozen { process, pty: _ } => {
-                if let Some((cmd_tx, _event_rx)) = &mut process.cmd_and_event {
-                    cmd_tx
-                        .background()
-                        .expect("failed to send command on monitor cmd pipe");
-                }
-            }
-
-            ServiceStatus::Stopped
-            | ServiceStatus::Stopping { .. }
-            | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
-                // Nothing to do
-            }
-
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(())
-    }
-
     pub fn user_env_files(&self) -> &[PathBuf] {
         &self.user_env_files
     }
