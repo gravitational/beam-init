@@ -62,7 +62,7 @@ pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) ->
     )?;
 
     let mut events = mio::Events::with_capacity(1024);
-    loop {
+    'outer: loop {
         tty.sync(&app)?;
         match poller.poll(&mut events, None) {
             Ok(()) => {}
@@ -93,7 +93,7 @@ pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) ->
                     match MonitorEvent::de(data[0]) {
                         MonitorEvent::Stopped => {
                             // Detach
-                            Ok(0)
+                            break 'outer;
                         }
                     }
                 }
@@ -101,29 +101,22 @@ pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) ->
             };
 
             if terminated(res)? {
-                // FIXME error handling
-                let _ = client.notify_pty_detached(name);
-
-                drop(tty); // Restore tty config
-                println!();
-                return Ok(());
+                break 'outer;
             }
         }
     }
+
+    drop(tty); // Restore tty config
+    println!();
+    return Ok(());
 }
 
 fn terminated<T>(result: io::Result<T>) -> io::Result<bool> {
     match result {
         Ok(_) => Ok(true),
-        Err(err) => {
-            if err.raw_os_error() == Some(libc::EIO) {
-                Ok(true)
-            } else if err.kind() == io::ErrorKind::WouldBlock {
-                Ok(false)
-            } else {
-                Err(err)
-            }
-        }
+        Err(err) if err.raw_os_error() == Some(libc::EIO) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(false),
+        Err(err) => Err(err),
     }
 }
 
