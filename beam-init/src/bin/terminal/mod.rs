@@ -108,7 +108,7 @@ pub(super) fn manage(name: &str, pty: OwnedFd, mut event_pipe_rx: PipeReader) ->
 
     drop(tty); // Restore tty config
     println!();
-    return Ok(());
+    Ok(())
 }
 
 fn terminated<T>(result: io::Result<T>) -> io::Result<bool> {
