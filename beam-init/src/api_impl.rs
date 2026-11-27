@@ -2,14 +2,16 @@ use std::collections::BTreeMap;
 use std::ffi::c_int;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
+use std::pin::Pin;
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use beam_init::BOOTSTRAP_NAME;
+use futures_core::Stream;
 use serde::Deserialize;
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
@@ -18,11 +20,22 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Event;
 use crate::environment::build_environment;
+use crate::services::service_status_publisher::ServiceStatusSubscription;
 use crate::services::{
     self, AfterStop, ServiceError, ServiceManager, StartReason, TerminationToken,
 };
 use beam_init::system::cerr;
 use beam_init_api::{API_SOCKET_PATH, CreateService, ServiceStatus, VersionResponse};
+
+pub type Reply<T> = oneshot::Sender<Result<T, ServiceError>>;
+
+pub struct LogStream(Pin<Box<dyn Stream<Item = String> + Send>>);
+
+impl std::fmt::Debug for LogStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("LogStream").finish_non_exhaustive()
+    }
+}
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
@@ -30,41 +43,61 @@ pub enum Command {
     CreateService {
         name: String,
         service: CreateService,
+        reply: Reply<CreateService>,
     },
     RestartService {
         name: String,
+        reply: Reply<()>,
     },
     StopService {
         name: String,
         prune: bool,
+        reply: Reply<()>,
     },
     FreezeService {
         name: String,
+        reply: Reply<()>,
     },
     ThawService {
         name: String,
+        reply: Reply<()>,
     },
     ShowService {
         name: String,
+        reply: Reply<beam_init_api::Service>,
     },
-    ListServices,
+    ListServices {
+        reply: Reply<BTreeMap<String, beam_init_api::ServiceStatus>>,
+    },
     ServiceLogs {
         name: String,
-        follow: bool,
+        reply: Reply<Vec<String>>,
+    },
+    FollowLogs {
+        name: String,
+        reply: Reply<LogStream>,
     },
     NotifyPtyAttached {
         name: String,
+        reply: Reply<()>,
     },
     NotifyPtyDetached {
         name: String,
+        reply: Reply<()>,
     },
     SendSignal {
         name: String,
         sig: c_int,
+        reply: Reply<()>,
     },
     ForceKillService {
         name: String,
         token: TerminationToken,
+        reply: Reply<()>,
+    },
+    WaitService {
+        name: String,
+        reply: Reply<ServiceStatusSubscription>,
     },
 }
 
@@ -168,135 +201,139 @@ async fn create_service(
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
     Json(service): Json<CreateService>,
-) -> Response {
+) -> Result<Json<CreateService>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::CreateService { name, service },
-            tx,
+            command: Command::CreateService {
+                name,
+                service,
+                reply: tx,
+            },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn stop_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::StopService { name, prune: false },
-            tx,
+            command: Command::StopService {
+                name,
+                prune: false,
+                reply: tx,
+            },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn delete_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::StopService { name, prune: true },
-            tx,
+            command: Command::StopService {
+                name,
+                prune: true,
+                reply: tx,
+            },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn restart_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::RestartService { name },
-            tx,
+            command: Command::RestartService { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn freeze_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::FreezeService { name },
-            tx,
+            command: Command::FreezeService { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn thaw_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::ThawService { name },
-            tx,
+            command: Command::ThawService { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn show_service(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<beam_init_api::Service>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::ShowService { name },
-            tx,
+            command: Command::ShowService { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn list_services(
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<BTreeMap<String, beam_init_api::ServiceStatus>>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::ListServices,
-            tx,
+            command: Command::ListServices { reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 #[derive(Deserialize)]
@@ -310,54 +347,76 @@ async fn service_logs(
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
     query: Query<ServiceLogsQuery>,
-) -> Response {
-    let (tx, rx) = oneshot::channel();
-    tx_events
-        .send(Event::Command {
-            command: Command::ServiceLogs {
-                name,
-                follow: query.follow,
-            },
-            tx,
-            credentials,
-        })
-        .await
-        .expect("main task crashed");
-    rx.await.expect("main task crashed")
+) -> Result<Response, ServiceError> {
+    if query.follow {
+        let (tx, rx) = oneshot::channel();
+        let cmd = Command::FollowLogs { name, reply: tx };
+        tx_events
+            .send(Event::Command {
+                command: cmd,
+                credentials,
+            })
+            .await
+            .expect("main task crashed");
+        let LogStream(stream) = rx.await.expect("main task crashed")?;
+        let body = Body::from_stream(stream.map(|mut line| {
+            line.push('\n');
+            Ok::<_, std::convert::Infallible>(line)
+        }));
+
+        Ok(([(axum::http::header::CONTENT_TYPE, "text/plain")], body).into_response())
+    } else {
+        let (tx, rx) = oneshot::channel();
+        let cmd = Command::ServiceLogs { name, reply: tx };
+        tx_events
+            .send(Event::Command {
+                command: cmd,
+                credentials,
+            })
+            .await
+            .expect("main task crashed");
+        let logs = rx.await.expect("main task crashed")?;
+        Ok(logs
+            .into_iter()
+            .map(|mut line| {
+                line.push('\n');
+                line
+            })
+            .collect::<String>()
+            .into_response())
+    }
 }
 
 async fn notify_pty_attached(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::NotifyPtyAttached { name },
-            tx,
+            command: Command::NotifyPtyAttached { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn notify_pty_detached(
     Path(name): Path<String>,
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::NotifyPtyDetached { name },
-            tx,
+            command: Command::NotifyPtyDetached { name, reply: tx },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 async fn send_signal(
@@ -365,17 +424,20 @@ async fn send_signal(
     State(tx_events): State<mpsc::Sender<Event>>,
     ConnectInfo(credentials): ConnectInfo<Credentials>,
     Json(sig): Json<c_int>,
-) -> Response {
+) -> Result<Json<()>, ServiceError> {
     let (tx, rx) = oneshot::channel();
     tx_events
         .send(Event::Command {
-            command: Command::SendSignal { name, sig },
-            tx,
+            command: Command::SendSignal {
+                name,
+                sig,
+                reply: tx,
+            },
             credentials,
         })
         .await
         .expect("main task crashed");
-    rx.await.expect("main task crashed")
+    rx.await.expect("main task crashed").map(Json)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -391,10 +453,9 @@ async fn wait_service(
 ) -> Response {
     let (tx, rx) = oneshot::channel();
     tx_events
-        .send(Event::WaitService {
-            name,
+        .send(Event::Command {
+            command: Command::WaitService { name, reply: tx },
             credentials,
-            tx,
         })
         .await
         .expect("main task crashed");
@@ -489,9 +550,13 @@ pub async fn handle_api_command(
     service_manager: &mut ServiceManager,
     cmd: Command,
     credentials: Credentials,
-) -> Result<Response<Body>, ServiceError> {
+) {
     match cmd {
-        Command::CreateService { name, service } => {
+        Command::CreateService {
+            name,
+            service,
+            reply,
+        } => {
             let CreateService {
                 cmd,
                 args,
@@ -505,13 +570,20 @@ pub async fn handle_api_command(
                 std::env::vars_os().collect()
             } else {
                 let mut svc_env =
-                    build_environment(credentials.uid, service_manager.user_env_files())
-                        .map_err(|e| ServiceError::BuildEnvironment { err: e.to_string() })?;
+                    match build_environment(credentials.uid, service_manager.user_env_files())
+                        .map_err(|e| ServiceError::BuildEnvironment { err: e.to_string() })
+                    {
+                        Ok(svc_env) => svc_env,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return;
+                        }
+                    };
                 svc_env.extend(env.iter().map(|(k, v)| (k.into(), v.into())));
                 svc_env
             };
 
-            service_manager.create_service(
+            if let Err(e) = service_manager.create_service(
                 name.clone(),
                 services::ServiceConfig {
                     cmd: cmd.clone(),
@@ -523,96 +595,82 @@ pub async fn handle_api_command(
                     labels: labels.clone(),
                     graceful_termination_period: *graceful_termination_period,
                 },
-            )?;
-            service_manager.start_service(credentials, &name, StartReason::User)?;
-            Ok(Json(service).into_response())
+            ) {
+                let _ = reply.send(Err(e));
+                return;
+            };
+            if let Err(e) = service_manager.start_service(credentials, &name, StartReason::User) {
+                let _ = reply.send(Err(e));
+                return;
+            };
+            let _ = reply.send(Ok(service));
         }
-        Command::RestartService { name } => {
-            let () = stop_service_cmd(
+        Command::RestartService { name, reply } => {
+            let result = stop_service_cmd(
                 service_manager,
                 credentials,
                 &name,
                 AfterStop::Restart(StartReason::User),
             )
-            .await?;
+            .await;
 
-            Ok(Json(()).into_response())
+            let _ = reply.send(result);
         }
-        Command::StopService { name, prune } => {
+        Command::StopService { name, prune, reply } => {
             let after_stop = if prune {
                 AfterStop::Prune
             } else {
                 AfterStop::Stop
             };
-            let () = stop_service_cmd(service_manager, credentials, &name, after_stop).await?;
+            let result = stop_service_cmd(service_manager, credentials, &name, after_stop).await;
 
-            Ok(Json(()).into_response())
+            let _ = reply.send(result);
         }
-        Command::FreezeService { name } => {
-            service_manager.freeze_service(credentials, &name)?;
-
-            Ok(Json(()).into_response())
+        Command::FreezeService { name, reply } => {
+            let _ = reply.send(service_manager.freeze_service(credentials, &name));
         }
-        Command::ThawService { name } => {
-            service_manager.thaw_service(credentials, &name)?;
-
-            Ok(Json(()).into_response())
+        Command::ThawService { name, reply } => {
+            let _ = reply.send(service_manager.thaw_service(credentials, &name));
         }
-        Command::ShowService { name } => {
-            let service = service_manager.get_service(credentials, &name)?;
-
-            let api_service = beam_init_api::Service::from(service);
-            Ok(Json(api_service).into_response())
+        Command::ShowService { name, reply } => {
+            let service = service_manager
+                .get_service(credentials, &name)
+                .map(beam_init_api::Service::from);
+            let _ = reply.send(service);
         }
-        Command::ListServices => {
+        Command::ListServices { reply } => {
             let services: BTreeMap<String, beam_init_api::ServiceStatus> = service_manager
                 .list_services(credentials)
                 .map(|(name, status)| (name.to_string(), status.into()))
                 .collect();
 
-            Ok(Json(services).into_response())
+            let _ = reply.send(Ok(services));
         }
-        Command::ServiceLogs { name, follow } => {
-            if follow {
-                let stream = service_manager.log_reader(credentials, &name)?;
-                Ok(Response::builder()
-                    .header(axum::http::header::CONTENT_TYPE, "text/plain")
-                    .body(Body::from_stream(stream.map(|mut line| {
-                        line.push('\n');
-                        Ok::<_, String>(Bytes::copy_from_slice(line.as_bytes()))
-                    })))
-                    .expect("valid headers should be set"))
-            } else {
-                let logs = service_manager.copy_logs(credentials, &name).await?;
-                Ok(logs
-                    .into_iter()
-                    .map(|mut line| {
-                        line.push('\n');
-                        line
-                    })
-                    .collect::<String>()
-                    .into_response())
-            }
+        Command::ServiceLogs { name, reply } => {
+            let logs = service_manager.copy_logs(credentials, &name).await;
+            let _ = reply.send(logs);
         }
-        Command::NotifyPtyAttached { name } => {
-            service_manager.notify_pty_attached(credentials, &name)?;
-
-            Ok(Json(()).into_response())
+        Command::FollowLogs { name, reply } => {
+            let stream = service_manager
+                .log_reader(credentials, &name)
+                .map(|stream| LogStream(Box::pin(stream)));
+            let _ = reply.send(stream);
         }
-        Command::NotifyPtyDetached { name } => {
-            service_manager.notify_pty_detached(credentials, &name)?;
-
-            Ok(Json(()).into_response())
+        Command::NotifyPtyAttached { name, reply } => {
+            let _ = reply.send(service_manager.notify_pty_attached(credentials, &name));
         }
-        Command::SendSignal { name, sig } => {
-            service_manager.send_signal(credentials, &name, sig)?;
-
-            Ok(Json(()).into_response())
+        Command::NotifyPtyDetached { name, reply } => {
+            let _ = reply.send(service_manager.notify_pty_detached(credentials, &name));
         }
-        Command::ForceKillService { name, token } => {
+        Command::SendSignal { name, sig, reply } => {
+            let _ = reply.send(service_manager.send_signal(credentials, &name, sig));
+        }
+        Command::ForceKillService { name, token, reply } => {
             service_manager.force_kill_service(&name, token);
-
-            Ok(Json(()).into_response())
+            let _ = reply.send(Ok(()));
+        }
+        Command::WaitService { name, reply: tx } => {
+            let _ = tx.send(service_manager.subscribe(credentials, &name));
         }
     }
 }
