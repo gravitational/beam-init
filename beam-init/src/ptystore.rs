@@ -95,10 +95,20 @@ async fn handle_connection(mut stream: UnixStream, tx_event: mpsc::Sender<Event>
 
     let res = stream
         .async_io(Interest::WRITABLE, || {
-            socket_send_fd(&stream, &[0], fd.as_fd())
+            socket_send_fd(&stream, &[0], fd.0.as_fd())
         })
         .await;
     if let Err(err) = res {
         eprintln!("Failed to send fd to client: {err}");
     }
+    let res = stream
+        .async_io(Interest::WRITABLE, || {
+            socket_send_fd(&stream, &[0], fd.1.as_fd())
+        })
+        .await;
+    if let Err(err) = res {
+        eprintln!("Failed to send fd to client: {err}");
+    }
+
+    // FIXME remove event pipe on close
 }

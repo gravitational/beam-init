@@ -7,13 +7,14 @@ use std::os::unix::process::ExitStatusExt;
 use std::ptr;
 
 use libc::{
-    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTSTP, SIGTTOU, WNOHANG, killpg, pid_t,
-    poll, pollfd, tcsetpgrp,
+    POLLERR, POLLHUP, POLLIN, SIGCHLD, SIGCONT, SIGKILL, SIGTTOU, WNOHANG, WUNTRACED, killpg,
+    pid_t, poll, pollfd, tcsetpgrp,
 };
 
 use crate::api_impl::Credentials;
 use crate::services::ServiceConfig;
 use crate::signal_stream::OldSigmask;
+use beam_init::MonitorEvent;
 use beam_init::system::fork::unsafe_fork;
 use beam_init::system::ipc_barrier::IpcBarrierNotify;
 use beam_init::system::pty::PtyClient;
@@ -55,17 +56,12 @@ impl MonitorCommandSender {
     pub(crate) fn foreground(&mut self) -> io::Result<()> {
         self.send(MonitorCommand::Foreground)
     }
-
-    pub(crate) fn background(&mut self) -> io::Result<()> {
-        self.send(MonitorCommand::Background)
-    }
 }
 
 #[derive(Debug)]
 enum MonitorCommand {
     Signal(c_int),
     Foreground,
-    Background,
 }
 
 impl MonitorCommand {
@@ -75,7 +71,6 @@ impl MonitorCommand {
                 (sig.cast_unsigned()).try_into().expect("invalid signal")
             }
             MonitorCommand::Foreground => -1i8,
-            MonitorCommand::Background => -2,
         }
         .cast_unsigned()
     }
@@ -83,7 +78,6 @@ impl MonitorCommand {
     fn de(b: u8) -> MonitorCommand {
         match b.cast_signed() {
             -1 => MonitorCommand::Foreground,
-            -2 => MonitorCommand::Background,
             b if b >= 0 => MonitorCommand::Signal(b.into()),
             _ => unreachable!(),
         }
@@ -105,7 +99,7 @@ pub(crate) fn spawn_service(
     config: &ServiceConfig,
     log_writer: OwnedFd,
     pty: Option<PtyClient<'_>>,
-) -> io::Result<(pid_t, Option<MonitorCommandSender>)> {
+) -> io::Result<(pid_t, Option<(MonitorCommandSender, PipeReader)>)> {
     let cmd = CString::new(config.cmd.clone())?;
 
     let args = config
@@ -137,14 +131,16 @@ pub(crate) fn spawn_service(
 
     let (mut err_rx, err_tx) = io::pipe()?;
     let (mut pid_rx, mut pid_tx) = io::pipe()?;
-    let (mut monitor_rx, monitor_tx) = io::pipe()?;
-    let (monitor_sync_rx, mut monitor_sync_tx) = io::pipe()?;
+    let (mut cmd_rx, cmd_tx) = io::pipe()?;
+    let (cmd_sync_rx, mut cmd_sync_tx) = io::pipe()?;
+    let (event_rx, mut event_tx) = io::pipe()?;
     let (pgid_sync_rx, pgid_sync_tx) = ipc_barrier::barrier()?;
     // SAFETY: We only run async-signal-safe functions inside the child process.
     unsafe {
         unsafe_fork!({
-            drop(monitor_tx);
-            drop(monitor_sync_rx);
+            drop(cmd_tx);
+            drop(cmd_sync_rx);
+            drop(event_rx);
 
             // Make sure we don't block when writing an error, even if the
             // log pipe is full. Otherwise the main process and the monitor
@@ -210,7 +206,7 @@ pub(crate) fn spawn_service(
                 loop {
                     let mut fds = [
                         pollfd {
-                            fd: monitor_rx.as_raw_fd(),
+                            fd: cmd_rx.as_raw_fd(),
                             events: POLLIN,
                             revents: 0,
                         },
@@ -224,7 +220,7 @@ pub(crate) fn spawn_service(
 
                     if fds[0].revents & POLLIN != 0 {
                         let mut cmd = [0];
-                        expect_no_panic(monitor_rx.read_exact(&mut cmd), "failed to read cmd pipe");
+                        expect_no_panic(cmd_rx.read_exact(&mut cmd), "failed to read cmd pipe");
                         let cmd = MonitorCommand::de(cmd[0]);
                         match cmd {
                             MonitorCommand::Signal(signal) => {
@@ -243,19 +239,9 @@ pub(crate) fn spawn_service(
                                     "failed to send SIGCONT",
                                 );
                             }
-                            MonitorCommand::Background => {
-                                expect_no_panic(
-                                    cerr(killpg(service_pid, SIGTSTP)),
-                                    "failed to send SIGTSTP",
-                                );
-                                expect_no_panic(
-                                    cerr(tcsetpgrp(pty_fd.as_raw_fd(), self_pid)),
-                                    "failed to `tcsetpgrp`",
-                                );
-                            }
                         }
                         expect_no_panic(
-                            monitor_sync_tx.write_all(&[0]),
+                            cmd_sync_tx.write_all(&[0]),
                             "failed to write to sync pipe",
                         );
                     }
@@ -276,10 +262,12 @@ pub(crate) fn spawn_service(
                             reason = "forked monitor doesn't have SIGCHLD handler"
                         )]
                         while let Some((pid, status)) =
-                            expect_no_panic(waitpid(-1, WNOHANG), "failed to `waitpid")
+                            expect_no_panic(waitpid(-1, WNOHANG | WUNTRACED), "failed to `waitpid")
                         {
                             if pid != service_pid {
                                 // Nothing to do. Not the main process of the service.
+                            } else if status.stopped_signal().is_some() {
+                                let _ = event_tx.write_all(&[MonitorEvent::Stopped.ser()]);
                             } else if let Some(code) = status.code() {
                                 _exit(code);
                             } else if let Some(signal) = status.signal() {
@@ -317,8 +305,9 @@ pub(crate) fn spawn_service(
         })?
     };
     drop(err_tx);
-    drop(monitor_rx);
-    drop(monitor_sync_tx);
+    drop(cmd_rx);
+    drop(cmd_sync_tx);
+    drop(event_tx);
 
     let mut err = [0; size_of::<i32>()];
     match err_rx.read_exact(&mut err) {
@@ -328,7 +317,7 @@ pub(crate) fn spawn_service(
             Ok((
                 pid_t::from_ne_bytes(child_pid),
                 pty.is_some()
-                    .then(|| MonitorCommandSender(monitor_tx, monitor_sync_rx)),
+                    .then(|| (MonitorCommandSender(cmd_tx, cmd_sync_rx), event_rx)),
             ))
         }
         Ok(()) => Err(io::Error::from_raw_os_error(i32::from_ne_bytes(err))),

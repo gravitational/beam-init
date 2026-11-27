@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::ffi::{OsString, c_int};
+use std::io::{self, PipeReader};
+use std::mem;
 use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
@@ -9,7 +11,6 @@ use std::pin::pin;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{io, mem};
 
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
@@ -185,15 +186,15 @@ pub(crate) enum ServiceStatus {
 #[derive(Debug)]
 pub(crate) struct ServiceProcess {
     pub(crate) main_pid: pid_t,
-    monitor_tx: Option<MonitorCommandSender>,
+    cmd_and_event: Option<(MonitorCommandSender, PipeReader)>,
 }
 
 impl ServiceProcess {
     fn send_signal(&mut self, signal: c_int) {
-        if let Some(monitor_tx) = &mut self.monitor_tx {
-            monitor_tx
+        if let Some((cmd_tx, _event_rx)) = &mut self.cmd_and_event {
+            cmd_tx
                 .signal(signal)
-                .expect("failed to send command on monitor pipe");
+                .expect("failed to send command on monitor cmd pipe");
         } else {
             kill_process_group(self.main_pid, signal).expect("process to exist");
         }
@@ -558,11 +559,11 @@ impl ServiceManager {
         });
 
         match spawn_service(old_sigmask, &service.config, log_writer, pty_client) {
-            Ok((child_pid, monitor_tx)) => {
+            Ok((child_pid, cmd_and_event)) => {
                 service.set_status(ServiceStatus::Running {
                     process: ServiceProcess {
                         main_pid: child_pid,
-                        monitor_tx,
+                        cmd_and_event,
                     },
                     pty,
                 });
@@ -789,13 +790,33 @@ impl ServiceManager {
             .map(|(name, service)| (name, &service.state.status))
     }
 
-    pub fn get_pty(&self, credentials: Credentials, name: String) -> Result<OwnedFd, ServiceError> {
+    pub fn get_pty(
+        &self,
+        credentials: Credentials,
+        name: String,
+    ) -> Result<(OwnedFd, OwnedFd), ServiceError> {
         let service = self.get_service(credentials, &name)?;
         match &service.state.status {
-            ServiceStatus::Running { pty, .. } | ServiceStatus::Frozen { pty, .. } => {
+            ServiceStatus::Running { process, pty, .. }
+            | ServiceStatus::Frozen { process, pty, .. } => {
                 if let Some(pty) = pty {
                     match pty.master.try_clone() {
-                        Ok(fd) => Ok(fd),
+                        Ok(pty) => match process
+                            .cmd_and_event
+                            .as_ref()
+                            .expect("event pipe should exist when pty exists")
+                            .1
+                            .try_clone()
+                        {
+                            Ok(event_pipe) => Ok((pty, OwnedFd::from(event_pipe))),
+                            Err(err) if err.raw_os_error() == Some(libc::EMFILE) => {
+                                Err(ServiceError::TooManyOpenFiles)
+                            }
+                            Err(err) => {
+                                panic!("Failed to dup event pipe fd: {err}")
+                            }
+                        },
+
                         Err(err) if err.raw_os_error() == Some(libc::EMFILE) => {
                             Err(ServiceError::TooManyOpenFiles)
                         }
@@ -825,10 +846,10 @@ impl ServiceManager {
         match &mut service.state.status {
             ServiceStatus::Running { process, pty: _ }
             | ServiceStatus::Frozen { process, pty: _ } => {
-                if let Some(monitor_tx) = &mut process.monitor_tx {
-                    monitor_tx
+                if let Some((cmd_tx, _event_rx)) = &mut process.cmd_and_event {
+                    cmd_tx
                         .foreground()
-                        .expect("failed to send command on monitor pipe");
+                        .expect("failed to send command on monitor cmd pipe");
                 }
             }
 
@@ -836,74 +857,6 @@ impl ServiceManager {
             | ServiceStatus::Stopping { .. }
             | ServiceStatus::Exited(_)
             | ServiceStatus::Error(_) => {
-                // Nothing to do
-            }
-
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(())
-    }
-
-    pub fn notify_pty_detached(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        match &mut service.state.status {
-            ServiceStatus::Running { process, pty: _ }
-            | ServiceStatus::Frozen { process, pty: _ } => {
-                if let Some(monitor_tx) = &mut process.monitor_tx {
-                    monitor_tx
-                        .background()
-                        .expect("failed to send command on monitor pipe");
-                }
-            }
-
-            ServiceStatus::Stopped
-            | ServiceStatus::Stopping { .. }
-            | ServiceStatus::Exited(_)
-            | ServiceStatus::Error(_) => {
-                // Nothing to do
-            }
-
-            ServiceStatus::Dummy => unreachable!(),
-        }
-
-        Ok(())
-    }
-
-    pub fn send_signal(
-        &mut self,
-        credentials: Credentials,
-        name: &str,
-        sig: c_int,
-    ) -> Result<(), ServiceError> {
-        let service = self.get_service_mut(credentials, name)?;
-
-        // Check that the signal is valid to avoid an expect on EINVAL
-        // Technically 32..=64 is also valid, but those are real-time signals,
-        // which are unlikely to be necessary to trigger for users.
-        if sig <= 0 || sig >= 32 {
-            return Err(ServiceError::InvalidRequest {
-                err: format!("Signal {sig} is not valid"),
-            });
-        }
-
-        match &mut service.state.status {
-            ServiceStatus::Running { process, pty: _ }
-            | ServiceStatus::Frozen { process, pty: _ }
-            | ServiceStatus::Stopping {
-                process,
-                after_stop: _,
-                pending_kill: _,
-            } => {
-                process.send_signal(sig);
-            }
-
-            ServiceStatus::Stopped | ServiceStatus::Exited(_) | ServiceStatus::Error(_) => {
                 // Nothing to do
             }
 
