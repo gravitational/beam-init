@@ -11,7 +11,8 @@ use beam_init::system::signal_set::SignalSet;
 
 pub fn init(signals: &[c_int], tx_event: mpsc::Sender<Event>) -> io::Result<OldSigmask> {
     let signal_set = SignalSet::new(signals)?;
-    let mut rx = AsyncFd::new(SignalFd::new(&signal_set)?)?;
+    // SAFETY: the AsRawFd impl for SignalFd returns always returns the same fd
+    let mut rx = unsafe { AsyncFd::register(SignalFd::new(&signal_set)?)? };
     let old_sigmask = signal_set.block()?;
 
     tokio::spawn(async move {
